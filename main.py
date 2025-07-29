@@ -24,9 +24,10 @@ def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
         data = response.json()
         raw = data['data']
         df = pd.DataFrame(raw, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume', '_', '_'
+            'timestamp', 'open', 'high', 'low', 'close', 'volume', 'volCcy', 'volCcyQuote', 'confirm'
         ])
         df = df.iloc[::-1].copy()
+        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
         df['open'] = df['open'].astype(float)
         df['high'] = df['high'].astype(float)
         df['low'] = df['low'].astype(float)
