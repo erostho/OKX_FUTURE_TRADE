@@ -49,7 +49,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
 
         df = df.iloc[::-1].reset_index(drop=True)  # Đảo ngược để có thứ tự thời gian từ cũ → mới
 
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
         df = df.astype({
             "open": "float",
             "high": "float",
