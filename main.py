@@ -120,7 +120,7 @@ def calculate_adx(df, period=14):
     adx = dx.rolling(window=period).mean()
     return adx
     
-def detect_signal(df_15m, df_1h, symbol=None):
+def detect_signal(df_15m, df_1h):
     if df_15m is None or df_1h is None:
         return None, None, None
 
