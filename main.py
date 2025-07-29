@@ -16,7 +16,7 @@ SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLyNCM0zVtZyDJ
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
-COINS_LIMIT = 50  # Số coin phân tích mỗi lượt
+COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
     try:
@@ -91,11 +91,21 @@ def calculate_adx(df, period=14):
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(window=period).mean()
     return adx
+    
 def detect_signal(df_15m, df_1h):
     if df_15m is None or df_1h is None:
         return None, None, None
+
+    if len(df_15m) < 50 or df_15m[['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']].isnull().any().any():
+        return None, None, None
+        
     if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
         return None, None, None
+
+    # Thêm log phân tích
+    logging.info(f"RSI={df_15m['rsi'].iloc[-1]:.2f}, MACD={df_15m['macd'].iloc[-1]:.4f}, SIGNAL={df_15m['macd_signal'].iloc[-1]:.4f}, VOLUME={df_15m['volume'].iloc[-1]:.2f}")
+    logging.info(f"EMA20={df_15m['ema20'].iloc[-1]:.2f}, EMA50={df_15m['ema50'].iloc[-1]:.2f}")
+    logging.info(f"Trend 1H EMA20/50/100: {df_1h['ema20'].iloc[-1]:.2f} / {df_1h['ema50'].iloc[-1]:.2f} / {df_1h['ema100'].iloc[-1]:.2f}, ADX={df_1h['adx'].iloc[-1]:.2f}")
 
     entry_long = (
         latest['rsi'] < 50 and
