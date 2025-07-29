@@ -44,7 +44,7 @@ def fetch_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
             return None
 
         df = pd.DataFrame(raw, columns=[
-            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "volume_usdt", "ts2", "confirm"
+            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "ts2", "confirm"
         ])
 
         df = df.iloc[::-1].reset_index(drop=True)  # Đảo ngược để có thứ tự thời gian từ cũ → mới
