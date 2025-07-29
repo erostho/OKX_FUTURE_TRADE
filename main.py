@@ -6,8 +6,8 @@ import datetime
 import json
 import logging
 import os
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s:%(message)s")
-logger.setLevel(logging.DEBUG)  # Luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s:%(message)s") # Luôn bật DEBUG/INFO
+
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = '8467137353:AAFn2ualduQI8DIsIoy56ECWrf0eS82fwc0'
