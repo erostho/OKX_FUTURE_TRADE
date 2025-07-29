@@ -92,10 +92,10 @@ def calculate_adx(df, period=14):
     adx = dx.rolling(window=period).mean()
     return adx
 def detect_signal(df_15m, df_1h):
-    # Điều kiện tín hiệu entry (15M)
-    df = df_15m.copy()
-    latest = df.iloc[-1]
-    prev = df.iloc[-2]
+    if df_15m is None or df_1h is None:
+        return None, None, None
+    if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
+        return None, None, None
 
     entry_long = (
         latest['rsi'] < 50 and
