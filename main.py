@@ -133,9 +133,9 @@ def detect_signal(df_15m, df_1h):
         and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
 
-    if entry_long # and trend_up:
+    if entry_long: # and trend_up:
         return 'LONG', latest['close'], latest['low']
-    elif entry_short # and trend_down:
+    elif entry_short: # and trend_down:
         return 'SHORT', latest['close'], latest['high']
     else:
         return None, None, None
