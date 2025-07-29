@@ -6,8 +6,9 @@ import datetime
 import json
 import logging
 import os
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s:%(message)s") # Luôn bật DEBUG/INFO
 
+logger = logging.getLogger()  # ✅ thêm dòng này
+logger.setLevel(logging.DEBUG)  # ✅ bật DEBUG đúng cách
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = '8467137353:AAFn2ualduQI8DIsIoy56ECWrf0eS82fwc0'
