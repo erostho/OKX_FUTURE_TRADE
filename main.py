@@ -118,7 +118,7 @@ def calculate_adx(df, period=14):
     adx = dx.rolling(window=period).mean()
     return adx
     
-def detect_signal(df_15m, df_1h):
+def detect_signal(df_15m, df_1h, symbol=None):
     if df_15m is None or df_1h is None:
         return None, None, None
 
@@ -127,10 +127,11 @@ def detect_signal(df_15m, df_1h):
         
     if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
         return None, None, None
+    latest = df_15m.iloc[-1]
+    logging.debug(f"{symbol}: RSI={latest['rsi']}, MACD={latest['macd']}, MACD_SIGNAL={latest['macd_signal']}, EMA20={latest['ema20']}, EMA50={latest['ema50']}, Volume={latest['volume']:.0f}")
+    logging.debug(f"{symbol}: entry_long check: RSI<60? {latest['rsi'] < 60}, MACD>signal? {latest['macd'] > latest['macd_signal']}, EMA20>EMA50? {latest['ema20'] > latest['ema50']}")
+    logging.debug(f"{symbol}: entry_short check: RSI>40? {latest['rsi'] > 40}, MACD<signal? {latest['macd'] < latest['macd_signal']}, EMA20<EMA50? {latest['ema20'] < latest['ema50']}")
 
-    # Thêm log phân tích
-    logging.info(f"🔎 RSI={latest['rsi']:.2f}, MACD={latest['macd']:.4f}, SIGNAL={latest['macd_signal']:.4f}")
-    logging.info(f"🔎 EMA20={latest['ema20']:.4f}, EMA50={latest['ema50']:.4f}")
 
     entry_long = (
         latest['rsi'] < 60 and
