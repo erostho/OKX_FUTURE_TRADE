@@ -22,48 +22,42 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
-def fetch_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
-    # Chuẩn hóa timeframe theo định dạng OKX
-    timeframe_map = {
-        "15m": "15m",
-        "1h": "1H",
-        "4h": "4H",
-        "1d": "1D"
-    }
+def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
+    # ✅ Chuẩn hóa instId cho USDT-M Futures trên OKX
+    instId = symbol.replace("/", "-").upper() + "-SWAP"
 
-    tf_okx = timeframe_map.get(timeframe.lower())
-    if tf_okx is None:
-        logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
+    url = f"https://www.okx.com/api/v5/market/candles?instId={instId}&bar={timeframe}&limit={limit}"
+    logging.debug(f"📤 Gửi request nến OKX: {url}")
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        raw = response.json()
+    except Exception as e:
+        logging.error(f"❌ Lỗi kết nối khi fetch OHLCV cho {instId} [{timeframe}]: {e}")
         return None
 
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={tf_okx}&limit={limit}"
+    # ✅ Kiểm tra dữ liệu trả về
+    if raw.get("code") != "0":
+        logging.warning(f"⚠️ Không có dữ liệu nến cho {instId} [{timeframe}]. Lỗi API: {raw.get('msg')}")
+        return None
+
+    data = raw.get("data", [])
+    if not data:
+        logging.warning(f"⚠️ Không có nến cho {instId} [{timeframe}]")
+        return None
+
+    # ✅ OKX trả về 9 cột:
+    columns = ["ts", "open", "high", "low", "close", "volume", "volumeCcy", "volumeCcyQuote", "confirm"]
 
     try:
-        res = requests.get(url)
-        raw = res.json().get("data", [])
-        if not raw:
-            logging.warning(f"⚠️ Không có nến cho {symbol} [{tf_okx}]")
-            return None
-
-        df = pd.DataFrame(raw, columns=[
-            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "ts2", "confirm"
-        ])
-
-        df = df.iloc[::-1].reset_index(drop=True)  # Đảo ngược để có thứ tự thời gian từ cũ → mới
-
-        df["ts"] = pd.to_datetime(df["ts"].astype("int64"), unit="ms")
-        df = df.astype({
-            "open": "float",
-            "high": "float",
-            "low": "float",
-            "close": "float",
-            "volume": "float"
-        })
-
+        df = pd.DataFrame(data, columns=columns)
+        df = df.iloc[::-1].reset_index(drop=True)  # đảo lại theo thời gian tăng dần
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df
-
     except Exception as e:
-        logging.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{tf_okx}]: {e}")
+        logging.error(f"❌ Lỗi khi xử lý DataFrame OHLCV cho {instId} [{timeframe}]: {e}")
         return None
 
 
