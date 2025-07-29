@@ -250,7 +250,7 @@ def run_bot():
             append_to_sheet(row)
 
         time.sleep(1)
-
+    logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
 
 def get_top_usdt_pairs(limit=50):
     url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
