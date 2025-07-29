@@ -19,25 +19,28 @@ TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
+
 def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
     url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
     try:
         response = requests.get(url)
         data = response.json()
-        raw = data['data']
+        raw = data.get('data', [])
+
+        if not raw:
+            logging.warning(f"⚠️ Không có nến cho {symbol} [{timeframe}]")
+            return None
+
         df = pd.DataFrame(raw, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume', 'volCcy', 'volCcyQuote', 'confirm'
+            'timestamp', 'open', 'high', 'low', 'close',
+            'volume', 'volCcy', 'volCcyQuote', 'confirm'
         ])
-        df = df.iloc[::-1].copy()
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-        df['open'] = df['open'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
-        df['close'] = df['close'].astype(float)
-        df['volume'] = df['volume'].astype(float)
-        return df
+
+        df = df.iloc[::-1].copy()  # Đảo ngược lại thời gian tăng dần
+        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
     except Exception as e:
-        logging.error(f"Lỗi fetch nến {symbol}: {e}")
+        logging.error(f"❌ Lỗi fetch nến {symbol} ({timeframe}): {e}")
         return None
 
 
