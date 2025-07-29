@@ -117,8 +117,11 @@ def detect_signal(df_15m, df_1h):
         df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
         and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
-    trend_down = (
-        df1h['ema20'].iloc[-1] < df1h['ema50'].iloc[-1] < df1h['ema100'].iloc[-1]
+    if len(df1h) < 50 or df1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
+        return None, None, None  # Bỏ qua nếu thiếu dữ liệu kỹ thuật
+    
+    trend_up = (
+        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
         and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
 
