@@ -4,11 +4,12 @@ import numpy as np
 import time
 import datetime
 import json
-import logging
 import os
+import logging
 
-logger = logging.getLogger()  # ✅ thêm dòng này
-logger.setLevel(logging.DEBUG)  # ✅ bật DEBUG đúng cách
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)  # luôn bật DEBUG
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = '8467137353:AAFn2ualduQI8DIsIoy56ECWrf0eS82fwc0'
