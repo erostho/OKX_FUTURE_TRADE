@@ -20,27 +20,48 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
-def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        raw = data.get('data', [])
+def fetch_ohlcv(symbol: str, timeframe: str = "15m", limit: int = 100):
+    # Chuẩn hóa timeframe theo định dạng OKX
+    timeframe_map = {
+        "15m": "15m",
+        "1h": "1H",
+        "4h": "4H",
+        "1d": "1D"
+    }
 
+    tf_okx = timeframe_map.get(timeframe.lower())
+    if tf_okx is None:
+        logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
+        return None
+
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={tf_okx}&limit={limit}"
+
+    try:
+        res = requests.get(url)
+        raw = res.json().get("data", [])
         if not raw:
-            logging.warning(f"⚠️ Không có nến cho {symbol} [{timeframe}]")
+            logging.warning(f"⚠️ Không có nến cho {symbol} [{tf_okx}]")
             return None
 
         df = pd.DataFrame(raw, columns=[
-            'timestamp', 'open', 'high', 'low', 'close',
-            'volume', 'volCcy', 'volCcyQuote', 'confirm'
+            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "volume_usdt", "ts2", "confirm"
         ])
 
-        df = df.iloc[::-1].copy()  # Đảo ngược lại thời gian tăng dần
-        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
+        df = df.iloc[::-1].reset_index(drop=True)  # Đảo ngược để có thứ tự thời gian từ cũ → mới
+
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df = df.astype({
+            "open": "float",
+            "high": "float",
+            "low": "float",
+            "close": "float",
+            "volume": "float"
+        })
+
+        return df
+
     except Exception as e:
-        logging.error(f"❌ Lỗi fetch nến {symbol} ({timeframe}): {e}")
+        logging.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{tf_okx}]: {e}")
         return None
 
 
