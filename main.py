@@ -6,6 +6,8 @@ import datetime
 import json
 import logging
 import os
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s:%(message)s")
+logger.setLevel(logging.DEBUG)  # Luôn bật DEBUG/INFO
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = '8467137353:AAFn2ualduQI8DIsIoy56ECWrf0eS82fwc0'
@@ -103,9 +105,8 @@ def detect_signal(df_15m, df_1h):
         return None, None, None
 
     # Thêm log phân tích
-    logging.info(f"RSI={df_15m['rsi'].iloc[-1]:.2f}, MACD={df_15m['macd'].iloc[-1]:.4f}, SIGNAL={df_15m['macd_signal'].iloc[-1]:.4f}, VOLUME={df_15m['volume'].iloc[-1]:.2f}")
-    logging.info(f"EMA20={df_15m['ema20'].iloc[-1]:.2f}, EMA50={df_15m['ema50'].iloc[-1]:.2f}")
-    logging.info(f"Trend 1H EMA20/50/100: {df_1h['ema20'].iloc[-1]:.2f} / {df_1h['ema50'].iloc[-1]:.2f} / {df_1h['ema100'].iloc[-1]:.2f}, ADX={df_1h['adx'].iloc[-1]:.2f}")
+    logging.info(f"🔎 RSI={latest['rsi']:.2f}, MACD={latest['macd']:.4f}, SIGNAL={latest['macd_signal']:.4f}")
+    logging.info(f"🔎 EMA20={latest['ema20']:.4f}, EMA50={latest['ema50']:.4f}")
 
     entry_long = (
         latest['rsi'] < 60 and
@@ -133,13 +134,21 @@ def detect_signal(df_15m, df_1h):
         and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
 
-    if entry_long: # and trend_up:
+    if entry_long and trend_up:
         return 'LONG', latest['close'], latest['low']
-    elif entry_short: # and trend_down:
+    elif entry_short and trend_down:
         return 'SHORT', latest['close'], latest['high']
     else:
         return None, None, None
-
+    if entry_long:
+        logging.info("✅ Tín hiệu LONG thoả điều kiện!")
+        return 'LONG', latest['close'], latest['low']
+    elif entry_short:
+        logging.info("✅ Tín hiệu SHORT thoả điều kiện!")
+        return 'SHORT', latest['close'], latest['high']
+    else:
+        logging.info("❌ Không thoả điều kiện LONG hoặc SHORT.")
+        return None, None, None
 
 def analyze_trend_multi(symbol):
     tf_map = {
