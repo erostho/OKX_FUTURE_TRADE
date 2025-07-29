@@ -249,8 +249,8 @@ def run_bot():
 
     for symbol in coin_list:
         logging.info(f"📈 Phân tích {symbol}...")
-        df_15m = fetch_ohlcv(symbol, '15m')
-        df_1h = fetch_ohlcv(symbol, '1h')
+        df_15m = fetch_ohlcv_okx(symbol, '15m')
+        df_1h = fetch_ohlcv_okx(symbol, '1h')
         if df_15m is None or df_1h is None:
             continue
 
