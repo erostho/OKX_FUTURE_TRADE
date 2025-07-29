@@ -22,54 +22,50 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
-def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
-    timeframe_okx = {"15m": "15m", "1h": "1H"}  # ✅ mapping chuẩn
-    bar = timeframe_okx.get(timeframe)
-    if bar is None:
-        logger.error(f"❌ Không hỗ trợ timeframe {timeframe}")
-        return None
+import requests
+import pandas as pd
+import logging
 
-    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}"
-    logger.debug(f"📤 Gửi request nến OKX: {url}")
-
+def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
+        timeframe = timeframe.lower()  # ✅ Đảm bảo đúng định dạng bar
+        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
+        logger.debug(f"📤 Gửi request nến OKX: {url}")
+        
         res = requests.get(url)
-        res.raise_for_status()
-        raw = res.json().get('data', [])
-        if not raw:
-            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {res.text}")
+        res_json = res.json()
+
+        # Kiểm tra mã lỗi từ OKX
+        if res_json.get("code") != "0":
+            msg = res_json.get("msg", "Không rõ lỗi")
+            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {msg}")
             return None
-        df = pd.DataFrame(raw, columns=[
-            "ts", "open", "high", "low", "close", "volume", "volume_currency", "confirm", "turnover"
-        ])
+
+        raw = res_json.get("data", [])
+        if not raw:
+            logger.warning(f"⚠️ Không có nến cho {symbol} [{timeframe}]")
+            return None
+
+        # OKX trả về 9 cột: [ts, o, h, l, c, vol, vol_ccy, confirm, tag]
+        try:
+            df = pd.DataFrame(raw, columns=[
+                "ts", "open", "high", "low", "close",
+                "volume", "volume_ccy",
+                "confirm", "tag"
+            ])
+        except Exception as e:
+            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
+            return None
+
+        df = df[::-1]  # đảo ngược thời gian (cũ -> mới)
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-        df = df.sort_values("ts").reset_index(drop=True)
+        df["close"] = df["close"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+
         return df
+
     except Exception as e:
-        logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
-        return None
-
-    # ✅ Kiểm tra dữ liệu trả về
-    if raw.get("code") != "0":
-        logging.warning(f"⚠️ Không có dữ liệu nến cho {instId} [{timeframe}]. Lỗi API: {raw.get('msg')}")
-        return None
-
-    data = raw.get("data", [])
-    if not data:
-        logging.warning(f"⚠️ Không có nến cho {instId} [{timeframe}]")
-        return None
-
-    # ✅ OKX trả về 9 cột:
-    columns = ["ts", "open", "high", "low", "close", "volume", "volumeCcy", "volumeCcyQuote", "confirm"]
-
-    try:
-        df = pd.DataFrame(data, columns=columns)
-        df = df.iloc[::-1].reset_index(drop=True)  # đảo lại theo thời gian tăng dần
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-        df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
-        return df
-    except Exception as e:
-        logging.error(f"❌ Lỗi khi xử lý DataFrame OHLCV cho {instId} [{timeframe}]: {e}")
+        logger.error(f"❌ Lỗi fetch_ohlcv_okx({symbol}, {timeframe}): {e}")
         return None
 
 
