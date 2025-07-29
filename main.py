@@ -108,17 +108,15 @@ def detect_signal(df_15m, df_1h):
     logging.info(f"Trend 1H EMA20/50/100: {df_1h['ema20'].iloc[-1]:.2f} / {df_1h['ema50'].iloc[-1]:.2f} / {df_1h['ema100'].iloc[-1]:.2f}, ADX={df_1h['adx'].iloc[-1]:.2f}")
 
     entry_long = (
-        latest['rsi'] < 50 and
+        latest['rsi'] < 60 and
         latest['macd'] > latest['macd_signal'] and
-        latest['close'] > latest['ema20'] > latest['ema50'] and
-        latest['volume'] > df['volume'].rolling(20).mean().iloc[-1]
+        latest['ema20'] > latest['ema50']
     )
 
     entry_short = (
-        latest['rsi'] > 50 and
+        latest['rsi'] > 40 and
         latest['macd'] < latest['macd_signal'] and
-        latest['close'] < latest['ema20'] < latest['ema50'] and
-        latest['volume'] > df['volume'].rolling(20).mean().iloc[-1]
+        latest['ema20'] < latest['ema50']
     )
 
     # Lọc xu hướng (1H)
