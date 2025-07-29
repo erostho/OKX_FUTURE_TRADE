@@ -209,6 +209,7 @@ def append_to_sheet(row: dict):
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
+    count = 0
 
     for symbol in coin_list:
         logging.info(f"📈 Phân tích {symbol}...")
