@@ -23,18 +23,30 @@ ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
 def fetch_ohlcv(symbol: str, timeframe: str = '15m', limit: int = 100):
-    # ✅ Chuẩn hóa instId cho USDT-M Futures trên OKX
-    instId = symbol.replace("/", "-").upper() + "-SWAP"
+    timeframe_okx = {"15m": "15m", "1h": "1H"}  # ✅ mapping chuẩn
+    bar = timeframe_okx.get(timeframe)
+    if bar is None:
+        logger.error(f"❌ Không hỗ trợ timeframe {timeframe}")
+        return None
 
-    url = f"https://www.okx.com/api/v5/market/candles?instId={instId}&bar={timeframe}&limit={limit}"
-    logging.debug(f"📤 Gửi request nến OKX: {url}")
-    
+    url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={bar}&limit={limit}"
+    logger.debug(f"📤 Gửi request nến OKX: {url}")
+
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        raw = response.json()
+        res = requests.get(url)
+        res.raise_for_status()
+        raw = res.json().get('data', [])
+        if not raw:
+            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {res.text}")
+            return None
+        df = pd.DataFrame(raw, columns=[
+            "ts", "open", "high", "low", "close", "volume", "volume_currency", "confirm", "turnover"
+        ])
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df = df.sort_values("ts").reset_index(drop=True)
+        return df
     except Exception as e:
-        logging.error(f"❌ Lỗi kết nối khi fetch OHLCV cho {instId} [{timeframe}]: {e}")
+        logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
         return None
 
     # ✅ Kiểm tra dữ liệu trả về
