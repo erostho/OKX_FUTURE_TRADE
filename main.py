@@ -8,6 +8,7 @@ import os
 import logging
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from pytz import timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG
@@ -43,11 +44,25 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
+
+
+def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
+    strength = 1
+    if abs(tp - entry) / entry > 0.03:
+        strength += 1
+    if abs(entry - sl) / entry > 0.03:
+        strength += 1
+    if short_trend == mid_trend:
+        strength += 1
+    return '⭐' * min(strength, 5)
+
 def append_to_sheet(row: dict):
-    now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    now = datetime.datetime.now(timezone('Asia/Ho_Chi_Minh')).strftime("%d/%m/%Y %H:%M")
+    signal_text = f"{row['signal']} {rate_signal_strength(row['entry'], row['sl'], row['tp'], row['short_trend'], row['mid_trend'])}"
+
     row_data = [
         row['symbol'],
-        row['signal'],
+        signal_text,
         row['entry'],
         row['sl'],
         row['tp'],
@@ -58,7 +73,7 @@ def append_to_sheet(row: dict):
 
     try:
         sheet_data = sheet.get_all_records()
-        if any(r['Coin'] == row['symbol'] and r['Tín hiệu'] == row['signal'] for r in sheet_data):
+        if any(r['Coin'] == row['symbol'] and row['Tín hiệu'].startswith(row['signal']) for r in sheet_data):
             logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
             return
 
