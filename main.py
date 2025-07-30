@@ -125,10 +125,12 @@ def detect_signal(df_15m, df_1h, symbol):
     if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
         return None, None, None
     latest = df_15m.iloc[-1]
+    trend_up = df_1h['ema20'].iloc[-1] > df_1h['ema50'].iloc[-1]
+    trend_down = df_1h['ema20'].iloc[-1] < df_1h['ema50'].iloc[-1]
     logging.debug(f"{symbol}: RSI={latest['rsi']}, MACD={latest['macd']}, MACD_SIGNAL={latest['macd_signal']}, EMA20={latest['ema20']}, EMA50={latest['ema50']}, Volume={latest['volume']:.0f}")
     logging.debug(f"{symbol}: entry_long check: RSI<60? {latest['rsi'] < 60}, MACD>signal? {latest['macd'] > latest['macd_signal']}, EMA20>EMA50? {latest['ema20'] > latest['ema50']}")
     logging.debug(f"{symbol}: entry_short check: RSI>40? {latest['rsi'] > 40}, MACD<signal? {latest['macd'] < latest['macd_signal']}, EMA20<EMA50? {latest['ema20'] < latest['ema50']}")
-
+    
 
     entry_long = (
         latest['rsi'] < 60 and
