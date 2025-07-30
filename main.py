@@ -293,9 +293,16 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok=True):
-    rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
-    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
+def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
+    """
+    Tính điểm tín hiệu (1–5 sao) dựa trên:
+    - Tín hiệu LONG/SHORT
+    - Xu hướng ngắn hạn và trung hạn
+    - Volume (chỉ áp dụng cho LONG)
+
+    Trả về: số nguyên từ 2–5
+    """
+    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
         return 5
