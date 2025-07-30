@@ -73,13 +73,13 @@ def append_to_sheet(row: dict):
 
     try:
         sheet_data = sheet.get_all_records()
-        if any(r['Coin'] == row['symbol'] and row['Tín hiệu'].startswith(row['signal']) for r in sheet_data):
+        if any(r['Coin'] == row['symbol'] and r['Tín hiệu'].startswith(row['signal']) for r in sheet_data):
             logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
             return
 
         logging.info(f"Ghi tín hiệu mới vào sheet: {row['symbol']} {row['signal']}")
         sheet.append_row(row_data)
-    
+
     except Exception as e:
         logging.warning(f"Không thể ghi sheet: {e}")
 
@@ -282,13 +282,16 @@ def send_telegram_message(message: str):
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
+
+    valid_signals = []
+    messages = []
     count = 0
-    signals_to_notify = []  # ✅ Danh sách tín hiệu đạt yêu cầu để gửi 1 lần
 
     for symbol in coin_list:
         logging.info(f"🔍 Phân tích {symbol}...")
 
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+
         df_15m = fetch_ohlcv_okx(inst_id, "15m")
         df_1h = fetch_ohlcv_okx(inst_id, "1h")
 
@@ -296,8 +299,9 @@ def run_bot():
             continue
 
         df_15m = calculate_indicators(df_15m).dropna()
-        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
         df_1h = calculate_indicators(df_1h).dropna()
+
+        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
         logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
@@ -310,50 +314,50 @@ def run_bot():
             continue
 
         signal, entry, sl = detect_signal(df_15m, df_1h, symbol)
+
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
+            rating = calculate_signal_rating(signal, short_trend, mid_trend)  # ⭐️⭐️⭐️...
 
-            # ✅ Xếp hạng độ mạnh tín hiệu
-            strength = 1
-            if short_trend == "Tăng" and mid_trend == "Tăng" and signal == "LONG":
-                strength = 5
-            elif short_trend == "Tăng" and signal == "LONG":
-                strength = 4
-            elif short_trend == "Giảm" and mid_trend == "Giảm" and signal == "SHORT":
-                strength = 5
-            elif short_trend == "Giảm" and signal == "SHORT":
-                strength = 4
-            elif signal in ["LONG", "SHORT"]:
-                strength = 3
-
-            # ✅ Nếu đủ mạnh → lưu để gửi cuối
-            if strength >= 3:
+            if rating >= 3:
                 count += 1
-                msg = f"• *{symbol}* ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️'*strength})"
-                signals_to_notify.append(msg)
+                now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
 
-            # ✅ Luôn ghi ra sheet
-            row = {
-                'symbol': symbol,
-                'signal': signal,
-                'entry': entry,
-                'sl': sl,
-                'tp': tp,
-                'short_trend': short_trend,
-                'mid_trend': mid_trend
-            }
-            append_to_sheet(row)
+                # Soạn tin nhắn Telegram
+                messages.append(
+                    f"• {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️'*rating})"
+                )
+
+                # Lưu dòng sheet
+                valid_signals.append([
+                    symbol,
+                    signal + " " + ("⭐️" * rating),
+                    entry,
+                    sl,
+                    tp,
+                    short_trend,
+                    mid_trend,
+                    now
+                ])
 
         time.sleep(1)
 
-    # ✅ Gửi 1 tin nhắn tổng kết cuối
-    if signals_to_notify:
-        full_message = "🆕 *TÍN HIỆU MẠNH TỪ BOT (≥ 3⭐️)*\n\n" + "\n".join(signals_to_notify)
-        send_telegram_message(full_message)
-    else:
-        logging.info("📭 Không có tín hiệu đủ mạnh để gửi telegram.")
+    # ✅ Gửi 1 tin nhắn tổng hợp
+    if messages:
+        message = "🆕 *TỔNG HỢP TÍN HIỆU MỚI*\n\n" + "\n".join(messages)
+        send_telegram_message(message)
 
+    # ✅ Ghi 1 lần duy nhất vào sheet
+    if valid_signals:
+        try:
+            sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
+            for row in valid_signals:
+                sheet.append_row(row)
+        except Exception as e:
+            logging.warning(f"Không thể ghi sheet: {e}")
+
+    # ✅ Log tổng kết
     logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
 
 def get_top_usdt_pairs(limit=50):
