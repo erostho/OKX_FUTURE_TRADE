@@ -28,44 +28,38 @@ import logging
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
-        timeframe = timeframe.lower()  # ✅ Đảm bảo đúng định dạng bar
+        # ✅ CHUẨN HOÁ timeframe
+        timeframe = timeframe.lower()
+        if timeframe == '1H':
+            timeframe = '1h'
+        elif timeframe == '15M':
+            timeframe = '15m'
+
         url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logger.debug(f"📤 Gửi request nến OKX: {url}")
-        
-        res = requests.get(url)
-        res_json = res.json()
+        logger.debug(f"📥 Gửi request nến OKX: {url}")
 
-        # Kiểm tra mã lỗi từ OKX
-        if res_json.get("code") != "0":
-            msg = res_json.get("msg", "Không rõ lỗi")
-            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {msg}")
+        response = requests.get(url)
+        data = response.json()
+        candles = data.get("data", [])
+
+        if not candles or 'error' in data.get('msg', '').lower():
+            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {data.get('msg', 'Unknown')}")
             return None
 
-        raw = res_json.get("data", [])
-        if not raw:
-            logger.warning(f"⚠️ Không có nến cho {symbol} [{timeframe}]")
+        # ✅ Check đúng số lượng cột là 9
+        if any(len(row) != 9 for row in candles):
+            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: Một số dòng không có đủ 9 cột")
             return None
 
-        # OKX trả về 9 cột: [ts, o, h, l, c, vol, vol_ccy, confirm, tag]
-        try:
-            df = pd.DataFrame(raw, columns=[
-                "ts", "open", "high", "low", "close",
-                "volume", "volume_ccy",
-                "confirm", "tag"
-            ])
-        except Exception as e:
-            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
-            return None
-
-        df = df[::-1]  # đảo ngược thời gian (cũ -> mới)
+        df = pd.DataFrame(candles, columns=[
+            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "ts2", "confirm"
+        ])
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-        df["close"] = df["close"].astype(float)
-        df["volume"] = df["volume"].astype(float)
-
+        df = df.sort_values("ts")
         return df
 
     except Exception as e:
-        logger.error(f"❌ Lỗi fetch_ohlcv_okx({symbol}, {timeframe}): {e}")
+        logger.error(f"❌ Exception khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
         return None
 
 
@@ -203,6 +197,7 @@ def analyze_trend_multi(symbol):
         return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
 
     return to_text(short_score), to_text(mid_score)
+    
 def send_telegram(msg: str):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -242,6 +237,7 @@ def append_to_sheet(row: dict):
     sheet_append_url = SHEET_CSV_URL.replace('/edit?gid=', '/formResponse?gid=')
     logging.warning("Google Sheet đang ở dạng chỉ đọc. Cần dùng Google API để ghi nếu muốn ghi trực tiếp.")
     # Nếu có quyền ghi Google Sheet (OAuth/ServiceAccount) thì dùng gspread để append
+
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
