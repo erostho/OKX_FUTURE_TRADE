@@ -86,6 +86,7 @@ def calculate_indicators(df):
     df["macd"] = exp1 - exp2
     df["macd_signal"] = df["macd"].ewm(span=9).mean()
 
+    df = calculate_adx(df)
     return df
 
 
