@@ -346,18 +346,17 @@ def run_bot():
 
             now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
             # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 1
-            if rating >= 1:
-                count += 1
-                valid_signals.append([
-                    symbol,
-                    signal + " " + ("⭐️" * rating),
-                    entry,
-                    sl,
-                    tp,
-                    short_trend,
-                    mid_trend,
-                    now
-                ])
+            count += 1
+            valid_signals.append([
+                symbol,
+                signal + " " + ("⭐️" * rating),
+                entry,
+                sl,
+                tp,
+                short_trend,
+                mid_trend,
+                now
+            ])
             
             # 🟡 GỬI TELEGRAM nếu rating >= 3
             if rating >= 3:
