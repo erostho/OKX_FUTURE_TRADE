@@ -6,6 +6,8 @@ import datetime
 import json
 import os
 import logging
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG
@@ -14,7 +16,18 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
+SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")  # Đặt lại biến nếu chưa có
+# Cấu hình scope
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+
+# Đọc file JSON credentials đã upload lên Render (tên phải là service_account.json)
+creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+
+# Authorize gspread
+client = gspread.authorize(creds)
+
+# Kết nối đến file Google Sheet
+sheet = client.open_by_url(SHEET_CSV_URL).worksheet("DATA_FUTURE")
 
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
@@ -22,9 +35,6 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
-import requests
-import pandas as pd
-import logging
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
@@ -199,8 +209,6 @@ def analyze_trend_multi(symbol):
 
     return to_text(short_score), to_text(mid_score)
     
-import requests
-import os
 
 def send_telegram_message(message: str):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")  # hoặc ghi trực tiếp chuỗi token nếu bạn test thủ công
