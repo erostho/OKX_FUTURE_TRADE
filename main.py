@@ -177,7 +177,7 @@ def detect_signal(df_15m, df_1h, symbol):
     try:
         vol_now = df_15m['volume'].iloc[-1]
         vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > 1.5 * vol_avg
+        volume_ok = vol_now > vol_avg
         logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
     except Exception as e:
         logging.warning(f"{symbol}: Không tính được volume: {e}")
