@@ -84,7 +84,7 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
 
         df = pd.DataFrame(data["data"])
         df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")  # ✅ an toàn hơn
         df = df.iloc[::-1].copy()
 
         # ✅ Chuyển các cột số sang float để tránh lỗi toán học
@@ -322,7 +322,7 @@ def run_bot():
         try:
             vol_now = df_15m['volume'].iloc[-1]
             vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-            volume_ok = vol_now > 0.8 * vol_avg
+            volume_ok = vol_now > 0.6 * vol_avg
             logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.0f}, TB 20 nến = {vol_avg:.0f}, volume_ok = {volume_ok}")
         except Exception as e:
             logging.warning(f"{symbol}: Không tính được volume_ok: {e}")
@@ -345,8 +345,8 @@ def run_bot():
             rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
 
             now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 2
-            if rating >= 2:
+            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 1
+            if rating >= 1:
                 count += 1
                 valid_signals.append([
                     symbol,
