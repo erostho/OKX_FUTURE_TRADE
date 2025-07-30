@@ -245,38 +245,50 @@ def run_bot():
 
     for symbol in coin_list:
         logging.info(f"🔍 Phân tích {symbol}...")
-
+    
         # ✅ Chuẩn hóa instId
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+    
+        # ✅ Fetch nến
         df_15m = fetch_ohlcv_okx(inst_id, "15m")
         df_1h = fetch_ohlcv_okx(inst_id, "1h")
+    
+        # ✅ Bỏ qua nếu fetch lỗi
         if df_15m is None or df_1h is None:
-            continue        
-            
+            continue
+    
+        # ✅ Tính indicators trước
         df_15m = calculate_indicators(df_15m)
         df_1h = calculate_indicators(df_1h)
-        # 🪛 Debug check các cột thực sự tồn tại
-        logging.debug(f"📊 Cột df_15m sau indicators: {df_15m.columns}")
-        logging.debug(f"🔍 Null check df_15m['macd_signal']: {df_15m['macd_signal'].isnull().sum()} null values trên {len(df_15m)} dòng")
-
+    
+        # ✅ Sau đó mới kiểm tra đủ cột chưa
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
             logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
             continue
-
-
-
+    
+        # ✅ Kiểm tra null
+        if df_15m[required_cols].isnull().any().any():
+            logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
+            continue
+    
+        # ✅ Xử lý tín hiệu
         signal, entry, sl = detect_signal(df_15m, df_1h)
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
-
-            message = f"""📢 *TÍN HIỆU MỚI*
-*Coin:* {symbol}
-*Loại:* {signal}
-*Entry:* {round(entry, 4)}
-*SL:* {round(sl, 4)}
-*TP:* {round(tp, 4)}"""
+    
+            message = f"""
+    🆕 *TÍN HIỆU MỚI*
+    
+    *Coin:* {symbol}
+    *Khung:* 15m
+    *Loại:* {signal}
+    *Entry:* {entry}
+    *SL:* {sl}
+    *TP:* {tp}
+    *Xu hướng:* {short_trend} / {mid_trend}
+    
             send_telegram_message(message)
 
             row = {
