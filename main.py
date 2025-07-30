@@ -35,37 +35,37 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
             '1d': '1D',
             '15m': '15m',
             '5m': '5m',
-            '1m': '1m'
+            '1m': '1m',
         }
         timeframe = timeframe_map.get(timeframe.lower(), timeframe)
         if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
             logger.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
-        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={tf}&limit={limit}"
-        logging.debug(f"📩 Gửi request nến OKX: {url}")
+
+        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
+        logger.debug(f"📉 Gửi request nến OKX: {url}")
         response = requests.get(url)
         data = response.json()
 
+        # ✅ Nếu không có dữ liệu
         if not data.get("data"):
-            logging.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{tf}]. Lỗi API: {data.get('msg')}")
+            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]")
             return None
 
-        # ✅ Chuyển về đúng định dạng DataFrame với đúng số cột (9)
-        columns = ['ts', 'open', 'high', 'low', 'close', 'volume', 'vol_ccy', 'vol_usdt', 'confirm']
-        df = pd.DataFrame(data['data'], columns=columns)
-        df = df.iloc[::-1].copy()
-        df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+        # ✅ Parse dữ liệu thành DataFrame
+        df = pd.DataFrame(data["data"])
+        df = df.iloc[::-1].copy()  # đảo ngược vì OKX trả ngược thời gian
 
-        # ✅ Chuyển các cột số về float (tránh lỗi str-str)
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        df.columns = ["ts", "open", "high", "low", "close", "volume", "_volCcy", "_volCcyQuote", "_confirm"]
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+        for col in ["open", "high", "low", "close", "volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
         return df
 
     except Exception as e:
-        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
+        logger.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
         return None
-
 
 def calculate_indicators(df):
     # ✅ Ép kiểu dữ liệu về số thực để tránh lỗi toán học
