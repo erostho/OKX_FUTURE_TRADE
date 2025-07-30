@@ -21,7 +21,7 @@ SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")  # Đặt lại biến nếu chưa c�
 scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 
 # Đọc file JSON credentials đã upload lên Render (tên phải là service_account.json)
-creds = ServiceAccountCredentials.from_json_keyfile_name('service_account.json', scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name('/etc/secrets/service_account.json', scope)
 
 # Authorize gspread
 client = gspread.authorize(creds)
