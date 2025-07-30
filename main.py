@@ -86,9 +86,10 @@ def calculate_indicators(df):
     df["rsi"] = 100 - (100 / (1 + rs))
 
     # MACD
-    exp1 = df["close"].ewm(span=12).mean()
-    exp2 = df["close"].ewm(span=26).mean()
-    df["macd"] = exp1 - exp2
+    exp1 = df['close'].ewm(span=12).mean()
+    exp2 = df['close'].ewm(span=26).mean()
+    df['macd'] = exp1 - exp2
+    df['macd_signal'] = df['macd'].ewm(span=9).mean()
 
     return df
 
@@ -254,8 +255,11 @@ def run_bot():
 
         df_15m = fetch_ohlcv_okx(inst_id, "15m")
         df_1h = fetch_ohlcv_okx(inst_id, "1h")
-
+        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if df_15m is None or df_1h is None:
+            continue
+        if not all(col in df_15m.columns for col in required_cols):
+            logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
             continue
 
         df_15m = calculate_indicators(df_15m)
