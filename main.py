@@ -38,7 +38,7 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
             '1m': '1m'
         }
         timeframe = timeframe_map.get(timeframe.lower(), timeframe)
-        if timeframe not in ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]:
+        if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
             logger.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
 
