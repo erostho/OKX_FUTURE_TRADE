@@ -314,6 +314,22 @@ def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
         return 3
     else:
         return 2
+        
+def prepend_to_sheet(row_data: list):
+    try:
+        old_data = sheet.get_all_values()
+        headers = old_data[0]
+        body = old_data[1:]
+        
+        # Chèn dòng mới vào đầu
+        body.insert(0, row_data)
+
+        # Ghi lại toàn bộ (bao gồm cả header)
+        sheet.update([headers] + body)
+        logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
+
+    except Exception as e:
+        logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
 
 def run_bot():
     logging.basicConfig(level=logging.INFO)
@@ -382,9 +398,9 @@ def run_bot():
                 messages.append(
                     f"{symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})"
                 )
-
+        
         time.sleep(1)
-
+    
     # ✅ Gửi 1 tin nhắn tổng hợp
     if messages:
         message = "🆕 *TỔNG HỢP TÍN HIỆU MỚI*\n\n" + "\n".join(messages)
@@ -395,14 +411,38 @@ def run_bot():
         try:
             sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
             for row in valid_signals:
-                sheet.append_row(row)
+                prepend_to_sheet(row)
+            clean_old_rows()
         except Exception as e:
             logging.warning(f"Không thể ghi sheet: {e}")
-
+        
     # ✅ Log tổng kết
     logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
+    
+def clean_old_rows():
+    try:
+        data = sheet.get_all_values()
+        headers = data[0]
+        rows = data[1:]
+        today = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
 
-def get_top_usdt_pairs(limit=50):
+        new_rows = []
+        for row in rows:
+            try:
+                row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
+                if (today - row_date).days <= 3:
+                    new_rows.append(row)
+            except:
+                new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
+
+        # Ghi lại: headers + rows mới
+        sheet.update([headers] + new_rows)
+        logging.info(f"🧹 Đã xoá những dòng quá 3 ngày (giữ lại {len(new_rows)} dòng)")
+
+    except Exception as e:
+        logging.warning(f"❌ Lỗi khi xoá dòng cũ: {e}")
+
+def get_top_usdt_pairs(limit=200):
     url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
     try:
         res = requests.get(url)
