@@ -67,7 +67,6 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
 
 def calculate_indicators(df):
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
-
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema100"] = df["close"].ewm(span=100).mean()
@@ -259,8 +258,13 @@ def run_bot():
     
         # ✅ Tính indicators trước
         df_15m = calculate_indicators(df_15m)
+        df_15m = df_15m.dropna()
+        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
+        
         df_1h = calculate_indicators(df_1h)
-    
+        df_1h = df_1h.dropna()
+        logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
+        
         # ✅ Sau đó mới kiểm tra đủ cột chưa
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
