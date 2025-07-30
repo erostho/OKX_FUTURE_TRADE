@@ -12,9 +12,9 @@ logger.setLevel(logging.DEBUG)  # luôn bật DEBUG
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
-TELEGRAM_TOKEN = '8467137353:AAFn2ualduQI8DIsIoy56ECWrf0eS82fwc0'
-TELEGRAM_CHAT_ID = '8467137353'
-SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQLyNCM0zVtZyDJZ6pPhhHv6EvQbgo1L0RgWhdwSOKc_TEr_qz_3b_zZkUO9HdIpElWmnqMddF_BIfZ/pub?gid=1144515173&single=true&output=csv'
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")
 
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
