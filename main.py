@@ -28,6 +28,9 @@ client = gspread.authorize(creds)
 
 # Kết nối đến file Google Sheet
 sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
+# ✅ Thêm 2 dòng debug này vào ngay sau khi tách sheet_id
+print(f"[DEBUG] sheet_id = {sheet_id}")
+print(f"[DEBUG] Opening worksheet = 'DATA_FUTURE'")
 sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
 
 # ========== THAM SỐ KỸ THUẬT ==========
