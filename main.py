@@ -279,79 +279,59 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-
 def run_bot():
-    logging.basicConfig(level=logging.INFO)
-    coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
+    logging.info("🚀 Bắt đầu phân tích tín hiệu...")
 
-    for symbol in coin_list:
-        logging.info(f"🔍 Phân tích {symbol}...")
-    
-        # ✅ Chuẩn hóa instId
-        inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-    
-        # ✅ Fetch nến
-        df_15m = fetch_ohlcv_okx(inst_id, "15m")
-        df_1h = fetch_ohlcv_okx(inst_id, "1h")
-    
-        # ✅ Bỏ qua nếu fetch lỗi
+    # Load danh sách coin
+    coin_list = fetch_coin_list()
+    logging.info(f"✅ Đã load {len(coin_list)} coin từ sheet.")
+
+    alert_coins = []   # Danh sách coin có tín hiệu mạnh để gửi Telegram
+    count_signal = 0   # Đếm số coin có tín hiệu hợp lệ
+
+    for row in coin_list:
+        symbol = row['symbol']
+        timeframe = row.get('timeframe', '15m')  # mặc định 15m nếu không có
+
+        df_15m = fetch_ohlcv_okx(symbol, timeframe)
+        df_1h = fetch_ohlcv_okx(symbol, '1h')
+
         if df_15m is None or df_1h is None:
             continue
-    
-        # ✅ Tính indicators trước
-        df_15m = calculate_indicators(df_15m)
-        df_15m = df_15m.dropna()
-        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
-        
-        df_1h = calculate_indicators(df_1h)
-        df_1h = df_1h.dropna()
-        logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
-        
-        # ✅ Sau đó mới kiểm tra đủ cột chưa
-        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
-        if not all(col in df_15m.columns for col in required_cols):
-            logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
-            continue
-    
-        # ✅ Kiểm tra null
-        if df_15m[required_cols].isnull().any().any():
-            logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
-            continue
-    
-        # ✅ Xử lý tín hiệu
-        signal, entry, sl = detect_signal(df_15m, df_1h, symbol)
-        if signal:
-            tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
-            short_trend, mid_trend = analyze_trend_multi(symbol)
 
-            message = f"""
-    🆕 *TÍN HIỆU MỚI*
-    
-    *Coin:* {symbol}
-    *Khung:* 15m
-    *Loại:* {signal}
-    *Entry:* {entry}
-    *SL:* {sl}
-    *TP:* {tp}
-    *Xu hướng:* {short_trend} / {mid_trend}
-    """
-    
-            send_telegram_message(message)
+        df_15m = dropna_tail(df_15m, 60)
+        df_1h = dropna_tail(df_1h, 60)
 
-            row = {
-                'symbol': symbol,
-                'signal': signal,
-                'entry': entry,
-                'sl': sl,
-                'tp': tp,
-                'short_trend': short_trend,
-                'mid_trend': mid_trend
-            }
+        entry_ok, sl, tp = check_entry(df_15m)
+        trend_ok, short_trend, mid_trend = check_trend(df_15m, df_1h)
+        adx_ok = check_adx(df_1h)
 
-            append_to_sheet(row)
+        if entry_ok and trend_ok and adx_ok:
+            row['entry'] = sl['entry']
+            row['sl'] = sl['sl']
+            row['tp'] = tp
+            row['short_trend'] = short_trend
+            row['mid_trend'] = mid_trend
 
-        time.sleep(1)
-    logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
+            row_data = append_to_sheet(row)
+            count_signal += 1
+
+            # Chỉ gửi Telegram nếu >= 3⭐️
+            strength = row.get("signal_strength", 0)
+            if strength >= 3:
+                alert_coins.append(row_data)
+
+    # Tổng kết và gửi Telegram nếu có tín hiệu mạnh
+    if alert_coins:
+        message = "📢 TÍN HIỆU MẠNH (≥ 3⭐️)\n\n"
+        for coin in alert_coins:
+            message += f"• {coin['Coin']} ({coin['Tín hiệu']}) - Entry: {coin['Giá vào']}\n"
+        send_telegram_message(message)
+    else:
+        logging.info("📭 Không có coin nào đạt tín hiệu mạnh (≥ 3⭐️).")
+
+    # Tổng kết log cuối
+    logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count_signal} coin thỏa điều kiện.")
 
 def get_top_usdt_pairs(limit=50):
     url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
