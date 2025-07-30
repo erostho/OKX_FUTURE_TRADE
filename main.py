@@ -41,30 +41,29 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
         if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
             logger.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
-
-        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logger.debug(f"📥 Gửi request nến OKX: {url}")
+        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={tf}&limit={limit}"
+        logging.debug(f"📩 Gửi request nến OKX: {url}")
         response = requests.get(url)
         data = response.json()
-        candles = data.get("data", [])
 
-        if not candles or "error" in data.get("msg", "").lower():
-            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {data.get('msg', 'Unknown')}")
+        if not data.get("data"):
+            logging.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{tf}]. Lỗi API: {data.get('msg')}")
             return None
 
-        if any(len(row) != 9 for row in candles):
-            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: Một số dòng không đủ 9 cột")
-            return None
+        # ✅ Chuyển về đúng định dạng DataFrame với đúng số cột (9)
+        columns = ['ts', 'open', 'high', 'low', 'close', 'volume', 'vol_ccy', 'vol_usdt', 'confirm']
+        df = pd.DataFrame(data['data'], columns=columns)
+        df = df.iloc[::-1].copy()
+        df['ts'] = pd.to_datetime(df['ts'], unit='ms')
 
-        df = pd.DataFrame(candles, columns=[
-            "ts", "open", "high", "low", "close", "volume", "volume_ccy", "ts2", "confirm"
-        ])
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-        df = df.sort_values("ts")
+        # ✅ Chuyển các cột số về float (tránh lỗi str-str)
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
         return df
 
     except Exception as e:
-        logger.error(f"❌ Exception khi fetch OHLCV cho {symbol} [{timeframe}]: {e}")
+        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
         return None
 
 
