@@ -360,7 +360,7 @@ def run_bot():
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
-            rating = calculate_signal_rating(signal, short_trend, mid_trend)  # ⭐️⭐️⭐️...
+            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
 
             if rating >= 3:
                 count += 1
