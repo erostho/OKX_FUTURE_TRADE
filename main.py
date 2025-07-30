@@ -115,7 +115,7 @@ def calculate_adx(df, period=14):
     df["adx"] = adx
     return df
     
-def detect_signal(df_15m, df_1h):
+def detect_signal(df_15m, df_1h, symbol):
     if df_15m is None or df_1h is None:
         return None, None, None
 
@@ -277,7 +277,7 @@ def run_bot():
             continue
     
         # ✅ Xử lý tín hiệu
-        signal, entry, sl = detect_signal(df_15m, df_1h)
+        signal, entry, sl = detect_signal(df_15m, df_1h, symbol)
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
