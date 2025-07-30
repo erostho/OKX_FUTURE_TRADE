@@ -28,52 +28,46 @@ import logging
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
-        # ✅ Chuẩn hóa timeframe
         timeframe_map = {
-            "1h": "1H", "4h": "4H", "1d": "1D",
-            "15m": "15m", "5m": "5m", "1m": "1m"
+            '1h': '1H', '4h': '4H', '1d': '1D',
+            '15m': '15m', '5m': '5m', '1m': '1m'
         }
         timeframe_input = timeframe
         timeframe = timeframe_map.get(timeframe.lower(), timeframe)
-
-        logging.debug(f"🔍 Timeframe input: {timeframe_input} => OKX dùng: {timeframe}")
+        logging.debug(f"🕒 Timeframe input: {timeframe_input} => OKX dùng: {timeframe}")
 
         if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
             logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
 
         url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logging.debug(f"🧪 Gửi request nến OKX: instId={symbol}, bar={timeframe}, limit={limit}")
-
+        logging.debug(f"📤 Gửi request nến OKX: instId={symbol}, bar={timeframe}, limit={limit}")
         response = requests.get(url)
         data = response.json()
-
         logging.debug(f"📥 Kết quả trả về từ OKX: status={response.status_code}, json={data}")
 
         if 'data' not in data or not data['data']:
-            logging.warning(
-                f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. "
-                f"Lỗi API: {data.get('msg', '')} | Mã lỗi: {data.get('code', '')}"
-            )
+            logging.warning(f"⚠️ Không có dữ liệu OHLCV: instId={symbol}, bar={timeframe}")
             return None
 
-        df = pd.DataFrame(data['data'])
+        df = pd.DataFrame(data["data"])
         df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
-        df = df.iloc[::-1].copy()
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-        for col in ["open", "high", "low", "close", "volume"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.iloc[::-1].copy()
+
+        # ✅ Chuyển các cột số sang float để tránh lỗi toán học
+        for col in ['open', 'high', 'low', 'close', 'volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
         return df
 
     except Exception as e:
-        logging.error(f"❌ Lỗi khi fetch OHLCV OKX cho {symbol} [{timeframe}]: {e}")
+        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe_input}]: {e}")
         return None
 
 def calculate_indicators(df):
-    # ✅ Ép kiểu float để tránh lỗi phép toán
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
 
-    # EMA
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
     df["ema100"] = df["close"].ewm(span=100).mean()
@@ -88,10 +82,10 @@ def calculate_indicators(df):
     df["rsi"] = 100 - (100 / (1 + rs))
 
     # MACD
-    exp1 = df['close'].ewm(span=12).mean()
-    exp2 = df['close'].ewm(span=26).mean()
-    df['macd'] = exp1 - exp2
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+    exp1 = df["close"].ewm(span=12).mean()
+    exp2 = df["close"].ewm(span=26).mean()
+    df["macd"] = exp1 - exp2
+    df["macd_signal"] = df["macd"].ewm(span=9).mean()
 
     return df
 
@@ -261,6 +255,10 @@ def run_bot():
             
         df_15m = calculate_indicators(df_15m)
         df_1h = calculate_indicators(df_1h)
+        # 🪛 Debug check các cột thực sự tồn tại
+        logging.debug(f"📊 Cột df_15m sau indicators: {df_15m.columns}")
+        logging.debug(f"🔍 Null check df_15m['macd_signal']: {df_15m['macd_signal'].isnull().sum()} null values trên {len(df_15m)} dòng")
+
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
             logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
