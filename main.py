@@ -148,21 +148,13 @@ def calculate_adx(df, period=14):
     return df
     
 def detect_signal(df_15m, df_1h, symbol):
-    try:
-        vol_now = df_15m['volume'].iloc[-1]
-        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > vol_avg
-        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
-    except Exception as e:
-        logging.warning(f"{symbol}: Không tính được volume: {e}")
-        volume_ok = False
-
-    if not volume_ok:
-        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
+    if df_15m is None or df_1h is None:
         return None, None, None
 
     latest = df_15m.iloc[-1]
+    signal = None
 
+    # --- Entry Conditions ---
     entry_long = (
         latest['rsi'] > 60 and
         latest['macd'] > latest['macd_signal'] and
@@ -177,47 +169,56 @@ def detect_signal(df_15m, df_1h, symbol):
         (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01
     )
 
-    if entry_long:
-        entry = latest['close']
-        sl = df_15m['low'].iloc[-5:].min()
-        return "LONG", entry, sl
+    # --- Volume ---
+    try:
+        vol_now = df_15m['volume'].iloc[-1]
+        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+        volume_ok = vol_now > 0.8 * vol_avg
+        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
+    except Exception as e:
+        logging.warning(f"{symbol}: Không tính được volume: {e}")
+        volume_ok = False
 
-    elif entry_short:
-        entry = latest['close']
-        sl = df_15m['high'].iloc[-5:].max()
-        return "SHORT", entry, sl
+    if not volume_ok:
+        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
+        return None, None, None
 
-    return None, None, None
-    
-    # Lọc xu hướng (1H)
+    # --- Xu hướng khung 1H ---
     df1h = df_1h.copy()
     trend_up = (
-        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
-        and df1h['adx'].iloc[-1] > ADX_THRESHOLD
+        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1] and
+        df1h['adx'].iloc[-1] > 20
     )
-    if len(df1h) < 50 or df1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
-        return None, None, None  # Bỏ qua nếu thiếu dữ liệu kỹ thuật
-    
-    trend_up = (
-        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
-        and df1h['adx'].iloc[-1] > ADX_THRESHOLD
+    trend_down = (
+        df1h['ema20'].iloc[-1] < df1h['ema50'].iloc[-1] < df1h['ema100'].iloc[-1] and
+        df1h['adx'].iloc[-1] > 20
     )
 
-    if entry_long and trend_up:
-        return 'LONG', latest['close'], latest['low']
-    elif entry_short and trend_down:
-        return 'SHORT', latest['close'], latest['high']
-    else:
-        return None, None, None
     if entry_long:
-        logging.info("✅ Tín hiệu LONG thoả điều kiện!")
-        return 'LONG', latest['close'], latest['low']
+        signal = "LONG"
     elif entry_short:
-        logging.info("✅ Tín hiệu SHORT thoả điều kiện!")
-        return 'SHORT', latest['close'], latest['high']
+        signal = "SHORT"
     else:
-        logging.info("❌ Không thoả điều kiện LONG hoặc SHORT.")
         return None, None, None
+
+    # --- Chống ngược chiều 3 nến gần nhất ---
+    recent_candles = df_15m[-3:]
+    green_candles = (recent_candles['close'] > recent_candles['open']).sum()
+    red_candles = (recent_candles['close'] < recent_candles['open']).sum()
+
+    if signal == "SHORT" and green_candles >= 3:
+        logging.warning(f"{symbol}: 3 nến gần nhất là nến tăng → BỎ QUA SHORT")
+        return None, None, None
+
+    if signal == "LONG" and red_candles >= 3:
+        logging.warning(f"{symbol}: 3 nến gần nhất là nến giảm → BỎ QUA LONG")
+        return None, None, None
+
+    # --- Entry / SL ---
+    entry = latest['close']
+    sl = latest['ema50']  # hoặc bạn có thể dùng các mức thấp hơn nếu cần
+
+    return signal, entry, sl
 
 def analyze_trend_multi(symbol):
     tf_map = {
