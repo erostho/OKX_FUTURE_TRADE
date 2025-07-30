@@ -91,16 +91,15 @@ def calculate_indicators(df):
 
 
 def calculate_adx(df, period=14):
-    high = df['high']
-    low = df['low']
-    close = df['close']
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    close = pd.to_numeric(df["close"], errors="coerce")
 
     plus_dm = high.diff()
     minus_dm = low.diff()
-
     plus_dm[plus_dm < 0] = 0
     minus_dm[minus_dm > 0] = 0
-    minus_dm = minus_dm.abs()
+    minus_dm = abs(minus_dm)
 
     tr1 = high - low
     tr2 = abs(high - close.shift())
@@ -108,13 +107,13 @@ def calculate_adx(df, period=14):
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
 
     atr = tr.rolling(window=period).mean()
-
     plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
     minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
-
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
     adx = dx.rolling(window=period).mean()
-    return adx
+
+    df["adx"] = adx
+    return df
     
 def detect_signal(df_15m, df_1h):
     if df_15m is None or df_1h is None:
