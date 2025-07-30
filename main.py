@@ -288,6 +288,7 @@ def run_bot():
     *SL:* {sl}
     *TP:* {tp}
     *Xu hướng:* {short_trend} / {mid_trend}
+    """
     
             send_telegram_message(message)
 
