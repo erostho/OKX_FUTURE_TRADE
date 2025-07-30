@@ -279,6 +279,20 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
+def calculate_signal_rating(signal, short_trend, mid_trend):
+    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
+        return 5
+    elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
+        return 5
+    elif short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
+        return 4
+    elif short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
+        return 4
+    elif signal in ["LONG", "SHORT"]:
+        return 3
+    else:
+        return 2
+
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
