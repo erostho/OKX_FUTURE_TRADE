@@ -191,17 +191,23 @@ def detect_signal(df_15m, df_1h, symbol):
     
 
     entry_long = (
-        latest['rsi'] < 60 and
+        latest['rsi'] > 60 and                              # RSI cao rõ ràng hơn
         latest['macd'] > latest['macd_signal'] and
-        latest['ema20'] > latest['ema50']
+        latest['ema20'] > latest['ema50'] and
+        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01  # EMA chênh lệch > 1%
     )
-
+    
     entry_short = (
-        latest['rsi'] > 40 and
+        latest['rsi'] < 40 and                              # RSI thấp rõ ràng hơn
         latest['macd'] < latest['macd_signal'] and
-        latest['ema20'] < latest['ema50']
+        latest['ema20'] < latest['ema50'] and
+        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01  # EMA chênh lệch > 1%
     )
-
+    
+    if not volume_ok:
+        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
+        continue
+    
     # Lọc xu hướng (1H)
     df1h = df_1h.copy()
     trend_up = (
@@ -280,7 +286,8 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-def calculate_signal_rating(signal, short_trend, mid_trend):
+def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok=True):
+    rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
     if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
@@ -315,9 +322,15 @@ def run_bot():
 
         df_15m = calculate_indicators(df_15m).dropna()
         df_1h = calculate_indicators(df_1h).dropna()
-
-        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
-        logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
+        # ✅ Tính volume hiện tại và trung bình 20 nến gần nhất
+        try:
+            vol_now = df_15m['volume'].iloc[-1]
+            vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+            volume_ok = vol_now > 1.5 * vol_avg
+            logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.0f}, TB 20 nến = {vol_avg:.0f}, volume_ok = {volume_ok}")
+        except Exception as e:
+            logging.warning(f"{symbol}: Không tính được volume_ok: {e}")
+            volume_ok = False
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
