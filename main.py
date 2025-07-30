@@ -206,7 +206,7 @@ def detect_signal(df_15m, df_1h, symbol):
     
     if not volume_ok:
         logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
-        continue
+        return None, None, None
     
     # Lọc xu hướng (1H)
     df1h = df_1h.copy()
