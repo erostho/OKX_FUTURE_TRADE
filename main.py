@@ -174,39 +174,46 @@ def calculate_adx(df, period=14):
     return df
     
 def detect_signal(df_15m, df_1h, symbol):
-    if df_15m is None or df_1h is None:
-        return None, None, None
+    try:
+        vol_now = df_15m['volume'].iloc[-1]
+        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+        volume_ok = vol_now > 1.5 * vol_avg
+        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
+    except Exception as e:
+        logging.warning(f"{symbol}: Không tính được volume: {e}")
+        volume_ok = False
 
-    if len(df_15m) < 50 or df_15m[['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']].isnull().any().any():
-        return None, None, None
-        
-    if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
-        return None, None, None
-    latest = df_15m.iloc[-1]
-    trend_up = df_1h['ema20'].iloc[-1] > df_1h['ema50'].iloc[-1]
-    trend_down = df_1h['ema20'].iloc[-1] < df_1h['ema50'].iloc[-1]
-    logging.debug(f"{symbol}: RSI={latest['rsi']}, MACD={latest['macd']}, MACD_SIGNAL={latest['macd_signal']}, EMA20={latest['ema20']}, EMA50={latest['ema50']}, Volume={latest['volume']:.0f}")
-    logging.debug(f"{symbol}: entry_long check: RSI<60? {latest['rsi'] < 60}, MACD>signal? {latest['macd'] > latest['macd_signal']}, EMA20>EMA50? {latest['ema20'] > latest['ema50']}")
-    logging.debug(f"{symbol}: entry_short check: RSI>40? {latest['rsi'] > 40}, MACD<signal? {latest['macd'] < latest['macd_signal']}, EMA20<EMA50? {latest['ema20'] < latest['ema50']}")
-    
-
-    entry_long = (
-        latest['rsi'] > 60 and                              # RSI cao rõ ràng hơn
-        latest['macd'] > latest['macd_signal'] and
-        latest['ema20'] > latest['ema50'] and
-        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01  # EMA chênh lệch > 1%
-    )
-    
-    entry_short = (
-        latest['rsi'] < 40 and                              # RSI thấp rõ ràng hơn
-        latest['macd'] < latest['macd_signal'] and
-        latest['ema20'] < latest['ema50'] and
-        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01  # EMA chênh lệch > 1%
-    )
-    
     if not volume_ok:
         logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
         return None, None, None
+
+    latest = df_15m.iloc[-1]
+
+    entry_long = (
+        latest['rsi'] > 60 and
+        latest['macd'] > latest['macd_signal'] and
+        latest['ema20'] > latest['ema50'] and
+        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01
+    )
+
+    entry_short = (
+        latest['rsi'] < 40 and
+        latest['macd'] < latest['macd_signal'] and
+        latest['ema20'] < latest['ema50'] and
+        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01
+    )
+
+    if entry_long:
+        entry = latest['close']
+        sl = df_15m['low'].iloc[-5:].min()
+        return "LONG", entry, sl
+
+    elif entry_short:
+        entry = latest['close']
+        sl = df_15m['high'].iloc[-5:].max()
+        return "SHORT", entry, sl
+
+    return None, None, None
     
     # Lọc xu hướng (1H)
     df1h = df_1h.copy()
