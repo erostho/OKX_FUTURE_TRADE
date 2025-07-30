@@ -28,27 +28,32 @@ import logging
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
-        # ✅ CHUẨN HOÁ timeframe
-        timeframe = timeframe.lower()
-        if timeframe == '1H':
-            timeframe = '1h'
-        elif timeframe == '15M':
-            timeframe = '15m'
+        # ✅ Map timeframe về đúng định dạng OKX yêu cầu
+        timeframe_map = {
+            '1h': '1H',
+            '4h': '4H',
+            '1d': '1D',
+            '15m': '15m',
+            '5m': '5m',
+            '1m': '1m'
+        }
+        timeframe = timeframe_map.get(timeframe.lower(), timeframe)
+        if timeframe not in ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]:
+            logger.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
+            return None
 
         url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
         logger.debug(f"📥 Gửi request nến OKX: {url}")
-
         response = requests.get(url)
         data = response.json()
         candles = data.get("data", [])
 
-        if not candles or 'error' in data.get('msg', '').lower():
+        if not candles or "error" in data.get("msg", "").lower():
             logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {data.get('msg', 'Unknown')}")
             return None
 
-        # ✅ Check đúng số lượng cột là 9
         if any(len(row) != 9 for row in candles):
-            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: Một số dòng không có đủ 9 cột")
+            logger.error(f"❌ Lỗi khi fetch OHLCV cho {symbol} [{timeframe}]: Một số dòng không đủ 9 cột")
             return None
 
         df = pd.DataFrame(candles, columns=[
