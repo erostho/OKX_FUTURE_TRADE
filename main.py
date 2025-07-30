@@ -12,8 +12,8 @@ from pytz import timezone
 import pytz
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.DEBUG)  # luôn bật DEBUG
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -55,8 +55,34 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
         strength += 1
     if short_trend == mid_trend:
         strength += 1
-    return "⭐️" * min(strength, 5)
+    return '⭐' * min(strength, 5)
 
+def append_to_sheet(row: dict):
+    now = datetime.datetime.now(timezone('Asia/Ho_Chi_Minh')).strftime("%d/%m/%Y %H:%M")
+    signal_text = f"{row['signal']} {rate_signal_strength(row['entry'], row['sl'], row['tp'], row['short_trend'], row['mid_trend'])}"
+
+    row_data = [
+        row['symbol'],
+        signal_text,
+        row['entry'],
+        row['sl'],
+        row['tp'],
+        row['short_trend'],
+        row['mid_trend'],
+        now
+    ]
+
+    try:
+        sheet_data = sheet.get_all_records()
+        if any(r['Coin'] == row['symbol'] and r['Tín hiệu'].startswith(row['signal']) for r in sheet_data):
+            logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
+            return
+
+        logging.info(f"Ghi tín hiệu mới vào sheet: {row['symbol']} {row['signal']}")
+        sheet.append_row(row_data)
+
+    except Exception as e:
+        logging.warning(f"Không thể ghi sheet: {e}")
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
@@ -84,7 +110,7 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
 
         df = pd.DataFrame(data["data"])
         df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
-        df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")  # ✅ an toàn hơn
+        df["ts"] = pd.to_datetime(df["ts"], unit="ms")
         df = df.iloc[::-1].copy()
 
         # ✅ Chuyển các cột số sang float để tránh lỗi toán học
@@ -151,74 +177,60 @@ def detect_signal(df_15m, df_1h, symbol):
     if df_15m is None or df_1h is None:
         return None, None, None
 
+    if len(df_15m) < 50 or df_15m[['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']].isnull().any().any():
+        return None, None, None
+        
+    if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
+        return None, None, None
     latest = df_15m.iloc[-1]
-    signal = None
+    trend_up = df_1h['ema20'].iloc[-1] > df_1h['ema50'].iloc[-1]
+    trend_down = df_1h['ema20'].iloc[-1] < df_1h['ema50'].iloc[-1]
+    logging.debug(f"{symbol}: RSI={latest['rsi']}, MACD={latest['macd']}, MACD_SIGNAL={latest['macd_signal']}, EMA20={latest['ema20']}, EMA50={latest['ema50']}, Volume={latest['volume']:.0f}")
+    logging.debug(f"{symbol}: entry_long check: RSI<60? {latest['rsi'] < 60}, MACD>signal? {latest['macd'] > latest['macd_signal']}, EMA20>EMA50? {latest['ema20'] > latest['ema50']}")
+    logging.debug(f"{symbol}: entry_short check: RSI>40? {latest['rsi'] > 40}, MACD<signal? {latest['macd'] < latest['macd_signal']}, EMA20<EMA50? {latest['ema20'] < latest['ema50']}")
+    
 
-    # --- Entry Conditions ---
     entry_long = (
-        latest['rsi'] > 60 and
+        latest['rsi'] < 60 and
         latest['macd'] > latest['macd_signal'] and
-        latest['ema20'] > latest['ema50'] and
-        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01
+        latest['ema20'] > latest['ema50']
     )
 
     entry_short = (
-        latest['rsi'] < 40 and
+        latest['rsi'] > 40 and
         latest['macd'] < latest['macd_signal'] and
-        latest['ema20'] < latest['ema50'] and
-        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01
+        latest['ema20'] < latest['ema50']
     )
 
-    # --- Volume ---
-    try:
-        vol_now = df_15m['volume'].iloc[-1]
-        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > 0.8 * vol_avg
-        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
-    except Exception as e:
-        logging.warning(f"{symbol}: Không tính được volume: {e}")
-        volume_ok = False
-
-    if not volume_ok:
-        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
-        return None, None, None
-
-    # --- Xu hướng khung 1H ---
+    # Lọc xu hướng (1H)
     df1h = df_1h.copy()
     trend_up = (
-        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1] and
-        df1h['adx'].iloc[-1] > 20
+        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
+        and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
-    trend_down = (
-        df1h['ema20'].iloc[-1] < df1h['ema50'].iloc[-1] < df1h['ema100'].iloc[-1] and
-        df1h['adx'].iloc[-1] > 20
+    if len(df1h) < 50 or df1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
+        return None, None, None  # Bỏ qua nếu thiếu dữ liệu kỹ thuật
+    
+    trend_up = (
+        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1]
+        and df1h['adx'].iloc[-1] > ADX_THRESHOLD
     )
 
-    if entry_long:
-        signal = "LONG"
-    elif entry_short:
-        signal = "SHORT"
+    if entry_long and trend_up:
+        return 'LONG', latest['close'], latest['low']
+    elif entry_short and trend_down:
+        return 'SHORT', latest['close'], latest['high']
     else:
         return None, None, None
-
-    # --- Chống ngược chiều 3 nến gần nhất ---
-    recent_candles = df_15m[-3:]
-    green_candles = (recent_candles['close'] > recent_candles['open']).sum()
-    red_candles = (recent_candles['close'] < recent_candles['open']).sum()
-
-    if signal == "SHORT" and green_candles >= 3:
-        logging.warning(f"{symbol}: 3 nến gần nhất là nến tăng → BỎ QUA SHORT")
+    if entry_long:
+        logging.info("✅ Tín hiệu LONG thoả điều kiện!")
+        return 'LONG', latest['close'], latest['low']
+    elif entry_short:
+        logging.info("✅ Tín hiệu SHORT thoả điều kiện!")
+        return 'SHORT', latest['close'], latest['high']
+    else:
+        logging.info("❌ Không thoả điều kiện LONG hoặc SHORT.")
         return None, None, None
-
-    if signal == "LONG" and red_candles >= 3:
-        logging.warning(f"{symbol}: 3 nến gần nhất là nến giảm → BỎ QUA LONG")
-        return None, None, None
-
-    # --- Entry / SL ---
-    entry = latest['close']
-    sl = latest['ema50']  # hoặc bạn có thể dùng các mức thấp hơn nếu cần
-
-    return signal, entry, sl
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -268,8 +280,8 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
-    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
+def calculate_signal_rating(signal, short_trend, mid_trend):
+    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
         return 5
@@ -281,22 +293,6 @@ def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
         return 3
     else:
         return 2
-        
-def prepend_to_sheet(row_data: list):
-    try:
-        old_data = sheet.get_all_values()
-        headers = old_data[0]
-        body = old_data[1:]
-        
-        # Chèn dòng mới vào đầu
-        body.insert(0, row_data)
-
-        # Ghi lại toàn bộ (bao gồm cả header)
-        sheet.update([headers] + body)
-        logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
-
-    except Exception as e:
-        logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
 
 def run_bot():
     logging.basicConfig(level=logging.INFO)
@@ -319,15 +315,9 @@ def run_bot():
 
         df_15m = calculate_indicators(df_15m).dropna()
         df_1h = calculate_indicators(df_1h).dropna()
-        # ✅ Tính volume hiện tại và trung bình 20 nến gần nhất
-        try:
-            vol_now = df_15m['volume'].iloc[-1]
-            vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-            volume_ok = vol_now > 0.6 * vol_avg
-            logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.0f}, TB 20 nến = {vol_avg:.0f}, volume_ok = {volume_ok}")
-        except Exception as e:
-            logging.warning(f"{symbol}: Không tính được volume_ok: {e}")
-            volume_ok = False
+
+        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
+        logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
@@ -343,30 +333,31 @@ def run_bot():
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
-            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
+            rating = calculate_signal_rating(signal, short_trend, mid_trend)  # ⭐️⭐️⭐️...
 
-            now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 1
-            count += 1
-            valid_signals.append([
-                symbol,
-                signal + " " + ("⭐️" * rating),
-                entry,
-                sl,
-                tp,
-                short_trend,
-                mid_trend,
-                now
-            ])
-            
-            # 🟡 GỬI TELEGRAM nếu rating >= 3
             if rating >= 3:
+                count += 1
+                now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+
+                # Soạn tin nhắn Telegram
                 messages.append(
-                    f"{symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})"
+                    f"• {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️'*rating})"
                 )
-        
+
+                # Lưu dòng sheet
+                valid_signals.append([
+                    symbol,
+                    signal + " " + ("⭐️" * rating),
+                    entry,
+                    sl,
+                    tp,
+                    short_trend,
+                    mid_trend,
+                    now
+                ])
+
         time.sleep(1)
-    
+
     # ✅ Gửi 1 tin nhắn tổng hợp
     if messages:
         message = "🆕 *TỔNG HỢP TÍN HIỆU MỚI*\n\n" + "\n".join(messages)
@@ -377,38 +368,14 @@ def run_bot():
         try:
             sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
             for row in valid_signals:
-                prepend_to_sheet(row)
-            clean_old_rows()
+                sheet.append_row(row)
         except Exception as e:
             logging.warning(f"Không thể ghi sheet: {e}")
-        
+
     # ✅ Log tổng kết
     logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
-    
-def clean_old_rows():
-    try:
-        data = sheet.get_all_values()
-        headers = data[0]
-        rows = data[1:]
-        today = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
 
-        new_rows = []
-        for row in rows:
-            try:
-                row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
-                if (today - row_date).days <= 3:
-                    new_rows.append(row)
-            except:
-                new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
-
-        # Ghi lại: headers + rows mới
-        sheet.update([headers] + new_rows)
-        logging.info(f"🧹 Đã xoá những dòng quá 3 ngày (giữ lại {len(new_rows)} dòng)")
-
-    except Exception as e:
-        logging.warning(f"❌ Lỗi khi xoá dòng cũ: {e}")
-
-def get_top_usdt_pairs(limit=200):
+def get_top_usdt_pairs(limit=50):
     url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
     try:
         res = requests.get(url)
