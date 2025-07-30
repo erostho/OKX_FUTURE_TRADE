@@ -252,18 +252,19 @@ def run_bot():
 
         # ✅ Chuẩn hóa instId
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-
         df_15m = fetch_ohlcv_okx(inst_id, "15m")
         df_1h = fetch_ohlcv_okx(inst_id, "1h")
-        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if df_15m is None or df_1h is None:
-            continue
+            continue        
+            
+        df_15m = calculate_indicators(df_15m)
+        df_1h = calculate_indicators(df_1h)
+        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
             logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
             continue
 
-        df_15m = calculate_indicators(df_15m)
-        df_1h = calculate_indicators(df_1h)
+
 
         signal, entry, sl = detect_signal(df_15m, df_1h)
         if signal:
