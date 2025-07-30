@@ -174,34 +174,47 @@ def calculate_adx(df, period=14):
     return df
     
 def detect_signal(df_15m, df_1h, symbol):
-    if df_15m is None or df_1h is None:
+    try:
+        vol_now = df_15m['volume'].iloc[-1]
+        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+        volume_ok = vol_now > vol_avg
+        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
+    except Exception as e:
+        logging.warning(f"{symbol}: Không tính được volume: {e}")
+        volume_ok = False
+
+    if not volume_ok:
+        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
         return None, None, None
 
-    if len(df_15m) < 50 or df_15m[['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']].isnull().any().any():
-        return None, None, None
-        
-    if len(df_1h) < 50 or df_1h[['ema20', 'ema50', 'ema100', 'adx']].isnull().any().any():
-        return None, None, None
     latest = df_15m.iloc[-1]
-    trend_up = df_1h['ema20'].iloc[-1] > df_1h['ema50'].iloc[-1]
-    trend_down = df_1h['ema20'].iloc[-1] < df_1h['ema50'].iloc[-1]
-    logging.debug(f"{symbol}: RSI={latest['rsi']}, MACD={latest['macd']}, MACD_SIGNAL={latest['macd_signal']}, EMA20={latest['ema20']}, EMA50={latest['ema50']}, Volume={latest['volume']:.0f}")
-    logging.debug(f"{symbol}: entry_long check: RSI<60? {latest['rsi'] < 60}, MACD>signal? {latest['macd'] > latest['macd_signal']}, EMA20>EMA50? {latest['ema20'] > latest['ema50']}")
-    logging.debug(f"{symbol}: entry_short check: RSI>40? {latest['rsi'] > 40}, MACD<signal? {latest['macd'] < latest['macd_signal']}, EMA20<EMA50? {latest['ema20'] < latest['ema50']}")
-    
 
     entry_long = (
-        latest['rsi'] < 60 and
+        latest['rsi'] > 60 and
         latest['macd'] > latest['macd_signal'] and
-        latest['ema20'] > latest['ema50']
+        latest['ema20'] > latest['ema50'] and
+        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01
     )
 
     entry_short = (
-        latest['rsi'] > 40 and
+        latest['rsi'] < 40 and
         latest['macd'] < latest['macd_signal'] and
-        latest['ema20'] < latest['ema50']
+        latest['ema20'] < latest['ema50'] and
+        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01
     )
 
+    if entry_long:
+        entry = latest['close']
+        sl = df_15m['low'].iloc[-5:].min()
+        return "LONG", entry, sl
+
+    elif entry_short:
+        entry = latest['close']
+        sl = df_15m['high'].iloc[-5:].max()
+        return "SHORT", entry, sl
+
+    return None, None, None
+    
     # Lọc xu hướng (1H)
     df1h = df_1h.copy()
     trend_up = (
@@ -280,8 +293,16 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-def calculate_signal_rating(signal, short_trend, mid_trend):
-    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
+def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
+    """
+    Tính điểm tín hiệu (1–5 sao) dựa trên:
+    - Tín hiệu LONG/SHORT
+    - Xu hướng ngắn hạn và trung hạn
+    - Volume (chỉ áp dụng cho LONG)
+
+    Trả về: số nguyên từ 2–5
+    """
+    if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
         return 5
@@ -315,9 +336,15 @@ def run_bot():
 
         df_15m = calculate_indicators(df_15m).dropna()
         df_1h = calculate_indicators(df_1h).dropna()
-
-        logging.debug(f"Số dòng df_15m sau dropna: {len(df_15m)}")
-        logging.debug(f"Số dòng df_1h sau dropna: {len(df_1h)}")
+        # ✅ Tính volume hiện tại và trung bình 20 nến gần nhất
+        try:
+            vol_now = df_15m['volume'].iloc[-1]
+            vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+            volume_ok = vol_now = 0.8 * vol_avg
+            logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.0f}, TB 20 nến = {vol_avg:.0f}, volume_ok = {volume_ok}")
+        except Exception as e:
+            logging.warning(f"{symbol}: Không tính được volume_ok: {e}")
+            volume_ok = False
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
@@ -333,9 +360,9 @@ def run_bot():
         if signal:
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
-            rating = calculate_signal_rating(signal, short_trend, mid_trend)  # ⭐️⭐️⭐️...
+            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
 
-            if rating >= 3:
+            if rating >= 2:
                 count += 1
                 now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
 
