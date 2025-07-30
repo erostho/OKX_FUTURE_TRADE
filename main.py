@@ -28,43 +28,45 @@ import logging
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
-        # ✅ Map timeframe về đúng định dạng OKX yêu cầu
+        # ✅ Chuẩn hóa timeframe
         timeframe_map = {
-            '1h': '1H',
-            '4h': '4H',
-            '1d': '1D',
-            '15m': '15m',
-            '5m': '5m',
-            '1m': '1m'
+            "1h": "1H", "4h": "4H", "1d": "1D",
+            "15m": "15m", "5m": "5m", "1m": "1m"
         }
+        timeframe_input = timeframe
         timeframe = timeframe_map.get(timeframe.lower(), timeframe)
+
+        logging.debug(f"🔍 Timeframe input: {timeframe_input} => OKX dùng: {timeframe}")
 
         if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
             logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
 
         url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logging.debug(f"📉 Gửi request nến OKX: {url}")
+        logging.debug(f"🧪 Gửi request nến OKX: instId={symbol}, bar={timeframe}, limit={limit}")
+
         response = requests.get(url)
         data = response.json()
 
-        if not data.get("data"):
-            logging.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {data.get('msg', '')}")
+        logging.debug(f"📥 Kết quả trả về từ OKX: status={response.status_code}, json={data}")
+
+        if 'data' not in data or not data['data']:
+            logging.warning(
+                f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. "
+                f"Lỗi API: {data.get('msg', '')} | Mã lỗi: {data.get('code', '')}"
+            )
             return None
 
-        df = pd.DataFrame(data["data"])
+        df = pd.DataFrame(data['data'])
         df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
-
         df = df.iloc[::-1].copy()
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
-
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
-
         return df
 
     except Exception as e:
-        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
+        logging.error(f"❌ Lỗi khi fetch OHLCV OKX cho {symbol} [{timeframe}]: {e}")
         return None
 
 def calculate_indicators(df):
