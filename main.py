@@ -18,7 +18,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")  # Đặt lại biến nếu chưa có
 # Cấu hình scope
-scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
 
 # Đọc file JSON credentials đã upload lên Render (tên phải là service_account.json)
 creds = ServiceAccountCredentials.from_json_keyfile_name('/etc/secrets/service_account.json', scope)
@@ -27,11 +27,15 @@ creds = ServiceAccountCredentials.from_json_keyfile_name('/etc/secrets/service_a
 client = gspread.authorize(creds)
 
 # Kết nối đến file Google Sheet
-sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
 # ✅ Thêm 2 dòng debug này vào ngay sau khi tách sheet_id
-print(f"[DEBUG] sheet_id = {sheet_id}")
-print(f"[DEBUG] Opening worksheet = 'DATA_FUTURE'")
-sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
+try:
+    sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
+    print(f"[DEBUG] sheet_id = {sheet_id}")
+    sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
+    print("[DEBUG] Đã mở sheet thành công.")
+except Exception as e:
+    print(f"[ERROR] Không mở được sheet: {e}")
+    raise
 
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
