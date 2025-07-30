@@ -55,34 +55,8 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
         strength += 1
     if short_trend == mid_trend:
         strength += 1
-    return '⭐' * min(strength, 5)
+    return "⭐️" * min(strength, 5)
 
-def append_to_sheet(row: dict):
-    now = datetime.datetime.now(timezone('Asia/Ho_Chi_Minh')).strftime("%d/%m/%Y %H:%M")
-    signal_text = f"{row['signal']} {rate_signal_strength(row['entry'], row['sl'], row['tp'], row['short_trend'], row['mid_trend'])}"
-
-    row_data = [
-        row['symbol'],
-        signal_text,
-        row['entry'],
-        row['sl'],
-        row['tp'],
-        row['short_trend'],
-        row['mid_trend'],
-        now
-    ]
-
-    try:
-        sheet_data = sheet.get_all_records()
-        if any(r['Coin'] == row['symbol'] and r['Tín hiệu'].startswith(row['signal']) for r in sheet_data):
-            logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
-            return
-
-        logging.info(f"Ghi tín hiệu mới vào sheet: {row['symbol']} {row['signal']}")
-        sheet.append_row(row_data)
-
-    except Exception as e:
-        logging.warning(f"Không thể ghi sheet: {e}")
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
@@ -294,14 +268,6 @@ def send_telegram_message(message: str):
         print(f"❌ Lỗi gửi Telegram: {e}")
 
 def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
-    """
-    Tính điểm tín hiệu (1–5 sao) dựa trên:
-    - Tín hiệu LONG/SHORT
-    - Xu hướng ngắn hạn và trung hạn
-    - Volume (chỉ áp dụng cho LONG)
-
-    Trả về: số nguyên từ 2–5
-    """
     if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
