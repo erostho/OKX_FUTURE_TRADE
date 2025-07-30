@@ -199,17 +199,30 @@ def analyze_trend_multi(symbol):
 
     return to_text(short_score), to_text(mid_score)
     
-def send_telegram(msg: str):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+import requests
+import os
+
+def send_telegram_message(message: str):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")  # hoặc ghi trực tiếp chuỗi token nếu bạn test thủ công
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")      # tương tự, gán chat_id thủ công nếu cần
+
+    if not bot_token or not chat_id:
+        print("❌ TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID chưa được cấu hình.")
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": msg,
+        "chat_id": chat_id,
+        "text": message,
         "parse_mode": "Markdown"
     }
+
     try:
-        requests.post(url, json=payload, timeout=10)
+        response = requests.post(url, data=payload)
+        response.raise_for_status()
+        print("✅ Đã gửi tin nhắn Telegram.")
     except Exception as e:
-        logging.error(f"Lỗi gửi Telegram: {e}")
+        print(f"❌ Lỗi gửi Telegram: {e}")
 
 
 def append_to_sheet(row: dict):
