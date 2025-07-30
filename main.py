@@ -43,6 +43,30 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
+def append_to_sheet(row: dict):
+    now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+    row_data = [
+        row['symbol'],
+        row['signal'],
+        row['entry'],
+        row['sl'],
+        row['tp'],
+        row['short_trend'],
+        row['mid_trend'],
+        now
+    ]
+
+    try:
+        sheet_data = sheet.get_all_records()
+        if any(r['Coin'] == row['symbol'] and r['Tín hiệu'] == row['signal'] for r in sheet_data):
+            logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
+            return
+
+        logging.info(f"Ghi tín hiệu mới vào sheet: {row['symbol']} {row['signal']}")
+        sheet.append_row(row_data)
+    
+    except Exception as e:
+        logging.warning(f"Không thể ghi sheet: {e}")
 
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
@@ -240,33 +264,6 @@ def send_telegram_message(message: str):
     except Exception as e:
         print(f"❌ Lỗi gửi Telegram: {e}")
 
-
-def append_to_sheet(row: dict):
-    now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    row_data = {
-        'Coin': row['symbol'],
-        'Tín hiệu': row['signal'],
-        'Giá vào': row['entry'],
-        'SL': row['sl'],
-        'TP': row['tp'],
-        'Xu hướng ngắn hạn': row['short_trend'],
-        'Xu hướng trung hạn': row['mid_trend'],
-        'Ngày': now
-    }
-
-    sheet_url = SHEET_CSV_URL.replace("/pub?", "/gviz/tq?tqx=out:csv&")
-    try:
-        sheet_df = pd.read_csv(sheet_url)
-        if 'Coin' in sheet_df.columns:
-            if any((sheet_df['Coin'] == row['symbol']) & (sheet_df['Tín hiệu'] == row['signal'])):
-                logging.info(f"Đã có tín hiệu {row['symbol']} {row['signal']} → bỏ qua.")
-                return
-    except:
-        logging.warning("Không kiểm tra được sheet cũ → ghi thêm.")
-
-    sheet_append_url = SHEET_CSV_URL.replace('/edit?gid=', '/formResponse?gid=')
-    logging.warning("Google Sheet đang ở dạng chỉ đọc. Cần dùng Google API để ghi nếu muốn ghi trực tiếp.")
-    # Nếu có quyền ghi Google Sheet (OAuth/ServiceAccount) thì dùng gspread để append
 
 def run_bot():
     logging.basicConfig(level=logging.INFO)
