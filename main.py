@@ -27,7 +27,8 @@ creds = ServiceAccountCredentials.from_json_keyfile_name('/etc/secrets/service_a
 client = gspread.authorize(creds)
 
 # Kết nối đến file Google Sheet
-sheet = client.open_by_url(SHEET_CSV_URL).worksheet("DATA_FUTURE")
+sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
+sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
 
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
