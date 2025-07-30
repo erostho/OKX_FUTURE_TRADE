@@ -283,13 +283,16 @@ def run_bot():
     logging.info("🚀 Bắt đầu phân tích tín hiệu...")
 
     # Load danh sách coin
-    coin_list = fetch_coin_list()
+    coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
     logging.info(f"✅ Đã load {len(coin_list)} coin từ sheet.")
 
     alert_coins = []   # Danh sách coin có tín hiệu mạnh để gửi Telegram
     count_signal = 0   # Đếm số coin có tín hiệu hợp lệ
 
     for row in coin_list:
+        # ✅ Chuẩn hóa instId
+        inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+        
         symbol = row['symbol']
         timeframe = row.get('timeframe', '15m')  # mặc định 15m nếu không có
 
