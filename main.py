@@ -278,7 +278,7 @@ def run_bot():
             tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
 
-    🆕 *TÍN HIỆU MỚI*
+            message = f"""📢 *TÍN HIỆU MỚI*
     
     *Coin:* {symbol}
     *Khung:* 15m
