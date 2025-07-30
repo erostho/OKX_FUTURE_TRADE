@@ -35,58 +35,60 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
             '1d': '1D',
             '15m': '15m',
             '5m': '5m',
-            '1m': '1m',
+            '1m': '1m'
         }
         timeframe = timeframe_map.get(timeframe.lower(), timeframe)
+
         if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
-            logger.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
+            logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
 
         url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logger.debug(f"📉 Gửi request nến OKX: {url}")
+        logging.debug(f"📉 Gửi request nến OKX: {url}")
         response = requests.get(url)
         data = response.json()
 
-        # ✅ Nếu không có dữ liệu
         if not data.get("data"):
-            logger.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]")
+            logging.warning(f"⚠️ Không có dữ liệu nến cho {symbol} [{timeframe}]. Lỗi API: {data.get('msg', '')}")
             return None
 
-        # ✅ Parse dữ liệu thành DataFrame
         df = pd.DataFrame(data["data"])
-        df = df.iloc[::-1].copy()  # đảo ngược vì OKX trả ngược thời gian
+        df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
 
-        df.columns = ["ts", "open", "high", "low", "close", "volume", "_volCcy", "_volCcyQuote", "_confirm"]
+        df = df.iloc[::-1].copy()
         df["ts"] = pd.to_datetime(df["ts"], unit="ms")
+
         for col in ["open", "high", "low", "close", "volume"]:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
         return df
 
     except Exception as e:
-        logger.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
+        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe}]: {e}")
         return None
 
 def calculate_indicators(df):
-    # ✅ Ép kiểu dữ liệu về số thực để tránh lỗi toán học
-    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+    # ✅ Ép kiểu float để tránh lỗi phép toán
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
 
-    df['ema20'] = df['close'].ewm(span=20).mean()
-    df['ema50'] = df['close'].ewm(span=50).mean()
-    df['ema100'] = df['close'].ewm(span=100).mean()
+    # EMA
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
+    df["ema100"] = df["close"].ewm(span=100).mean()
 
-    delta = df['close'].diff()
+    # RSI
+    delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
     avg_gain = pd.Series(gain).rolling(window=14).mean()
     avg_loss = pd.Series(loss).rolling(window=14).mean()
     rs = avg_gain / avg_loss
-    df['rsi'] = 100 - (100 / (1 + rs))
+    df["rsi"] = 100 - (100 / (1 + rs))
 
-    exp1 = df['close'].ewm(span=12).mean()
-    exp2 = df['close'].ewm(span=26).mean()
-    df['macd'] = exp1 - exp2
-    df['macd_signal'] = df['macd'].ewm(span=9).mean()
+    # MACD
+    exp1 = df["close"].ewm(span=12).mean()
+    exp2 = df["close"].ewm(span=26).mean()
+    df["macd"] = exp1 - exp2
 
     return df
 
@@ -245,10 +247,14 @@ def run_bot():
     count = 0
 
     for symbol in coin_list:
-        logging.info(f"📈 Phân tích {symbol}...")
+        logging.info(f"🔍 Phân tích {symbol}...")
+
+        # ✅ Chuẩn hóa instId
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-        df_15m = fetch_ohlcv_okx(inst_id, '15m')
-        df_1h = fetch_ohlcv_okx(inst_id, '1h')
+
+        df_15m = fetch_ohlcv_okx(inst_id, "15m")
+        df_1h = fetch_ohlcv_okx(inst_id, "1h")
+
         if df_15m is None or df_1h is None:
             continue
 
@@ -257,20 +263,16 @@ def run_bot():
 
         signal, entry, sl = detect_signal(df_15m, df_1h)
         if signal:
-            tp = entry + (entry - sl) * TP_MULTIPLIER if signal == 'LONG' else entry - (sl - entry) * TP_MULTIPLIER
+            tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
 
-            message = f"""📢 *TÍN HIỆU MỚI*  
-*Coin:* {symbol}  
-*Loại:* {signal}  
-*Entry:* {round(entry, 4)}  
-*SL:* {round(sl, 4)}  
-*TP:* {round(tp, 4)}  
-*Xu hướng:*  
-- Ngắn hạn: {short_trend}  
-- Trung hạn: {mid_trend}"""
-
-            send_telegram(message)
+            message = f"""📢 *TÍN HIỆU MỚI*
+*Coin:* {symbol}
+*Loại:* {signal}
+*Entry:* {round(entry, 4)}
+*SL:* {round(sl, 4)}
+*TP:* {round(tp, 4)}"""
+            send_telegram_message(message)
 
             row = {
                 'symbol': symbol,
