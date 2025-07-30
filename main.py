@@ -69,6 +69,9 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
 
 
 def calculate_indicators(df):
+    # ✅ Ép kiểu dữ liệu về số thực để tránh lỗi toán học
+    df['close'] = pd.to_numeric(df['close'], errors='coerce')
+
     df['ema20'] = df['close'].ewm(span=20).mean()
     df['ema50'] = df['close'].ewm(span=50).mean()
     df['ema100'] = df['close'].ewm(span=100).mean()
@@ -86,12 +89,6 @@ def calculate_indicators(df):
     df['macd'] = exp1 - exp2
     df['macd_signal'] = df['macd'].ewm(span=9).mean()
 
-    df['atr'] = (df['high'] - df['low']).rolling(window=14).mean()
-
-    df['upper_bb'] = df['close'].rolling(window=20).mean() + 2 * df['close'].rolling(window=20).std()
-    df['lower_bb'] = df['close'].rolling(window=20).mean() - 2 * df['close'].rolling(window=20).std()
-
-    df['adx'] = calculate_adx(df)
     return df
 
 
