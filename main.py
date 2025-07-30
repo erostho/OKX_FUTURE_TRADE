@@ -362,16 +362,10 @@ def run_bot():
             short_trend, mid_trend = analyze_trend_multi(symbol)
             rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
 
-            if rating >= 3:
+            now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 2
+            if rating >= 2:
                 count += 1
-                now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-
-                # Soạn tin nhắn Telegram
-                messages.append(
-                    f"• {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️'*rating})"
-                )
-
-                # Lưu dòng sheet
                 valid_signals.append([
                     symbol,
                     signal + " " + ("⭐️" * rating),
@@ -382,6 +376,12 @@ def run_bot():
                     mid_trend,
                     now
                 ])
+            
+            # 🟡 GỬI TELEGRAM nếu rating >= 3
+            if rating >= 3:
+                messages.append(
+                    f"{symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})"
+                )
 
         time.sleep(1)
 
