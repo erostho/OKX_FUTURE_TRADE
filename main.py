@@ -147,78 +147,104 @@ def calculate_adx(df, period=14):
     df["adx"] = adx
     return df
     
-def detect_signal(df_15m, df_1h, symbol):
-    if df_15m is None or df_1h is None:
-        return None, None, None
+def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
+    import numpy as np
+    import logging
 
+    # EMA
+    df_15m["ema20"] = df_15m["close"].ewm(span=20).mean()
+    df_15m["ema50"] = df_15m["close"].ewm(span=50).mean()
+
+    # MACD
+    df_15m["macd"] = df_15m["close"].ewm(span=12).mean() - df_15m["close"].ewm(span=26).mean()
+    df_15m["macd_signal"] = df_15m["macd"].ewm(span=9).mean()
+
+    # RSI
+    delta = df_15m["close"].diff()
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+    avg_gain = pd.Series(gain).rolling(window=14).mean()
+    avg_loss = pd.Series(loss).rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df_15m["rsi"] = 100 - (100 / (1 + rs))
+
+    # Bollinger Bands
+    df_15m["bb_mid"] = df_15m["close"].rolling(window=20).mean()
+    df_15m["bb_std"] = df_15m["close"].rolling(window=20).std()
+    df_15m["bb_upper"] = df_15m["bb_mid"] + 2 * df_15m["bb_std"]
+    df_15m["bb_lower"] = df_15m["bb_mid"] - 2 * df_15m["bb_std"]
+
+    # ADX
+    def calculate_adx(data, period=14):
+        high, low, close = data["high"], data["low"], data["close"]
+        plus_dm = high.diff().clip(lower=0)
+        minus_dm = (-low.diff()).clip(lower=0)
+
+        tr = pd.concat([
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs()
+        ], axis=1).max(axis=1)
+
+        atr = tr.rolling(window=period).mean()
+        plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
+        minus_di = 100 * (minus_dm.ewm(alpha=1/period).mean() / atr)
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
+        return dx.ewm(alpha=1/period).mean()
+
+    df_15m["adx"] = calculate_adx(df_15m)
+
+    # Lấy chỉ số mới nhất
     latest = df_15m.iloc[-1]
+    ema_up = latest["ema20"] > latest["ema50"]
+    ema_down = latest["ema20"] < latest["ema50"]
+    macd_cross_up = latest["macd"] > latest["macd_signal"]
+    macd_cross_down = latest["macd"] < latest["macd_signal"]
+    rsi = latest["rsi"]
+    adx = latest["adx"]
+    close_price = latest["close"]
+
+    # Reversal check (nến đảo chiều gần nhất)
+    recent = df_15m["close"].iloc[-4:]
+    is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4))
+    is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4))
+
+    # Logic vào lệnh
     signal = None
-
-    # --- Entry Conditions ---
-    entry_long = (
-        latest['rsi'] > 60 and
-        latest['macd'] > latest['macd_signal'] and
-        latest['ema20'] > latest['ema50'] and
-        (latest['ema20'] - latest['ema50']) / latest['ema50'] > 0.01
-    )
-
-    entry_short = (
-        latest['rsi'] < 40 and
-        latest['macd'] < latest['macd_signal'] and
-        latest['ema20'] < latest['ema50'] and
-        (latest['ema50'] - latest['ema20']) / latest['ema50'] > 0.01
-    )
-
-    # --- Volume ---
-    try:
-        vol_now = df_15m['volume'].iloc[-1]
-        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > 0.7 * vol_avg
-        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
-    except Exception as e:
-        logging.warning(f"{symbol}: Không tính được volume: {e}")
-        volume_ok = False
-
-    if not volume_ok:
-        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
-        return None, None, None
-
-    # --- Xu hướng khung 1H ---
-    df1h = df_1h.copy()
-    trend_up = (
-        df1h['ema20'].iloc[-1] > df1h['ema50'].iloc[-1] > df1h['ema100'].iloc[-1] and
-        df1h['adx'].iloc[-1] > 20
-    )
-    trend_down = (
-        df1h['ema20'].iloc[-1] < df1h['ema50'].iloc[-1] < df1h['ema100'].iloc[-1] and
-        df1h['adx'].iloc[-1] > 20
-    )
-
-    if entry_long:
+    if (
+        rsi > 60 and ema_up and macd_cross_up and adx > 20
+        and close_price < latest["bb_upper"]
+        and not is_bearish_reversal
+    ):
         signal = "LONG"
-    elif entry_short:
+    elif (
+        rsi < 40 and ema_down and macd_cross_down and adx > 20
+        and close_price > latest["bb_lower"]
+        and not is_bullish_reversal
+    ):
         signal = "SHORT"
-    else:
-        return None, None, None
 
-    # --- Chống ngược chiều 3 nến gần nhất ---
-    recent_candles = df_15m[-3:]
-    green_candles = (recent_candles['close'] > recent_candles['open']).sum()
-    red_candles = (recent_candles['close'] < recent_candles['open']).sum()
+    if signal:
+        return signal, None, None  # SL/TP sẽ xử lý sau
 
-    if signal == "SHORT" and green_candles >= 3:
-        logging.warning(f"{symbol}: 3 nến gần nhất là nến tăng → BỎ QUA SHORT")
-        return None, None, None
-
-    if signal == "LONG" and red_candles >= 3:
-        logging.warning(f"{symbol}: 3 nến gần nhất là nến giảm → BỎ QUA LONG")
-        return None, None, None
+    return None, None, None
 
     # --- Entry / SL ---
     entry = latest['close']
-    sl = latest['ema50']  # hoặc bạn có thể dùng các mức thấp hơn nếu cần
-
-    return signal, entry, sl
+    
+    # Dữ liệu 10 nến gần nhất
+    df_recent = df_15m.iloc[-10:]
+    
+    if signal == "LONG":
+        sl = df_recent['low'].min()   # Swing Low = điểm thấp nhất
+        tp = df_recent['high'].max()  # Swing High = điểm cao nhất
+    elif signal == "SHORT":
+        sl = df_recent['high'].max()  # Swing High = điểm cao nhất
+        tp = df_recent['low'].min()   # Swing Low = điểm thấp nhất
+    else:
+        return None, None, None
+    
+    return signal, entry, sl, tp
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -338,10 +364,9 @@ def run_bot():
             logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
             continue
 
-        signal, entry, sl = detect_signal(df_15m, df_1h, symbol)
+        signal, entry, sl, tp = detect_signal(df_15m, df_1h, symbol)
 
         if signal:
-            tp = entry + (entry - sl) * TP_MULTIPLIER if signal == "LONG" else entry - (sl - entry) * TP_MULTIPLIER
             short_trend, mid_trend = analyze_trend_multi(symbol)
             rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
 
