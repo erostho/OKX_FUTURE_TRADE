@@ -228,7 +228,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     if not volume_ok:
         logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
-        return None, None, None
+        return None, None, None, None, False
         
     # Logic vào lệnh
     signal = None
@@ -246,9 +246,9 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         signal = "SHORT"
 
     if signal:
-        return signal, None, None  # SL/TP sẽ xử lý sau
+        return signal, None, None, None, False  # trả 5 giá trị
 
-    return None, None, None
+    return None, None, None, None, False
 
     # --- Entry / SL ---
     entry = latest['close']
@@ -263,7 +263,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         sl = df_recent['high'].max()  # Swing High = điểm cao nhất
         tp = df_recent['low'].min()   # Swing Low = điểm thấp nhất
     else:
-        return None, None, None
+        return None, None, None, None, False
     
     return signal, entry, sl, tp, volume_ok
 
