@@ -173,7 +173,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     df_15m["bb_std"] = df_15m["close"].rolling(window=20).std()
     df_15m["bb_upper"] = df_15m["bb_mid"] + 2 * df_15m["bb_std"]
     df_15m["bb_lower"] = df_15m["bb_mid"] - 2 * df_15m["bb_std"]
-
+    
     # ADX
     def calculate_adx(data, period=14):
         high, low, close = data["high"], data["low"], data["close"]
@@ -205,10 +205,31 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     close_price = latest["close"]
 
     # Reversal check (nến đảo chiều gần nhất)
-    recent = df_15m["close"].iloc[-4:]
-    is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4))
-    is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4))
+    # recent là danh sách giá đóng cửa 4 nến gần nhất
+    recent = df_15m["close"].iloc[-4:].tolist()
+    
+    # Chỉ xử lý nếu recent đủ 4 nến
+    if len(recent) == 4:
+        is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4))
+        is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4))
+    else:
+        is_bearish_reversal = False
+        is_bullish_reversal = False
+        
+    # --- Volume ---
+    try:
+        vol_now = df_15m['volume'].iloc[-1]
+        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
+        volume_ok = vol_now > 0.7 * vol_avg
+        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
+    except Exception as e:
+        logging.warning(f"{symbol}: Không tính được volume: {e}")
+        volume_ok = False
 
+    if not volume_ok:
+        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
+        return None, None, None
+        
     # Logic vào lệnh
     signal = None
     if (
@@ -244,7 +265,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     else:
         return None, None, None
     
-    return signal, entry, sl, tp
+    return signal, entry, sl, tp, volume_ok
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -364,7 +385,7 @@ def run_bot():
             logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
             continue
 
-        signal, entry, sl, tp = detect_signal(df_15m, df_1h, symbol)
+        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
 
         if signal:
             short_trend, mid_trend = analyze_trend_multi(symbol)
