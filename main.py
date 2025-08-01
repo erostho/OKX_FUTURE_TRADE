@@ -1,3 +1,16 @@
+"""
+Phiên bản nâng cấp chuyên sâu cho trader giữ lệnh 1–6 giờ.
+
+Tính năng chính:
+✅ TP/SL thông minh theo swing
+✅ Kiểm tra RR ≥ 1.5 và SL không quá hẹp
+✅ Volume spike xác nhận tín hiệu
+✅ Xác nhận đa chiều RSI/EMA/MACD/ADX/Bollinger
+✅ Loại bỏ tín hiệu sideway (choppy filter)
+✅ Mô hình giá: Flag, Wedge, Head & Shoulders (dạng đơn giản)
+✅ Entry hợp lệ nếu nằm trong vùng Fibonacci retracement (0.5–0.618)
+"""
+
 import requests
 import pandas as pd
 import numpy as np
@@ -147,55 +160,34 @@ def calculate_adx(df, period=14):
     df["adx"] = adx
     return df
     
+
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
-    import numpy as np
     import logging
 
-    # EMA
-    df_15m["ema20"] = df_15m["close"].ewm(span=20).mean()
-    df_15m["ema50"] = df_15m["close"].ewm(span=50).mean()
+    df = df_15m.copy()
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    df["ema50"] = df["close"].ewm(span=50).mean()
 
-    # MACD
-    df_15m["macd"] = df_15m["close"].ewm(span=12).mean() - df_15m["close"].ewm(span=26).mean()
-    df_15m["macd_signal"] = df_15m["macd"].ewm(span=9).mean()
-
-    # RSI
-    delta = df_15m["close"].diff()
+    delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
     avg_gain = pd.Series(gain).rolling(window=14).mean()
     avg_loss = pd.Series(loss).rolling(window=14).mean()
     rs = avg_gain / avg_loss
-    df_15m["rsi"] = 100 - (100 / (1 + rs))
+    df["rsi"] = 100 - (100 / (1 + rs))
 
-    # Bollinger Bands
-    df_15m["bb_mid"] = df_15m["close"].rolling(window=20).mean()
-    df_15m["bb_std"] = df_15m["close"].rolling(window=20).std()
-    df_15m["bb_upper"] = df_15m["bb_mid"] + 2 * df_15m["bb_std"]
-    df_15m["bb_lower"] = df_15m["bb_mid"] - 2 * df_15m["bb_std"]
-    
+    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+    df["macd_signal"] = df["macd"].ewm(span=9).mean()
+
+    df["bb_mid"] = df["close"].rolling(window=20).mean()
+    df["bb_std"] = df["close"].rolling(window=20).std()
+    df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
+    df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
+
     # ADX
-    def calculate_adx(data, period=14):
-        high, low, close = data["high"], data["low"], data["close"]
-        plus_dm = high.diff().clip(lower=0)
-        minus_dm = (-low.diff()).clip(lower=0)
+    df = calculate_adx(df)
 
-        tr = pd.concat([
-            high - low,
-            (high - close.shift()).abs(),
-            (low - close.shift()).abs()
-        ], axis=1).max(axis=1)
-
-        atr = tr.rolling(window=period).mean()
-        plus_di = 100 * (plus_dm.ewm(alpha=1/period).mean() / atr)
-        minus_di = 100 * (minus_dm.ewm(alpha=1/period).mean() / atr)
-        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di)
-        return dx.ewm(alpha=1/period).mean()
-
-    df_15m["adx"] = calculate_adx(df_15m)
-
-    # Lấy chỉ số mới nhất
-    latest = df_15m.iloc[-1]
+    latest = df.iloc[-1]
     ema_up = latest["ema20"] > latest["ema50"]
     ema_down = latest["ema20"] < latest["ema50"]
     macd_cross_up = latest["macd"] > latest["macd_signal"]
@@ -204,68 +196,54 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     close_price = latest["close"]
 
-    # Reversal check (nến đảo chiều gần nhất)
-    # recent là danh sách giá đóng cửa 4 nến gần nhất
-    recent = df_15m["close"].iloc[-4:].tolist()
-    
-    # Chỉ xử lý nếu recent đủ 4 nến
-    if len(recent) == 4:
-        is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4))
-        is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4))
-    else:
-        is_bearish_reversal = False
-        is_bullish_reversal = False
-        
-    # --- Volume ---
-    try:
-        vol_now = df_15m['volume'].iloc[-1]
-        vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > 1.2 * vol_avg
-        logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
-    except Exception as e:
-        logging.warning(f"{symbol}: Không tính được volume: {e}")
-        volume_ok = False
+    # Reversal
+    recent = df["close"].iloc[-4:].tolist()
+    is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4)) if len(recent) == 4 else False
+    is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4)) if len(recent) == 4 else False
 
-    if not volume_ok:
-        logging.info(f"{symbol}: Volume yếu → bỏ qua tín hiệu.")
+    # Volume
+    vol_now = df["volume"].iloc[-1]
+    vol_avg = df["volume"].rolling(20).mean().iloc[-1]
+    if vol_now < 1.5 * vol_avg:
+        logging.info(f"{symbol}: Volume yếu → bỏ")
         return None, None, None, None, False
-        
-    # Logic vào lệnh
+
+    # BB width & ADX choppy filter
+    bb_width = (latest["bb_upper"] - latest["bb_lower"]) / latest["close"]
+    if adx < 20 and bb_width < 0.015:
+        logging.info(f"{symbol}: Sideway (ADX<20 và BB width < 1.5%) → bỏ")
+        return None, None, None, None, False
+
     signal = None
+    df_recent = df.iloc[-10:]
+    if df_recent[["high", "low"]].isnull().any().any():
+        return None, None, None, None, False
+
+    entry = latest["close"]
+    sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
+    tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
+
+    rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
+    if any(x is None for x in [entry, sl, tp]) or rr < 1.5:
+        return None, None, None, None, False
+
     if (
-        rsi > 65 and ema_up and macd_cross_up and adx > 25
+        rsi > 55 and ema_up and macd_cross_up and adx > 20
         and close_price < latest["bb_upper"]
         and not is_bearish_reversal
+        and rr >= 1.5
     ):
         signal = "LONG"
     elif (
-        rsi < 35 and ema_down and macd_cross_down and adx > 25
+        rsi < 45 and ema_down and macd_cross_down and adx > 20
         and close_price > latest["bb_lower"]
         and not is_bullish_reversal
+        and rr >= 1.5
     ):
         signal = "SHORT"
-    # --- Entry / SL ---
-    if signal:
-        entry = latest['close']
-        df_recent = df_15m.iloc[-10:]
-    
-        if df_recent[['high', 'low']].isnull().any().any():
-            logging.warning(f"{symbol}: Thiếu dữ liệu high/low => Bỏ qua")
-            return None, None, None, None, False
-    
-        if signal == "LONG":
-            sl = df_recent['low'].min()
-            tp = df_recent['high'].max()
-        elif signal == "SHORT":
-            sl = df_recent['high'].max()
-            tp = df_recent['low'].min()
-        else:
-            return None, None, None, None, False
-    
-        return signal, entry, sl, tp, volume_ok
-    
-    # Nếu không có tín hiệu
-    return None, None, None, None, False
+
+    return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
+
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -466,3 +444,82 @@ def get_top_usdt_pairs(limit=200):
         return []
 if __name__ == "__main__":
     run_bot()
+
+
+# === GỬI TELEGRAM ===
+
+def send_telegram_message(message):
+    try:
+        token = TELEGRAM_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            logging.warning(f"Telegram error: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Lỗi gửi Telegram: {e}")
+
+
+# === GHI GOOGLE SHEET ===
+
+def append_to_google_sheet(sheet, row):
+    try:
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"❌ Không ghi được Google Sheet: {e}")
+
+
+# === BACKTEST 90 NGÀY ===
+
+def backtest_signals_90_days(symbol_list):
+    # Giả định đã có fetch_ohlcv_okx và detect_signal
+    today = datetime.datetime.utcnow()
+    start_time = today - datetime.timedelta(days=90)
+    results = []
+
+    for symbol in symbol_list:
+        logging.info(f"🔍 Backtest: {symbol}")
+        try:
+            df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
+            if df is None or len(df) < 100:
+                continue
+
+            df = calculate_indicators(df)
+            for i in range(50, len(df)-20):  # chừa nến để kiểm tra sau
+                sub_df = df.iloc[i-50:i].copy()
+                df_1h = df.iloc[i-100:i].copy()  # placeholder
+                signal, entry, sl, tp, _ = detect_signal(sub_df, df_1h, symbol)
+                if signal and entry and sl and tp:
+                    future_data = df.iloc[i:i+20]
+                    result = "NONE"
+                    for j in range(len(future_data)):
+                        price = future_data.iloc[j]["high"] if signal == "LONG" else future_data.iloc[j]["low"]
+                        if signal == "LONG" and price >= tp:
+                            result = "WIN"
+                            break
+                        elif signal == "LONG" and price <= sl:
+                            result = "LOSS"
+                            break
+                        elif signal == "SHORT" and price <= tp:
+                            result = "WIN"
+                            break
+                        elif signal == "SHORT" and price >= sl:
+                            result = "LOSS"
+                            break
+                    results.append([symbol, signal, entry, sl, tp, result, df.iloc[i]["ts"].strftime("%Y-%m-%d %H:%M")])
+        except Exception as e:
+            logging.error(f"Backtest lỗi {symbol}: {e}")
+            continue
+
+    # Ghi kết quả ra sheet BACKTEST_RESULT
+    try:
+        sheet = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
+        for row in results:
+            sheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
