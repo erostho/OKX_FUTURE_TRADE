@@ -204,7 +204,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Volume
     vol_now = df["volume"].iloc[-1]
     vol_avg = df["volume"].rolling(20).mean().iloc[-1]
-    if vol_now < vol_avg:
+    if vol_now < 0.8 * vol_avg:
         logging.info(f"{symbol}: Volume yếu → bỏ qua")
         return None, None, None, None, False
 
