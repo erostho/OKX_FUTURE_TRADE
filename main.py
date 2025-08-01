@@ -133,7 +133,13 @@ def calculate_indicators(df):
 
     df = calculate_adx(df)
     return df
-
+    
+def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
+    """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
+    missing = df[required_cols].isnull().sum().sum()
+    if missing > max_missing:
+        return None
+    return df.dropna(subset=required_cols)
 
 def calculate_adx(df, period=14):
     high = pd.to_numeric(df["high"], errors="coerce")
