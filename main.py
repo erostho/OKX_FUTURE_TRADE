@@ -56,7 +56,7 @@ except Exception as e:
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
-COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
+COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
@@ -487,7 +487,7 @@ def clean_old_rows():
     except Exception as e:
         logging.warning(f"❌ Lỗi khi xoá dòng cũ: {e}")
 
-def get_top_usdt_pairs(limit=200):
+def get_top_usdt_pairs(limit=300):
     url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
     try:
         res = requests.get(url)
