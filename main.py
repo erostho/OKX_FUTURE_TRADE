@@ -69,7 +69,7 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 50)  # top 50%
+    threshold = np.percentile(volumes[:-1], 30)  # top 30%
     logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 60% = {threshold:.0f}")
     return v_now > threshold
 
@@ -233,10 +233,10 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 20:
+    if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
-    if bb_width < 0.015:
+    if bb_width < 0.002:
         print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
@@ -264,7 +264,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.05:
+    if abs(entry - sl)/entry < 0.005:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
@@ -288,7 +288,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     signal = None
     if (
         ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.001 and adx > 20
+        and macd_diff > 0.05 and adx > 20
         and not near_sr == False
     ):
         if btc_change >= -0.01:
