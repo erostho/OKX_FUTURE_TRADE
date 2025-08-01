@@ -69,8 +69,8 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 20)  # top 80%
-    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 20% = {threshold:.0f}")
+    threshold = np.percentile(volumes[:-1], 15)  # top 85%
+    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 15% = {threshold:.0f}")
     return v_now > threshold
 
 def detect_breakout_pullback(df):
