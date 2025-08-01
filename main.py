@@ -25,8 +25,8 @@ from pytz import timezone
 import pytz
 
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
