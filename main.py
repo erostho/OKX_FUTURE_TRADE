@@ -4,7 +4,7 @@ Phiên bản nâng cấp chuyên sâu cho trader giữ lệnh 1–6 giờ.
 Tính năng chính:
 ✅ TP/SL thông minh theo swing
 ✅ Kiểm tra RR ≥ 1.2 và SL không quá hẹp
-✅ Volume spike xác nhận tín hiệu top20
+✅ Volume spike xác nhận tín hiệu top25
 ✅ Xác nhận đa chiều RSI/EMA/MACD/ADX/Bollinger
 ✅ Loại bỏ tín hiệu sideway (choppy filter)
 ✅ Mô hình giá: Flag, Wedge, Head & Shoulders (dạng đơn giản)
@@ -69,8 +69,8 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 70)  # top 30%
-    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+    threshold = np.percentile(volumes[:-1], 75)  # top 25%
+    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 75% = {threshold:.0f}")
     return v_now > threshold
 
 def detect_breakout_pullback(df):
@@ -233,7 +233,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 17:
+    if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.002:
