@@ -69,7 +69,7 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 80)  # top 20%
+    threshold = np.percentile(volumes[:-1], 75)  # top 25%
     return v_now > threshold
 
 def detect_breakout_pullback(df):
@@ -192,8 +192,6 @@ def calculate_adx(df, period=14):
     return df
     
 
-
-
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
     df = df_15m.copy()
@@ -228,7 +226,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 10%
+    # Volume spike top 25%
     if not is_volume_spike(df):
         return None, None, None, None, False
 
