@@ -220,7 +220,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     try:
         vol_now = df_15m['volume'].iloc[-1]
         vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-        volume_ok = vol_now > 0.7 * vol_avg
+        volume_ok = vol_now > vol_avg
         logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.2f}, TB 20 nến = {vol_avg:.2f}")
     except Exception as e:
         logging.warning(f"{symbol}: Không tính được volume: {e}")
@@ -244,28 +244,28 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         and not is_bullish_reversal
     ):
         signal = "SHORT"
-
-    if signal:
-        return signal, None, None, None, False  # trả 5 giá trị
-
-    return None, None, None, None, False
-
     # --- Entry / SL ---
-    entry = latest['close']
+    if signal:
+        entry = latest['close']
+        df_recent = df_15m.iloc[-10:]
     
-    # Dữ liệu 10 nến gần nhất
-    df_recent = df_15m.iloc[-10:]
+        if df_recent[['high', 'low']].isnull().any().any():
+            logging.warning(f"{symbol}: Thiếu dữ liệu high/low => Bỏ qua")
+            return None, None, None, None, False
     
-    if signal == "LONG":
-        sl = df_recent['low'].min()   # Swing Low = điểm thấp nhất
-        tp = df_recent['high'].max()  # Swing High = điểm cao nhất
-    elif signal == "SHORT":
-        sl = df_recent['high'].max()  # Swing High = điểm cao nhất
-        tp = df_recent['low'].min()   # Swing Low = điểm thấp nhất
-    else:
-        return None, None, None, None, False
+        if signal == "LONG":
+            sl = df_recent['low'].min()
+            tp = df_recent['high'].max()
+        elif signal == "SHORT":
+            sl = df_recent['high'].max()
+            tp = df_recent['low'].min()
+        else:
+            return None, None, None, None, False
     
-    return signal, entry, sl, tp, volume_ok
+        return signal, entry, sl, tp, volume_ok
+    
+    # Nếu không có tín hiệu
+    return None, None, None, None, False
 
 def analyze_trend_multi(symbol):
     tf_map = {
