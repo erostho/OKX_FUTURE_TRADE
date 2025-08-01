@@ -69,7 +69,7 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 90)  # top 10%
+    threshold = np.percentile(volumes[:-1], 80)  # top 20%
     return v_now > threshold
 
 def detect_breakout_pullback(df):
@@ -252,7 +252,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
     tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
-    if any(x is None for x in [entry, sl, tp]) or rr < 2.0 or abs(entry - sl)/entry < 0.0075:
+    if any(x is None for x in [entry, sl, tp]) or rr < 1.5 or abs(entry - sl)/entry < 0.005:
         return None, None, None, None, False
 
     # Multi-timeframe confirmation (1H đồng pha 15m)
@@ -274,18 +274,18 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Xác nhận tín hiệu
     signal = None
     if (
-        ema_up and ema_up_1h and rsi > 60 and rsi_1h > 50
-        and macd_diff > 0.0015 and adx > 25
+        ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
+        and macd_diff > 0.001 and adx > 20
         and not near_sr == False
     ):
-        if btc_change >= 0:
+        if btc_change >= -0.01:
             signal = "LONG"
     elif (
-        ema_down and not ema_up_1h and rsi < 40 and rsi_1h < 50
-        and macd_diff > 0.0015 and adx > 25
+        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
+        and macd_diff > 0.001 and adx > 20
         and not near_sr == False
     ):
-        if btc_change <= 0:
+        if btc_change <= 0.01:
             signal = "SHORT"
 
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
