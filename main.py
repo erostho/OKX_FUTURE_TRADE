@@ -135,7 +135,6 @@ def calculate_indicators(df):
     return df
     
 def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
-    """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
     missing = df[required_cols].isnull().sum().sum()
     if missing > max_missing:
         return None
@@ -556,28 +555,21 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     return df.dropna(subset=required_cols)
 
 def is_volume_spike(df):
-    """Volume hiện tại phải nằm top 10% volume 20 nến gần nhất"""
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 90)
+    threshold = np.percentile(volumes[:-1], 90)  # top 10%
     return v_now > threshold
 
 def detect_breakout_pullback(df):
-    """Phát hiện breakout khỏi vùng kháng cự sau đó pullback về EMA20"""
     df["ema20"] = df["close"].ewm(span=20).mean()
     recent_high = df["high"].iloc[-30:-10].max()
-    recent_low = df["low"].iloc[-30:-10].min()
-    price = df["close"].iloc[-1]
     ema = df["ema20"].iloc[-1]
-
+    price = df["close"].iloc[-1]
     breakout = price > recent_high
     pullback = price < recent_high and price > ema
     return breakout and pullback
 
 def find_support_resistance(df, window=30):
-    """Tìm vùng hỗ trợ/kháng cự gần nhất từ local max/min"""
     highs = df["high"].iloc[-window:]
     lows = df["low"].iloc[-window:]
-    resistance = highs.max()
-    support = lows.min()
-    return support, resistance
+    return lows.min(), highs.max()
