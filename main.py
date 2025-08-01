@@ -3,7 +3,7 @@ Phiên bản nâng cấp chuyên sâu cho trader giữ lệnh 1–6 giờ.
 
 Tính năng chính:
 ✅ TP/SL thông minh theo swing
-✅ Kiểm tra RR ≥ 1.5 và SL không quá hẹp
+✅ Kiểm tra RR ≥ 1.2 và SL không quá hẹp
 ✅ Volume spike xác nhận tín hiệu
 ✅ Xác nhận đa chiều RSI/EMA/MACD/ADX/Bollinger
 ✅ Loại bỏ tín hiệu sideway (choppy filter)
@@ -260,11 +260,11 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
     
-    if rr < 1.5:
+    if rr < 1.2:
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.005:
+    if abs(entry - sl)/entry < 0.003:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
