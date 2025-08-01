@@ -58,7 +58,33 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 15
 COINS_LIMIT = 200  # Số coin phân tích mỗi lượt
 
+# ========================== NÂNG CẤP CHUYÊN SÂU ==========================
+def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
+    """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
+    missing = df[required_cols].isnull().sum().sum()
+    if missing > max_missing:
+        return None
+    return df.dropna(subset=required_cols)
 
+def is_volume_spike(df):
+    volumes = df["volume"].iloc[-20:]
+    v_now = volumes.iloc[-1]
+    threshold = np.percentile(volumes[:-1], 90)  # top 10%
+    return v_now > threshold
+
+def detect_breakout_pullback(df):
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    recent_high = df["high"].iloc[-30:-10].max()
+    ema = df["ema20"].iloc[-1]
+    price = df["close"].iloc[-1]
+    breakout = price > recent_high
+    pullback = price < recent_high and price > ema
+    return breakout and pullback
+
+def find_support_resistance(df, window=30):
+    highs = df["high"].iloc[-window:]
+    lows = df["low"].iloc[-window:]
+    return lows.min(), highs.max()
 
 def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
     strength = 1
@@ -546,30 +572,4 @@ def backtest_signals_90_days(symbol_list):
 
 
 
-# ========================== NÂNG CẤP CHUYÊN SÂU ==========================
-def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
-    """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
-    missing = df[required_cols].isnull().sum().sum()
-    if missing > max_missing:
-        return None
-    return df.dropna(subset=required_cols)
 
-def is_volume_spike(df):
-    volumes = df["volume"].iloc[-20:]
-    v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 90)  # top 10%
-    return v_now > threshold
-
-def detect_breakout_pullback(df):
-    df["ema20"] = df["close"].ewm(span=20).mean()
-    recent_high = df["high"].iloc[-30:-10].max()
-    ema = df["ema20"].iloc[-1]
-    price = df["close"].iloc[-1]
-    breakout = price > recent_high
-    pullback = price < recent_high and price > ema
-    return breakout and pullback
-
-def find_support_resistance(df, window=30):
-    highs = df["high"].iloc[-window:]
-    lows = df["low"].iloc[-window:]
-    return lows.min(), highs.max()
