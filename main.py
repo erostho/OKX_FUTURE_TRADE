@@ -204,14 +204,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Volume
     vol_now = df["volume"].iloc[-1]
     vol_avg = df["volume"].rolling(20).mean().iloc[-1]
-    if vol_now < 1.5 * vol_avg:
-        logging.info(f"{symbol}: Volume yếu → bỏ")
+    if vol_now < vol_avg:
+        logging.info(f"{symbol}: Volume yếu → bỏ qua")
         return None, None, None, None, False
 
     # BB width & ADX choppy filter
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / latest["close"]
     if adx < 20 and bb_width < 0.015:
-        logging.info(f"{symbol}: Sideway (ADX<20 và BB width < 1.5%) → bỏ")
+        logging.info(f"{symbol}: Sideway (ADX<20 và BB width < 1.5%) → bỏ qua")
         return None, None, None, None, False
 
     signal = None
