@@ -69,7 +69,7 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
 def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 75)  # top 25%
+    threshold = np.percentile(volumes[:-1], 70)  # top 30%
     return v_now > threshold
 
 def detect_breakout_pullback(df):
@@ -226,7 +226,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 25%
+    # Volume spike top 30%
     if not is_volume_spike(df):
         print(f"[DEBUG] {symbol}: loại do volume")
         return None, None, None, None, False
@@ -402,15 +402,11 @@ def run_bot():
 
         df_15m = calculate_indicators(df_15m).dropna()
         df_1h = calculate_indicators(df_1h).dropna()
-        # ✅ Tính volume hiện tại và trung bình 20 nến gần nhất
-        try:
-            vol_now = df_15m['volume'].iloc[-1]
-            vol_avg = df_15m['volume'].rolling(20).mean().iloc[-1]
-            volume_ok = vol_now > 0.6 * vol_avg
-            logging.debug(f"{symbol}: Volume hiện tại = {vol_now:.0f}, TB 20 nến = {vol_avg:.0f}, volume_ok = {volume_ok}")
-        except Exception as e:
-            logging.warning(f"{symbol}: Không tính được volume_ok: {e}")
-            volume_ok = False
+        
+        # ✅ Check volume 
+        volume_ok = is_volume_spike(df_15m)
+        if not volume_ok:
+            logging.debug(f"[DEBUG] {symbol}: loại do volume")
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
