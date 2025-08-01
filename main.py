@@ -25,8 +25,8 @@ from pytz import timezone
 import pytz
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -70,6 +70,7 @@ def is_volume_spike(df):
     volumes = df["volume"].iloc[-20:]
     v_now = volumes.iloc[-1]
     threshold = np.percentile(volumes[:-1], 60)  # top 40%
+    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 60% = {threshold:.0f}")
     return v_now > threshold
 
 def detect_breakout_pullback(df):
