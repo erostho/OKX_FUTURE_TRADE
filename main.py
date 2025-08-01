@@ -161,13 +161,20 @@ def calculate_adx(df, period=14):
     return df
     
 
+
+
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
 
-    df = df_15m.copy()
+    df = clean_missing_data(df)
+    if df is None or len(df) < 30:
+        return None, None, None, None, False
+
+    # Tính chỉ báo
     df["ema20"] = df["close"].ewm(span=20).mean()
     df["ema50"] = df["close"].ewm(span=50).mean()
-
+    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
+    df["macd_signal"] = df["macd"].ewm(span=9).mean()
     delta = df["close"].diff()
     gain = np.where(delta > 0, delta, 0)
     loss = np.where(delta < 0, -delta, 0)
@@ -175,72 +182,80 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     avg_loss = pd.Series(loss).rolling(window=14).mean()
     rs = avg_gain / avg_loss
     df["rsi"] = 100 - (100 / (1 + rs))
-
-    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["macd_signal"] = df["macd"].ewm(span=9).mean()
-
-    df["bb_mid"] = df["close"].rolling(window=20).mean()
-    df["bb_std"] = df["close"].rolling(window=20).std()
+    df = calculate_adx(df)
+    df["bb_mid"] = df["close"].rolling(20).mean()
+    df["bb_std"] = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
     df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
 
-    # ADX
-    df = calculate_adx(df)
-
     latest = df.iloc[-1]
+    close_price = latest["close"]
     ema_up = latest["ema20"] > latest["ema50"]
     ema_down = latest["ema20"] < latest["ema50"]
-    macd_cross_up = latest["macd"] > latest["macd_signal"]
-    macd_cross_down = latest["macd"] < latest["macd_signal"]
+    macd_diff = abs(latest["macd"] - latest["macd_signal"]) / close_price
     rsi = latest["rsi"]
     adx = latest["adx"]
-    close_price = latest["close"]
+    bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Reversal
+    # Volume spike top 10%
+    if not is_volume_spike(df):
+        return None, None, None, None, False
+
+    # Choppy filter
+    if adx < 25 or bb_width < 0.015:
+        return None, None, None, None, False
+
+    # Price Action (Engulfing or Breakout)
     recent = df["close"].iloc[-4:].tolist()
-    is_bearish_reversal = all(recent[i] < recent[i-1] for i in range(1, 4)) if len(recent) == 4 else False
-    is_bullish_reversal = all(recent[i] > recent[i-1] for i in range(1, 4)) if len(recent) == 4 else False
-
-    # Volume
-    vol_now = df["volume"].iloc[-1]
-    vol_avg = df["volume"].rolling(20).mean().iloc[-1]
-    if vol_now < 0.8 * vol_avg:
-        logging.info(f"{symbol}: Volume yếu → bỏ qua")
+    is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
+    if not is_engulfing and not detect_breakout_pullback(df):
         return None, None, None, None, False
 
-    # BB width & ADX choppy filter
-    bb_width = (latest["bb_upper"] - latest["bb_lower"]) / latest["close"]
-    if adx < 20 and bb_width < 0.015:
-        logging.info(f"{symbol}: Sideway (ADX<20 và BB width < 1.5%) → bỏ qua")
-        return None, None, None, None, False
+    # Support/Resistance logic
+    support, resistance = find_support_resistance(df)
+    near_sr = abs(close_price - support)/support < 0.01 or abs(close_price - resistance)/resistance < 0.01
 
-    signal = None
+    # RR & Entry
     df_recent = df.iloc[-10:]
-    if df_recent[["high", "low"]].isnull().any().any():
-        return None, None, None, None, False
-
-    entry = latest["close"]
+    entry = close_price
     sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
     tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
-
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
-    if any(x is None for x in [entry, sl, tp]) or rr < 1.5:
+    if any(x is None for x in [entry, sl, tp]) or rr < 2.0 or abs(entry - sl)/entry < 0.0075:
         return None, None, None, None, False
 
+    # Multi-timeframe confirmation (1H đồng pha 15m)
+    try:
+        df1h = calculate_indicators(df_1h.copy())
+        ema_up_1h = df1h["ema20"].iloc[-1] > df1h["ema50"].iloc[-1]
+        rsi_1h = df1h["rsi"].iloc[-1]
+    except:
+        return None, None, None, None, False
+
+    # Kiểm tra xu hướng BTC
+    try:
+        btc_df = fetch_ohlcv_okx("BTC-USDT", "15m", limit=10)
+        btc_df["close"] = pd.to_numeric(btc_df["close"])
+        btc_change = (btc_df["close"].iloc[-1] - btc_df["close"].iloc[-3]) / btc_df["close"].iloc[-3]
+    except:
+        btc_change = 0
+
+    # Xác nhận tín hiệu
+    signal = None
     if (
-        rsi > 55 and ema_up and macd_cross_up and adx > 20
-        and close_price < latest["bb_upper"]
-        and not is_bearish_reversal
-        and rr >= 1.5
+        ema_up and ema_up_1h and rsi > 60 and rsi_1h > 50
+        and macd_diff > 0.0015 and adx > 25
+        and not near_sr == False
     ):
-        signal = "LONG"
+        if btc_change >= 0:
+            signal = "LONG"
     elif (
-        rsi < 45 and ema_down and macd_cross_down and adx > 20
-        and close_price > latest["bb_lower"]
-        and not is_bullish_reversal
-        and rr >= 1.5
+        ema_down and not ema_up_1h and rsi < 40 and rsi_1h < 50
+        and macd_diff > 0.0015 and adx > 25
+        and not near_sr == False
     ):
-        signal = "SHORT"
+        if btc_change <= 0:
+            signal = "SHORT"
 
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
@@ -523,3 +538,40 @@ def backtest_signals_90_days(symbol_list):
             sheet.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
+
+
+
+# ========================== NÂNG CẤP CHUYÊN SÂU ==========================
+def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
+    """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
+    missing = df[required_cols].isnull().sum().sum()
+    if missing > max_missing:
+        return None
+    return df.dropna(subset=required_cols)
+
+def is_volume_spike(df):
+    """Volume hiện tại phải nằm top 10% volume 20 nến gần nhất"""
+    volumes = df["volume"].iloc[-20:]
+    v_now = volumes.iloc[-1]
+    threshold = np.percentile(volumes[:-1], 90)
+    return v_now > threshold
+
+def detect_breakout_pullback(df):
+    """Phát hiện breakout khỏi vùng kháng cự sau đó pullback về EMA20"""
+    df["ema20"] = df["close"].ewm(span=20).mean()
+    recent_high = df["high"].iloc[-30:-10].max()
+    recent_low = df["low"].iloc[-30:-10].min()
+    price = df["close"].iloc[-1]
+    ema = df["ema20"].iloc[-1]
+
+    breakout = price > recent_high
+    pullback = price < recent_high and price > ema
+    return breakout and pullback
+
+def find_support_resistance(df, window=30):
+    """Tìm vùng hỗ trợ/kháng cự gần nhất từ local max/min"""
+    highs = df["high"].iloc[-window:]
+    lows = df["low"].iloc[-window:]
+    resistance = highs.max()
+    support = lows.min()
+    return support, resistance
