@@ -171,7 +171,7 @@ def calculate_adx(df, period=14):
 
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
-
+    df = df_15m.copy()
     df = clean_missing_data(df)
     if df is None or len(df) < 30:
         return None, None, None, None, False
