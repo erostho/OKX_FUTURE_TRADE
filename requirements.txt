@@ -3,3 +3,6 @@ numpy
 pandas
 gspread
 oauth2client
+python-dotenv         # nếu bạn dùng .env để cấu hình biến môi trường
+pytz                  # dùng để set timezone
+ta                    # (technical analysis – nếu có sử dụng thêm trong tương lai)
