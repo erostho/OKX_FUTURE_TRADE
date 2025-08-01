@@ -260,7 +260,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
     
-    if rr < o.8:
+    if rr < 0.8:
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
