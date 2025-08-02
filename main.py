@@ -67,11 +67,31 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     return df.dropna(subset=required_cols)
 
 def is_volume_spike(df):
-    volumes = df["volume"].iloc[-20:]
-    v_now = volumes.iloc[-1]
-    threshold = np.percentile(volumes[:-1], 65)  # top 35%
-    logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 65% = {threshold:.0f}")
-    return v_now > threshold
+    try:
+        volumes = df["volume"].iloc[-20:]
+
+        if len(volumes) < 10:
+            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(volumes)} nến")
+            return False
+
+        v_now = volumes.iloc[-1]
+        threshold = np.percentile(volumes[:-1], 65) # TOP 35%
+
+        if np.isnan(v_now) or np.isnan(threshold):
+            logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
+            return False
+
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 65% = {threshold:.0f}")
+
+        if v_now <= threshold:
+            logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
+            return False
+
+        return True
+
+    except Exception as e:
+        logging.debug(f"[DEBUG][Volume FAIL] Lỗi khi kiểm tra volume: {e}")
+        return False
 
 def detect_breakout_pullback(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
@@ -227,7 +247,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 70%
+    # Volume spike top 65%
     if not is_volume_spike(df):
         print(f"[DEBUG] {symbol}: loại do volume")
         return None, None, None, None, False
@@ -407,7 +427,8 @@ def run_bot():
         # ✅ Check volume 
         volume_ok = is_volume_spike(df_15m)
         if not volume_ok:
-            logging.debug(f"[DEBUG] {symbol}: loại do volume")
+            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
+            continue
 
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
