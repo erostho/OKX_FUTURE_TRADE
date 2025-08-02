@@ -253,7 +253,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 14:
+    if adx < 12:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.002:
