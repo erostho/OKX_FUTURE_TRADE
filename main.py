@@ -4,7 +4,7 @@ Phiên bản nâng cấp chuyên sâu cho trader giữ lệnh 1–6 giờ.
 Tính năng chính:
 ✅ TP/SL thông minh theo swing
 ✅ Kiểm tra RR ≥ 1.2 và SL không quá hẹp
-✅ Volume spike xác nhận tín hiệu top25
+✅ Volume spike xác nhận tín hiệu top30
 ✅ Xác nhận đa chiều RSI/EMA/MACD/ADX/Bollinger
 ✅ Loại bỏ tín hiệu sideway (choppy filter)
 ✅ Mô hình giá: Flag, Wedge, Head & Shoulders (dạng đơn giản)
@@ -75,13 +75,13 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 65) # TOP 35%
+        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
             return False
 
-        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 65% = {threshold:.0f}")
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
 
         if v_now <= threshold:
             logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
