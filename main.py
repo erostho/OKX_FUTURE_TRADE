@@ -55,7 +55,7 @@ except Exception as e:
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-ADX_THRESHOLD = 15
+ADX_THRESHOLD = 11
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
@@ -253,7 +253,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 12:
+    if adx < 10:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.002:
