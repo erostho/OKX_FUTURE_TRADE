@@ -55,7 +55,7 @@ except Exception as e:
 # ========== THAM SỐ KỸ THUẬT ==========
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
-ADX_THRESHOLD = 11
+ADX_THRESHOLD = 12
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
@@ -247,13 +247,13 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 65%
+    # Volume spike top 70%
     if not is_volume_spike(df):
         print(f"[DEBUG] {symbol}: loại do volume")
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 11:
+    if adx < 12:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.003:
