@@ -284,7 +284,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.003:
+    if abs(entry - sl)/entry < 0.005:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
@@ -307,14 +307,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Xác nhận tín hiệu
     signal = None
     if (
-        ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
+        ema_up and not ema_up_1h and rsi > 45 and rsi_1h > 45
         and macd_diff > 0.05 and adx > 20
         and not near_sr == False
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
-        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
+        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 45
         and macd_diff > 0.001 and adx > 20
         and not near_sr == False
     ):
@@ -337,7 +337,7 @@ def analyze_trend_multi(symbol):
             rsi = df['rsi'].iloc[-1]
             ema20 = df['ema20'].iloc[-1]
             ema50 = df['ema50'].iloc[-1]
-            return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
+            return 2 if (rsi > 55 and ema20 > ema50) else 1 if (rsi > 45 and ema20 > ema50) else 0
         except:
             return 0
 
