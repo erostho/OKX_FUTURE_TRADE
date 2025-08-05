@@ -237,7 +237,13 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     df["bb_std"] = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
     df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
-
+    
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - df["close"].shift()).abs()
+    tr3 = (df["low"] - df["close"].shift()).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df["atr"] = tr.rolling(window=14).mean()
+    
     latest = df.iloc[-1]
     close_price = latest["close"]
     ema_up = latest["ema20"] > latest["ema50"]
@@ -272,9 +278,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # RR & Entry
     df_recent = df.iloc[-10:]
+    # Entry = close giá hiện tại
+    atr_value = df["atr"].iloc[-1]
     entry = close_price
-    sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
-    tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
+    
+    # SL/TP dựa theo ATR
+    sl = entry - 1.5 * atr_value if ema_up else (entry + 1.5 * atr_value)
+    tp = entry + 3 * atr_value if ema_up else (entry - 3 * atr_value)
+    
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
     if any(x is None for x in [entry, sl, tp]):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
