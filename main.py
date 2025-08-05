@@ -262,7 +262,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
-    if bb_width < 0.002:
+    if bb_width < 0.003: # cao lỏng
         print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
@@ -295,7 +295,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.003:
+    if abs(entry - sl)/entry < 0.002:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
