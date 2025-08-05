@@ -285,8 +285,9 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # SL/TP dựa theo ATR
     sl = entry - 1.5 * atr_value if ema_up else (entry + 1.5 * atr_value)
     tp = entry + 3 * atr_value if ema_up else (entry - 3 * atr_value)
-    
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
+    print(f"[DEBUG] {symbol} | Entry: {entry:.4f}, SL: {sl:.4f}, TP: {tp:.4f}, ATR: {atr_value:.4f}, RR: {rr:.2f}, Biên độ SL: {(abs(entry - sl)/entry)*100:.2f}%")
+    
     if any(x is None for x in [entry, sl, tp]):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
