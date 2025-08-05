@@ -75,7 +75,7 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
+        threshold = np.percentile(volumes[:-1], 60) # TOP 40%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
@@ -247,16 +247,16 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 70%
+    # Volume spike top 60%
     if not is_volume_spike(df):
         print(f"[DEBUG] {symbol}: loại do volume")
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 12:
+    if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
-    if bb_width < 0.003:
+    if bb_width < 0.002:
         print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
@@ -284,7 +284,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.005:
+    if abs(entry - sl)/entry < 0.003:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
