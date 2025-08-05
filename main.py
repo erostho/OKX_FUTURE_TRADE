@@ -75,7 +75,7 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 40) # TOP 40%
+        threshold = np.percentile(volumes[:-1], 60) # TOP 40%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
@@ -136,7 +136,7 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
         logging.debug(f"📤 Gửi request nến OKX: instId={symbol}, bar={timeframe}, limit={limit}")
         response = requests.get(url)
         data = response.json()
-        logging.debug(f"📥 Kết quả trả về từ OKX: status={response.status_code}, json={data}")
+
 
         if 'data' not in data or not data['data']:
             logging.warning(f"⚠️ Không có dữ liệu OHLCV: instId={symbol}, bar={timeframe}")
@@ -253,7 +253,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 15:
+    if adx < 12:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.005:
@@ -280,7 +280,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
     
-    if rr < 1.0:
+    if rr < 0.8:
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
