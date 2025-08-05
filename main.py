@@ -262,7 +262,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
-    if bb_width < 0.003: # cao lỏng
+    if bb_width < 0.005: # cao lỏng
         print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
@@ -274,7 +274,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # Support/Resistance logic
     support, resistance = find_support_resistance(df)
-    near_sr = abs(close_price - support)/support < 0.01 or abs(close_price - resistance)/resistance < 0.01
+    near_sr = abs(close_price - support)/support < 0.02 or abs(close_price - resistance)/resistance < 0.02
 
     # RR & Entry
     df_recent = df.iloc[-10:]
@@ -296,7 +296,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.002:
+    if abs(entry - sl)/entry < 0.004:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
