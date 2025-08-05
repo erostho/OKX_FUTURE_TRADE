@@ -75,13 +75,13 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 60) # TOP 40%
+        threshold = np.percentile(volumes[:-1], 40) # TOP 40%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
             return False
 
-        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 60% = {threshold:.0f}")
 
         if v_now <= threshold:
             logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
@@ -109,9 +109,9 @@ def find_support_resistance(df, window=30):
 
 def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
     strength = 1
-    if abs(tp - entry) / entry > 0.03:
+    if abs(tp - entry) / entry > 0.05:
         strength += 1
-    if abs(entry - sl) / entry > 0.03:
+    if abs(entry - sl) / entry > 0.05:
         strength += 1
     if short_trend == mid_trend:
         strength += 1
@@ -237,13 +237,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     df["bb_std"] = df["close"].rolling(20).std()
     df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
     df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
-    
-    tr1 = df["high"] - df["low"]
-    tr2 = (df["high"] - df["close"].shift()).abs()
-    tr3 = (df["low"] - df["close"].shift()).abs()
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    df["atr"] = tr.rolling(window=14).mean()
-    
+
     latest = df.iloc[-1]
     close_price = latest["close"]
     ema_up = latest["ema20"] > latest["ema50"]
@@ -253,7 +247,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 60%
+    # Volume spike top 70%
     if not is_volume_spike(df):
         print(f"[DEBUG] {symbol}: loại do volume")
         return None, None, None, None, False
@@ -262,7 +256,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     if adx < 15:
         print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
         return None, None, None, None, False
-    if bb_width < 0.005: # cao lỏng
+    if bb_width < 0.005:
         print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
@@ -274,20 +268,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # Support/Resistance logic
     support, resistance = find_support_resistance(df)
-    near_sr = abs(close_price - support)/support < 0.02 or abs(close_price - resistance)/resistance < 0.02
+    near_sr = abs(close_price - support)/support < 0.03 or abs(close_price - resistance)/resistance < 0.03
 
     # RR & Entry
     df_recent = df.iloc[-10:]
-    # Entry = close giá hiện tại
-    atr_value = df["atr"].iloc[-1]
     entry = close_price
-    
-    # SL/TP dựa theo ATR
-    sl = entry - 1.5 * atr_value if ema_up else (entry + 1.5 * atr_value)
-    tp = entry + 3 * atr_value if ema_up else (entry - 3 * atr_value)
+    sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
+    tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
-    print(f"[DEBUG] {symbol} | Entry: {entry:.4f}, SL: {sl:.4f}, TP: {tp:.4f}, ATR: {atr_value:.4f}, RR: {rr:.2f}, Biên độ SL: {(abs(entry - sl)/entry)*100:.2f}%")
-    
     if any(x is None for x in [entry, sl, tp]):
         print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
@@ -296,7 +284,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
-    if abs(entry - sl)/entry < 0.004:
+    if abs(entry - sl)/entry < 0.005:
         print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
@@ -319,14 +307,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Xác nhận tín hiệu
     signal = None
     if (
-        ema_up and not ema_up_1h and rsi > 45 and rsi_1h > 45
+        ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
         and macd_diff > 0.05 and adx > 20
         and not near_sr == False
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
-        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 45
+        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
         and macd_diff > 0.001 and adx > 20
         and not near_sr == False
     ):
@@ -349,7 +337,7 @@ def analyze_trend_multi(symbol):
             rsi = df['rsi'].iloc[-1]
             ema20 = df['ema20'].iloc[-1]
             ema50 = df['ema50'].iloc[-1]
-            return 2 if (rsi > 55 and ema20 > ema50) else 1 if (rsi > 45 and ema20 > ema50) else 0
+            return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
         except:
             return 0
 
@@ -611,7 +599,4 @@ def backtest_signals_90_days(symbol_list):
             sheet.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
-
-
-
 
