@@ -156,7 +156,32 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     except Exception as e:
         logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe_input}]: {e}")
         return None
+        
+def calculate_adx(df, period=14):
+    high = pd.to_numeric(df["high"], errors="coerce")
+    low = pd.to_numeric(df["low"], errors="coerce")
+    close = pd.to_numeric(df["close"], errors="coerce")
 
+    plus_dm = high.diff()
+    minus_dm = low.diff()
+    plus_dm[plus_dm < 0] = 0
+    minus_dm[minus_dm > 0] = 0
+    minus_dm = abs(minus_dm)
+
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.rolling(window=period).mean()
+    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
+    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
+    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
+    adx = dx.rolling(window=period).mean()
+
+    df["adx"] = adx
+    return df
+    
 def calculate_indicators(df):
     df["close"] = pd.to_numeric(df["close"], errors="coerce")
     df["ema20"] = df["close"].ewm(span=20).mean()
@@ -186,31 +211,6 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
-
-def calculate_adx(df, period=14):
-    high = pd.to_numeric(df["high"], errors="coerce")
-    low = pd.to_numeric(df["low"], errors="coerce")
-    close = pd.to_numeric(df["close"], errors="coerce")
-
-    plus_dm = high.diff()
-    minus_dm = low.diff()
-    plus_dm[plus_dm < 0] = 0
-    minus_dm[minus_dm > 0] = 0
-    minus_dm = abs(minus_dm)
-
-    tr1 = high - low
-    tr2 = abs(high - close.shift())
-    tr3 = abs(low - close.shift())
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-
-    atr = tr.rolling(window=period).mean()
-    plus_di = 100 * (plus_dm.rolling(window=period).mean() / atr)
-    minus_di = 100 * (minus_dm.rolling(window=period).mean() / atr)
-    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx = dx.rolling(window=period).mean()
-
-    df["adx"] = adx
-    return df
     
 
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
