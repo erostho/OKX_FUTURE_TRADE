@@ -325,7 +325,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
             signal = "SHORT"
 
     # ✅ Log cuối cùng nếu coin vượt tất cả bộ lọc
-    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%")
+    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
 
