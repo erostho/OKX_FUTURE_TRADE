@@ -249,15 +249,15 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # Volume spike top 70%
     if not is_volume_spike(df):
-        print(f"[DEBUG] {symbol}: loại do volume")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do volume")
         return None, None, None, None, False
 
     # Choppy filter
     if adx < 12:
-        print(f"[DEBUG] {symbol}: loại do ADX = {adx:.2f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f}")
         return None, None, None, None, False
     if bb_width < 0.005:
-        print(f"[DEBUG] {symbol}: loại do BB Width = {bb_width:.4f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f}")
         return None, None, None, None, False
 
     # Price Action (Engulfing or Breakout)
@@ -277,15 +277,15 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
     if any(x is None for x in [entry, sl, tp]):
-        print(f"[DEBUG] {symbol}: loại do thiếu giá trị entry/sl/tp")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
     
     if rr < 0.8:
-        print(f"[DEBUG] {symbol}: loại do RR = {rr:.2f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f}")
         return None, None, None, None, False
     
     if abs(entry - sl)/entry < 0.003:
-        print(f"[DEBUG] {symbol}: loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
     # Multi-timeframe confirmation (1H đồng pha 15m)
