@@ -501,7 +501,7 @@ def clean_old_rows():
         for row in rows:
             try:
                 row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
-                if (today - row_date).days <= 2:
+                if (today - row_date).days < 3:
                     new_rows.append(row)
             except:
                 new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
