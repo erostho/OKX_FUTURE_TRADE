@@ -75,13 +75,13 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 60) # TOP 40%
+        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
             return False
 
-        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 60% = {threshold:.0f}")
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
 
         if v_now <= threshold:
             logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
@@ -254,10 +254,10 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < 12:
+    if adx < 30:
         print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
-    if bb_width < 0.005:
+    if bb_width < 0.03:
         print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
@@ -283,8 +283,8 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
 
-    if rr < 0.8:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 0.8")
+    if rr < 1.5:
+        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
         return None, None, None, None, False
 
     if abs(entry - sl)/entry < 0.003:
