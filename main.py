@@ -218,6 +218,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     df = df_15m.copy()
     df = clean_missing_data(df)
     if df is None or len(df) < 30:
+        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
         return None, None, None, None, False
 
     # Tính chỉ báo
@@ -249,41 +250,43 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # Volume spike top 70%
     if not is_volume_spike(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do volume")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
         return None, None, None, None, False
 
     # Choppy filter
     if adx < 12:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
     if bb_width < 0.005:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
-    # Price Action (Engulfing or Breakout)
+    # Price Action (Engulfing hoặc Breakout)
     recent = df["close"].iloc[-4:].tolist()
     is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
     if not is_engulfing and not detect_breakout_pullback(df):
+        print(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
         return None, None, None, None, False
 
-    # Support/Resistance logic
+    # Gần vùng hỗ trợ/kháng cự
     support, resistance = find_support_resistance(df)
     near_sr = abs(close_price - support)/support < 0.03 or abs(close_price - resistance)/resistance < 0.03
 
-    # RR & Entry
+    # Entry - SL - TP - RR
     df_recent = df.iloc[-10:]
     entry = close_price
     sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
     tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
+
     if any(x is None for x in [entry, sl, tp]):
         print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
-    
+
     if rr < 0.8:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f}")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 0.8")
         return None, None, None, None, False
-    
+
     if abs(entry - sl)/entry < 0.003:
         print(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
@@ -293,7 +296,8 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         df1h = calculate_indicators(df_1h.copy())
         ema_up_1h = df1h["ema20"].iloc[-1] > df1h["ema50"].iloc[-1]
         rsi_1h = df1h["rsi"].iloc[-1]
-    except:
+    except Exception as e:
+        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
         return None, None, None, None, False
 
     # Kiểm tra xu hướng BTC
@@ -301,27 +305,27 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         btc_df = fetch_ohlcv_okx("BTC-USDT", "15m", limit=10)
         btc_df["close"] = pd.to_numeric(btc_df["close"])
         btc_change = (btc_df["close"].iloc[-1] - btc_df["close"].iloc[-3]) / btc_df["close"].iloc[-3]
-    except:
+    except Exception as e:
+        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
         btc_change = 0
 
     # Xác nhận tín hiệu
     signal = None
     if (
         ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.05 and adx > 20
-        and not near_sr == False
+        and macd_diff > 0.05 and adx > 20 and near_sr
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
         ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
-        and macd_diff > 0.001 and adx > 20
-        and not near_sr == False
+        and macd_diff > 0.001 and adx > 20 and near_sr
     ):
         if btc_change <= 0.01:
             signal = "SHORT"
-    # Sau tất cả các điều kiện lọc
-    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích")
+
+    # ✅ Log cuối cùng nếu coin vượt tất cả bộ lọc
+    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%")
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
 
