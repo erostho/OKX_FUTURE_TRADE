@@ -507,6 +507,7 @@ def clean_old_rows():
                 new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
 
         # Ghi lại: headers + rows mới
+        sheet.clear()
         sheet.update([headers] + new_rows)
         logging.info(f"🧹 Đã xoá những dòng quá 3 ngày (giữ lại {len(new_rows)} dòng)")
 
