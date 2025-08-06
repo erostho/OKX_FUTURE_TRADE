@@ -320,7 +320,8 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     ):
         if btc_change <= 0.01:
             signal = "SHORT"
-
+    # Sau tất cả các điều kiện lọc
+    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích")
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
 
