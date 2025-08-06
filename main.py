@@ -257,7 +257,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     if adx < 25:
         print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
-    if bb_width < 0.03:
+    if bb_width < 0.02:
         print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
