@@ -65,32 +65,34 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
+    
+# sideway 75-85, biến động mạnh 60-65,
 
-def is_volume_spike(df):
+
+def is_volume_spike(df, percentile=70):
+    """
+    Kiểm tra volume spike dựa trên percentile tùy biến.
+    Mặc định: percentile=70 (top 30% cao nhất).
+    """
     try:
-        volumes = df["volume"].iloc[-20:]
-
+        volumes = df["volume"].iloc[-30:]
         if len(volumes) < 10:
             logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(volumes)} nến")
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
+        threshold = np.percentile(volumes[:-1], percentile)  # percentile tùy biến
 
         if np.isnan(v_now) or np.isnan(threshold):
-            logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
+            logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN → v_now={v_now}, threshold={threshold}")
             return False
 
-        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold {percentile}% = {threshold:.0f}")
 
-        if v_now <= threshold:
-            logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
-            return False
-
-        return True
+        return v_now >= threshold
 
     except Exception as e:
-        logging.debug(f"[DEBUG][Volume FAIL] Lỗi khi kiểm tra volume: {e}")
+        logging.error(f"[ERROR][Volume Check] {e}")
         return False
 
 def detect_breakout_pullback(df):
@@ -99,8 +101,8 @@ def detect_breakout_pullback(df):
     ema = df["ema20"].iloc[-1]
     price = df["close"].iloc[-1]
     breakout = price > recent_high
-    pullback = price < recent_high and price > ema
-    return breakout and pullback
+    pullback = (price <= recent_high) and (price >= ema)
+    return breakout or pullback
 
 def find_support_resistance(df, window=30):
     highs = df["high"].iloc[-window:]
@@ -312,14 +314,14 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Xác nhận tín hiệu
     signal = None
     if (
-        ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.05 and adx > 20 and near_sr
+        ema_up and ema_up_1h and rsi > 55 and rsi_1h > 50
+        and macd_diff > 0.02 and adx > 20 and near_sr
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
-        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
-        and macd_diff > 0.001 and adx > 20 and near_sr
+        ema_down and ema_down_1h and rsi < 45 and rsi_1h < 50
+        and macd_diff > 0.02 and adx > 20 and near_sr
     ):
         if btc_change <= 0.01:
             signal = "SHORT"
