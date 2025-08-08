@@ -67,8 +67,6 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     return df.dropna(subset=required_cols)
     
 # sideway 75-85, biến động mạnh 60-65,
-
-
 def is_volume_spike(df, percentile=70):
     """
     Kiểm tra volume spike dựa trên percentile tùy biến.
@@ -250,9 +248,10 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
-    # Volume spike top 70%
-    if not is_volume_spike(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
+
+    # Volume spike top X% (tùy chỉnh)
+    if not is_volume_spike(df, percentile=70):
+        print(f"[DEBUG] {symbol}: ⚠️ loại do volume chưa đạt top 30% (percentile=70)")
         return None, None, None, None, False
 
     # Choppy filter
