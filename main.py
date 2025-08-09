@@ -29,11 +29,6 @@ logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
-
-VOLUME_MODE = os.getenv("VOLUME_MODE", "auto")       # 'auto' | 'percentile' | 'factor'
-VOLUME_PERCENTILE = int(os.getenv("VOLUME_PERCENTILE", "75"))  # nếu mode='percentile'
-VOLUME_FACTOR = float(os.getenv("VOLUME_FACTOR", "1.5"))       # nếu mode='factor'
-
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SHEET_CSV_URL = os.getenv("SHEET_CSV_URL")  # Đặt lại biến nếu chưa có
@@ -70,45 +65,75 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
-    
-# sideway 75-85, biến động mạnh 60-65,
 
-def is_volume_spike(df, percentile=70):
-    """Volume spike theo percentile: v_now >= percentile(vols[:-1])"""
-    vols = df["volume"].iloc[-30:]
-    if len(vols) < 10: 
-        logging.debug(f"[DEBUG][Volume] thiếu dữ liệu: {len(vols)} nến")
-        return False
-    v_now = vols.iloc[-1]
-    thr = np.percentile(vols[:-1], percentile)
-    if np.isnan(v_now) or np.isnan(thr): 
-        return False
-    logging.debug(f"[DEBUG][Volume] v_now={v_now:.0f}, thr P{percentile}={thr:.0f}")
-    return v_now >= thr
 
-def is_volume_spike_factor(df, factor=1.5):
-    """Volume spike theo hệ số: v_now >= mean(vols[:-1]) * factor"""
-    vols = df["volume"].iloc[-30:]
-    if len(vols) < 10: 
-        return False
-    v_now = vols.iloc[-1]
-    base = vols[:-1].mean()
-    if np.isnan(v_now) or np.isnan(base): 
-        return False
-    logging.debug(f"[DEBUG][Volume] v_now={v_now:.0f}, mean*{factor}={base*factor:.0f}")
-    return v_now >= base * factor
-
-def choose_volume_percentile(adx, bb_width):
+def is_volume_spike(df, percentile=None, factor=None, mode=None):
     """
-    AUTO: chọn percentile theo trạng thái thị trường.
-    - Sideway (ADX thấp / BB hẹp) -> đòi volume mạnh hơn
+    Volume spike check with adaptive modes:
+    - mode='auto': choose percentile by ADX & BB width
+    - mode='percentile': use fixed percentile (default from ENV or arg)
+    - mode='factor': compare to mean * factor
+    Keeps signature compatible with older calls (no positional args required).
     """
-    if adx < 20 or bb_width < 0.010:
-        return 85   # top 15% mạnh nhất
-    elif adx < 25 or bb_width < 0.015:
-        return 80   # top 20%
-    else:
-        return 70   # trend chạy -> nới lọc để không bỏ lỡ
+    try:
+        vols = df["volume"].iloc[-30:]
+        if len(vols) < 10:
+            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(vols)} nến")
+            return False
+        v_now = float(vols.iloc[-1])
+        # derive adx and bb_width from df (already computed)
+        try:
+            latest = df.iloc[-1]
+            adx_now = float(latest.get("adx", np.nan))
+            bb_width_now = float((latest.get("bb_upper", np.nan) - latest.get("bb_lower", np.nan)) / latest.get("close", np.nan))
+        except Exception:
+            adx_now = np.nan
+            bb_width_now = np.nan
+
+        mode = (mode or os.getenv("VOLUME_MODE", "auto")).lower()
+        percentile = int(percentile if percentile is not None else os.getenv("VOLUME_PERCENTILE", "75"))
+        factor = float(factor if factor is not None else os.getenv("VOLUME_FACTOR", "1.5"))
+
+        if mode == "auto":
+            # sideway => require stronger spike
+            if (not np.isnan(adx_now) and adx_now < 20) or (not np.isnan(bb_width_now) and bb_width_now < 0.010):
+                percentile = max(percentile, 85)
+            elif (not np.isnan(adx_now) and adx_now < 25) or (not np.isnan(bb_width_now) and bb_width_now < 0.015):
+                percentile = max(percentile, 80)
+            thr = np.percentile(vols[:-1], percentile)
+            logging.debug(f"[DEBUG][Volume AUTO] v_now={v_now:.0f}, P{percentile}={thr:.0f}, adx={adx_now}, bbw={bb_width_now}")
+            return v_now >= float(thr)
+        elif mode == "percentile":
+            thr = np.percentile(vols[:-1], percentile)
+            logging.debug(f"[DEBUG][Volume PCTL] v_now={v_now:.0f}, P{percentile}={thr:.0f}")
+            return v_now >= float(thr)
+        else:  # factor
+            base = float(vols[:-1].mean())
+            thr = base * factor
+            logging.debug(f"[DEBUG][Volume FACT] v_now={v_now:.0f}, mean*{factor}={thr:.0f}")
+            return v_now >= thr
+    except Exception as e:
+        logging.error(f"[ERROR][Volume Check] {e}")
+        return False
+
+        v_now = volumes.iloc[-1]
+        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
+
+        if np.isnan(v_now) or np.isnan(threshold):
+            logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
+            return False
+
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+
+        if v_now <= threshold:
+            logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
+            return False
+
+        return True
+
+    except Exception as e:
+        logging.debug(f"[DEBUG][Volume FAIL] Lỗi khi kiểm tra volume: {e}")
+        return False
 
 def detect_breakout_pullback(df):
     df["ema20"] = df["close"].ewm(span=20).mean()
@@ -116,8 +141,8 @@ def detect_breakout_pullback(df):
     ema = df["ema20"].iloc[-1]
     price = df["close"].iloc[-1]
     breakout = price > recent_high
-    pullback = (price <= recent_high) and (price >= ema)
-    return breakout or pullback
+    pullback = price < recent_high and price > ema
+    return breakout and pullback
 
 def find_support_resistance(df, window=30):
     highs = df["high"].iloc[-window:]
@@ -265,6 +290,10 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     adx = latest["adx"]
     bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
 
+    # Volume spike top 70%
+    if not is_volume_spike(df):
+        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
+        return None, None, None, None, False
 
     # Choppy filter
     if adx < 20:
@@ -273,23 +302,16 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     if bb_width < 0.02:
         print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
+    # BB width slope (mở rộng) 
+    try:
+        bbw_series = (df['bb_upper'] - df['bb_lower'])/df['close']
+        bbw_slope = (bbw_series.iloc[-1] - bbw_series.iloc[-4]) / 3
+        if bbw_slope <= 0:
+            print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width không mở rộng (slope={bbw_slope:.5f})")
+            return None, None, None, None, False
+    except Exception:
+        pass
 
-    # --- Volume spike filter (cơ chế mới) ---
-    if VOLUME_MODE == "auto":
-        p = choose_volume_percentile(adx, bb_width)
-        ok = is_volume_spike(df, percentile=p)
-        why = f"auto-P{p}"
-    elif VOLUME_MODE == "percentile":
-        ok = is_volume_spike(df, percentile=VOLUME_PERCENTILE)
-        why = f"fixed-P{VOLUME_PERCENTILE}"
-    else:  # 'factor'
-        ok = is_volume_spike_factor(df, factor=VOLUME_FACTOR)
-        why = f"mean*x{VOLUME_FACTOR}"
-    
-    if not ok:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do volume chưa đạt ngưỡng ({why})")
-        return None, None, None, None, False
-    
     # Price Action (Engulfing hoặc Breakout)
     recent = df["close"].iloc[-4:].tolist()
     is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
@@ -300,6 +322,23 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     # Gần vùng hỗ trợ/kháng cự
     support, resistance = find_support_resistance(df)
     near_sr = abs(close_price - support)/support < 0.03 or abs(close_price - resistance)/resistance < 0.03
+    # --- Nâng cấp: S/R theo hướng & MACD theo percentile & Candle quality ---
+    near_support = abs(close_price - support)/support < 0.03 if support else False
+    near_resistance = abs(close_price - resistance)/resistance < 0.03 if resistance else False
+
+    hist_series = (df["macd"] - df["macd_signal"]).dropna().iloc[-200:]
+    macd_thr = np.percentile(hist_series.abs(), 60) if len(hist_series) > 20 else 0.0
+    macd_hist_now = (df["macd"].iloc[-1] - df["macd_signal"].iloc[-1])
+    macd_ok_long = (macd_hist_now > 0) and (abs(macd_hist_now) >= macd_thr)
+    macd_ok_short = (macd_hist_now < 0) and (abs(macd_hist_now) >= macd_thr)
+
+    atr_val = (df["high"] - df["low"]).rolling(14).mean().iloc[-1]
+    body = abs(df["close"].iloc[-1] - df["open"].iloc[-1])
+    candle_ok_long = (df["close"].iloc[-1] > df["open"].iloc[-1]) and (body >= 0.6 * atr_val)
+    candle_ok_short = (df["close"].iloc[-1] < df["open"].iloc[-1]) and (body >= 0.6 * atr_val)
+
+    pattern_ok = detect_breakout_pullback(df)
+
 
     # Entry - SL - TP - RR
     df_recent = df.iloc[-10:]
@@ -342,13 +381,13 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     signal = None
     if (
         ema_up and ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.02 and adx > 20 and near_sr
+        and adx > 20 and near_support and macd_ok_long and pattern_ok and candle_ok_long
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
         ema_down and ema_down_1h and rsi < 45 and rsi_1h < 50
-        and macd_diff > 0.02 and adx > 20 and near_sr
+        and adx > 20 and near_resistance and macd_ok_short and pattern_ok and candle_ok_short
     ):
         if btc_change <= 0.01:
             signal = "SHORT"
