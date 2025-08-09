@@ -581,7 +581,7 @@ def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
 
     for symbol in symbol_list:
         with mute_logs():
-        logging.info(f"🔍 Backtest: {symbol}")
+            logging.info(f"🔍 Backtest: {symbol}")
         try:
             df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
             if df is None or len(df) < 100:
