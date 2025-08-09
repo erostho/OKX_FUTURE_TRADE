@@ -785,10 +785,10 @@ def run_bot():
     try:
         msgs = []
         for mode, sym, side, entry, sl, tp, rating in tg_candidates:
-            if rating >= 4:  # > 3 sao
+            if rating >= 3:  # > 2 sao
                 msgs.append(f"[{mode}] {sym} {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n⭐️ {rating}/5")
         if msgs and 'send_telegram_message' in globals():
-            send_telegram_message("🔥 TỔNG HỢP KÈO CHẤT (>=4⭐️)\n\n" + "\n\n".join(msgs))
+            send_telegram_message("🔥 TỔNG HỢP TÍN HIỆU MỚI (>=3⭐️)\n\n" + "\n\n".join(msgs))
     except Exception as e:
         logging.error(f"[TG] gửi tổng hợp lỗi: {e}")
     
