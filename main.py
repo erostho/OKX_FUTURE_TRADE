@@ -440,23 +440,22 @@ def analyze_trend_multi(symbol):
         'mid':   ['1D', '1W', '1W', '1M']
     }
 
-    def get_score(tf):
-        try:
-            df = fetch_ohlcv(symbol, tf.lower(), 50)
-            df = calculate_indicators(df)
-            rsi = df['rsi'].iloc[-1]
-            ema20 = df['ema20'].iloc[-1]
-            ema50 = df['ema50'].iloc[-1]
-            return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
-        except:
-            return 0
+def get_score(tf):
+    try:
+        df = fetch_ohlcv(symbol, tf.lower(), 50)
+        df = calculate_indicators(df)
+        rsi = df['rsi'].iloc[-1]
+        ema20 = df['ema20'].iloc[-1]
+        ema50 = df['ema50'].iloc[-1]
+        return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
+    except:
+        return 0
 
-    short_score = sum([get_score(tf) for tf in tf_map['short']])
-    mid_score = sum([get_score(tf) for tf in tf_map['mid']])
+short_score = sum([get_score(tf) for tf in tf_map['short']])
+mid_score = sum([get_score(tf) for tf in tf_map['mid']])
 
-    def to_text(score):
-        return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
-
+def to_text(score):
+    return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
     return to_text(short_score), to_text(mid_score)
     
 
@@ -535,8 +534,8 @@ def _scan_with_cfg(coin_list, cfg, tag):
                     f"{signal} " + ("⭐️" * rating) + f" [{tag}]",
                     entry, sl, tp, short_trend, mid_trend, now
                 ])
-                if rating >= 4:
-                    messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
+            if rating >= 4:
+                messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
                 done_symbols.add(symbol)
                 summary="✅ đạt tín hiệu"
             
@@ -545,7 +544,7 @@ def _scan_with_cfg(coin_list, cfg, tag):
             
             # log one line per symbol per mode
             log_once(tag, symbol, f"[{tag}] {symbol}: {summary}", level="info")
-                pass
+            pass
 # append to sheet & telegram using existing helpers
     try:
         sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
