@@ -568,7 +568,7 @@ def _scan_with_cfg(coin_list, cfg, tag):
             logging.warning(f"TG error: {e}")
     return done_symbols
 # === BACKTEST 90 NGÀY ===
-    except Exception:
+        except Exception:
             headers = ["Symbol", "Signal", "Entry", "SL", "TP", "Short Trend", "Mid Trend", "Timestamp"]
             sheet.insert_row(headers, 1)
         body = sheet.get_all_values()[1:]
