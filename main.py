@@ -80,7 +80,7 @@ COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 STRICT_CFG = {
     "VOLUME_PERCENTILE": 80,   # top 20%
     "ADX_MIN_15M": 22,
-    "BBW_MIN": 0.012,
+    "BBW_MIN": 0.013,
     "RR_MIN": 1.5,
     "NEWS_BLACKOUT_MIN": 60,   # phút
     "ATR_CLEARANCE_MIN": 0.8,  # >= 0.8 ATR
@@ -97,11 +97,11 @@ STRICT_CFG = {
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 70,   # top 35%
-    "ADX_MIN_15M": 18,
+    "ADX_MIN_15M": 20,
     "BBW_MIN": 0.012,
     "RR_MIN": 1.4,
-    "NEWS_BLACKOUT_MIN": 40, # phút
-    "ATR_CLEARANCE_MIN": 0.65, # >= 0.65ART
+    "NEWS_BLACKOUT_MIN": 50, # phút
+    "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
@@ -388,7 +388,7 @@ def detect_signal(df_15m: pd.DataFrame,
     macd_short_min = cfg.get("MACD_DIFF_SHORT_MIN", 0.001)
     allow_1h_neu   = cfg.get("ALLOW_1H_NEUTRAL", False)
     body_atr_k     = cfg.get("BREAKOUT_BODY_ATR", 0.6)
-    sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.05)  # 5%
+    sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.04)  # 4%
 
     fail = []  # gom lý do rớt
 
