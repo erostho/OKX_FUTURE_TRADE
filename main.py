@@ -98,7 +98,7 @@ STRICT_CFG = {
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 60,   # top 40%
     "ADX_MIN_15M": 15,
-    "BBW_MIN": 0.01,
+    "BBW_MIN": 0.009,
     "RR_MIN": 1.3,
     "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.6, # >= 0.6ART
@@ -783,7 +783,7 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, cfg.get("TAG","")])
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "STRICT")])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
@@ -824,7 +824,7 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, cfg.get("TAG","")])
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "RELAX"])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
         if ok:
