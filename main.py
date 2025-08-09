@@ -253,7 +253,28 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
-    
+
+def candle_quality_ok(df, side):
+    """
+    Kiểm tra chất lượng nến để tránh tín hiệu nhiễu.
+    - side: "long" hoặc "short"
+    - df: DataFrame chứa OHLCV
+    """
+    last = df.iloc[-1]
+    body = abs(last['close'] - last['open'])
+    wick_top = last['high'] - max(last['close'], last['open'])
+    wick_bottom = min(last['close'], last['open']) - last['low']
+
+    # Ví dụ lọc: thân nến >= 50% tổng range
+    range_total = last['high'] - last['low']
+    if range_total == 0:
+        return False
+
+    body_ratio = body / range_total
+    if side == "long":
+        return (last['close'] > last['open']) and (body_ratio >= 0.5) and (wick_bottom <= body)
+    else:
+        return (last['close'] < last['open']) and (body_ratio >= 0.5) and (wick_top <= body)
 
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
@@ -525,6 +546,60 @@ def _scan_with_cfg(coin_list, cfg, tag):
         except Exception as e:
             logging.warning(f"TG error: {e}")
     return done_symbols
+# === BACKTEST 90 NGÀY ===
+
+def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
+    # Giả định đã có fetch_ohlcv_okx và detect_signal
+    today = datetime.datetime.now(datetime.timezone.utc)
+    start_time = today - datetime.timedelta(days=90)
+    results = []
+
+    global CURRENT_CFG
+    if cfg is None:
+        cfg = STRICT_CFG
+    CURRENT_CFG = cfg
+
+    for symbol in symbol_list:
+        logging.info(f"🔍 Backtest: {symbol}")
+        try:
+            df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
+            if df is None or len(df) < 100:
+                continue
+
+            df = calculate_indicators(df)
+            for i in range(50, len(df)-20):  # chừa nến để kiểm tra sau
+                sub_df = df.iloc[i-50:i].copy()
+                df_1h = df.iloc[i-100:i].copy()  # placeholder
+                signal, entry, sl, tp, _ = detect_signal(sub_df, df_1h, symbol)
+                if signal and entry and sl and tp:
+                    future_data = df.iloc[i:i+20]
+                    result = "NONE"
+                    for j in range(len(future_data)):
+                        price = future_data.iloc[j]["high"] if signal == "LONG" else future_data.iloc[j]["low"]
+                        if signal == "LONG" and price >= tp:
+                            result = "WIN"
+                            break
+                        elif signal == "LONG" and price <= sl:
+                            result = "LOSS"
+                            break
+                        elif signal == "SHORT" and price <= tp:
+                            result = "WIN"
+                            break
+                        elif signal == "SHORT" and price >= sl:
+                            result = "LOSS"
+                            break
+                    results.append([symbol, signal, entry, sl, tp, result, df.iloc[i]["ts"].strftime("%Y-%m-%d %H:%M")])
+        except Exception as e:
+            logging.error(f"Backtest lỗi {symbol}: {e}")
+            continue
+
+    # Ghi kết quả ra sheet BACKTEST_RESULT
+    try:
+        sheet = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
+        for row in results:
+            sheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
 
 
 def run_bot():
@@ -616,57 +691,3 @@ def append_to_google_sheet(sheet, row):
         logging.error(f"❌ Không ghi được Google Sheet: {e}")
 
 
-# === BACKTEST 90 NGÀY ===
-
-def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
-    # Giả định đã có fetch_ohlcv_okx và detect_signal
-    today = datetime.datetime.now(datetime.timezone.utc)
-    start_time = today - datetime.timedelta(days=90)
-    results = []
-
-    global CURRENT_CFG
-    if cfg is None:
-        cfg = STRICT_CFG
-    CURRENT_CFG = cfg
-
-    for symbol in symbol_list:
-        logging.info(f"🔍 Backtest: {symbol}")
-        try:
-            df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
-            if df is None or len(df) < 100:
-                continue
-
-            df = calculate_indicators(df)
-            for i in range(50, len(df)-20):  # chừa nến để kiểm tra sau
-                sub_df = df.iloc[i-50:i].copy()
-                df_1h = df.iloc[i-100:i].copy()  # placeholder
-                signal, entry, sl, tp, _ = detect_signal(sub_df, df_1h, symbol)
-                if signal and entry and sl and tp:
-                    future_data = df.iloc[i:i+20]
-                    result = "NONE"
-                    for j in range(len(future_data)):
-                        price = future_data.iloc[j]["high"] if signal == "LONG" else future_data.iloc[j]["low"]
-                        if signal == "LONG" and price >= tp:
-                            result = "WIN"
-                            break
-                        elif signal == "LONG" and price <= sl:
-                            result = "LOSS"
-                            break
-                        elif signal == "SHORT" and price <= tp:
-                            result = "WIN"
-                            break
-                        elif signal == "SHORT" and price >= sl:
-                            result = "LOSS"
-                            break
-                    results.append([symbol, signal, entry, sl, tp, result, df.iloc[i]["ts"].strftime("%Y-%m-%d %H:%M")])
-        except Exception as e:
-            logging.error(f"Backtest lỗi {symbol}: {e}")
-            continue
-
-    # Ghi kết quả ra sheet BACKTEST_RESULT
-    try:
-        sheet = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
-        for row in results:
-            sheet.append_row(row, value_input_option="USER_ENTERED")
-    except Exception as e:
-        logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
