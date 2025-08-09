@@ -296,7 +296,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-if adx < CURRENT_CFG.get("ADX_MIN_15M", 20):
+    if adx < CURRENT_CFG.get("ADX_MIN_15M", 20):
         # RELAX exception: allow if breakout + strong candle + volume spike
         if CURRENT_CFG.get("RELAX_EXCEPT", False):
             bo_up, bo_down = False, False
