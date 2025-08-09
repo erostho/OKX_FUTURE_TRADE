@@ -882,27 +882,21 @@ if __name__ == "__main__":
     run_bot()
 # === GỬI TELEGRAM ===
 
-def send_telegram_message(message: str):
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")  # hoặc ghi trực tiếp chuỗi token nếu bạn test thủ công
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")      # tương tự, gán chat_id thủ công nếu cần
-
-    if not bot_token or not chat_id:
-        print("❌ TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID chưa được cấu hình.")
-        return
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-
+def send_telegram_message(message):
     try:
+        token = TELEGRAM_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
         response = requests.post(url, data=payload)
-        response.raise_for_status()
-        print("✅ Đã gửi tin nhắn Telegram.")
+        if response.status_code != 200:
+            logging.warning(f"Telegram error: {response.text}")
     except Exception as e:
-        print(f"❌ Lỗi gửi Telegram: {e}")
+        logging.error(f"❌ Lỗi gửi Telegram: {e}")
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
