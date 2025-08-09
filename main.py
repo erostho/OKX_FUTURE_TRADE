@@ -25,20 +25,19 @@ from pytz import timezone
 import pytz
 
 logger = logging.getLogger()
-logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ====== LOG HELPERS (log-once & mute logs for backtest) ======
+# ====== LOG HELPERS (log-once & mute logs) ======
 from contextlib import contextmanager
-
-_logged_once = {}  # key = (mode, symbol) -> True
+_logged_once = {}
 
 def log_once(mode: str, symbol: str, msg: str, level="info"):
     key = (mode, symbol)
     if _logged_once.get(key):
         return
     _logged_once[key] = True
-    if level == "debug":
+    if level=="debug":
         logging.debug(msg)
     else:
         logging.info(msg)
@@ -49,13 +48,12 @@ def reset_log_once_for_mode(mode_tag: str, symbols: list):
 
 @contextmanager
 def mute_logs():
-    root_logger = logging.getLogger()
-    prev_level = root_logger.level
-    root_logger.setLevel(logging.WARNING)
+    prev = logging.getLogger().level
+    logging.getLogger().setLevel(logging.ERROR)
     try:
         yield
     finally:
-        root_logger.setLevel(prev_level)
+        logging.getLogger().setLevel(prev)
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -305,16 +303,12 @@ def candle_quality_ok(df, side):
     else:
         return (last['close'] < last['open']) and (body_ratio >= 0.5) and (wick_top <= body)
 
-def detect_signal(df_15m:
-    def _log(msg):
-        if not silent:
-            _log(str(msg))
- pd.DataFrame, df_1h: pd.DataFrame, symbol: str, cfg=None, silent=False, context="LIVE"):
+def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
     df = df_15m.copy()
     df = clean_missing_data(df)
     if df is None or len(df) < 30:
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
         return None, None, None, None, False
 
     # Tính chỉ báo
@@ -346,7 +340,7 @@ def detect_signal(df_15m:
 
     # Volume spike top 70%
     if not is_volume_spike(df):
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
         return None, None, None, None, False
 
     # Choppy filter
@@ -361,22 +355,22 @@ def detect_signal(df_15m:
             v_ok = is_volume_spike(df)
             candle_ok = candle_quality_ok(df, "long" if bo_up else "short")
             if not ((bo_up or bo_down) and v_ok and candle_ok):
-                _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+                print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
                 return None, None, None, None, False
         else:
-            _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+            print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
             return None, None, None, None, False
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
     if bb_width < CURRENT_CFG.get("BBW_MIN", 0.02):
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
     # Price Action (Engulfing hoặc Breakout)
     recent = df["close"].iloc[-4:].tolist()
     is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
     if not is_engulfing and not detect_breakout_pullback(df):
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
         return None, None, None, None, False
 
     # Gần vùng hỗ trợ/kháng cự
@@ -391,15 +385,15 @@ def detect_signal(df_15m:
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
 
     if any(x is None for x in [entry, sl, tp]):
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
 
     if rr < 1.5:
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
         return None, None, None, None, False
 
     if abs(entry - sl)/entry < 0.003:
-        _log(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
+        print(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
     # Multi-timeframe confirmation (1H đồng pha 15m)
@@ -408,7 +402,7 @@ def detect_signal(df_15m:
         ema_up_1h = df1h["ema20"].iloc[-1] > df1h["ema50"].iloc[-1]
         rsi_1h = df1h["rsi"].iloc[-1]
     except Exception as e:
-        _log(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
+        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
         return None, None, None, None, False
 
     # Kiểm tra xu hướng BTC
@@ -417,7 +411,7 @@ def detect_signal(df_15m:
         btc_df["close"] = pd.to_numeric(btc_df["close"])
         btc_change = (btc_df["close"].iloc[-1] - btc_df["close"].iloc[-3]) / btc_df["close"].iloc[-3]
     except Exception as e:
-        _log(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
+        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
         btc_change = 0
 
     # Xác nhận tín hiệu
@@ -436,7 +430,7 @@ def detect_signal(df_15m:
             signal = "SHORT"
 
     # ✅ Log cuối cùng nếu coin vượt tất cả bộ lọc
-    _log(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
+    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
 
@@ -493,42 +487,18 @@ def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
         return 5
     elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
         return 5
-    elif short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
-        return 4
-    elif short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
-        return 4
-    elif signal in ["LONG", "SHORT"]:
-        return 3
-    else:
-        return 2
-        
-def prepend_to_sheet(row_data: list):
-    try:
-        old_data = sheet.get_all_values()
-        headers = old_data[0]
-        body = old_data[1:]
-        
-        # Chèn dòng mới vào đầu
-        body.insert(0, row_data)
-
-        # Ghi lại toàn bộ (bao gồm cả header)
-        sheet.update([headers] + body)
-        logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
-
-    except Exception as e:
-        logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
-
-
-def _scan_with_cfg(coin_list, cfg, tag):
+    elif short_trend.startswith("Tăng") and mid_trenddef _scan_with_cfg(coin_list, cfg, tag):
     global CURRENT_CFG
     CURRENT_CFG = cfg
-    reset_log_once_for_mode(tag, coin_list)
     valid_signals = []
     messages = []
     done_symbols = set()
     count = 0
     for symbol in coin_list:
+        reset = False
         logging.info(f"🔍 [{tag}] Phân tích {symbol}...")
+        # mute all inner DEBUG/INFO for this symbol
+        with mute_logs():
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
         df_15m = fetch_ohlcv_okx(inst_id, "15m")
         df_1h = fetch_ohlcv_okx(inst_id, "1h")
@@ -538,15 +508,13 @@ def _scan_with_cfg(coin_list, cfg, tag):
         df_1h = calculate_indicators(df_1h).dropna()
         # Volume prefilter
         if not is_volume_spike(df_15m):
-            log_once(tag, symbol, f"[{tag}] {symbol}: không đạt điều kiện (volume)")
+            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
             continue
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
             logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
             continue
-        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol, cfg=cfg, silent=True, context=f"LIVE-{tag}")
-        if not signal:
-            log_once(tag, symbol, f"[{tag}] {symbol}: không đạt điều kiện (filter)")
+        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
         if signal:
             short_trend, mid_trend = analyze_trend_multi(symbol)
             rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
@@ -560,7 +528,15 @@ def _scan_with_cfg(coin_list, cfg, tag):
             if rating >= 4:
                 messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
             done_symbols.add(symbol)
-    # append to sheet & telegram using existing helpers
+            summary="✅ đạt tín hiệu"
+        
+        if 'summary' not in locals():
+            summary="❌ không đạt (rớt filter)"
+        
+        # log one line per symbol per mode
+        log_once(tag, symbol, f"[{tag}] {symbol}: {summary}", level="info")
+            pass
+# append to sheet & telegram using existing helpers
     try:
         sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
         sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
@@ -583,8 +559,25 @@ def _scan_with_cfg(coin_list, cfg, tag):
             logging.warning(f"TG error: {e}")
     return done_symbols
 # === BACKTEST 90 NGÀY ===
+    except Exception:
+            headers = ["Symbol", "Signal", "Entry", "SL", "TP", "Short Trend", "Mid Trend", "Timestamp"]
+            sheet.insert_row(headers, 1)
+        body = sheet.get_all_values()[1:]
+        for row in valid_signals[::-1]:
+            body.insert(0, row)
+        sheet.update([headers] + body)
+        logging.info(f"✅ [{tag}] Đã ghi {len(valid_signals)} tín hiệu")
+    except Exception as e:
+        logging.warning(f"❌ [{tag}] Lỗi ghi sheet: {e}")
+    for msg in messages:
+        try:
+            send_telegram_message(msg)
+        except Exception as e:
+            logging.warning(f"TG error: {e}")
+    return done_symbols
+# === BACKTEST 90 NGÀY ===
 
-def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT", silent=True):
+def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
     # Giả định đã có fetch_ohlcv_okx và detect_signal
     today = datetime.datetime.now(datetime.timezone.utc)
     start_time = today - datetime.timedelta(days=90)
@@ -596,6 +589,7 @@ def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT", silent=True):
     CURRENT_CFG = cfg
 
     for symbol in symbol_list:
+        with mute_logs():
         logging.info(f"🔍 Backtest: {symbol}")
         try:
             df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
@@ -690,11 +684,9 @@ if __name__ == "__main__":
     symbol_list = get_top_usdt_pairs(limit=COINS_LIMIT)
     try:
         if RUN_BACKTEST_STRICT:
-            with mute_logs():
-                backtest_signals_90_days(symbol_list, cfg=STRICT_CFG, tag="STRICT", silent=True)
+            backtest_signals_90_days(symbol_list, cfg=STRICT_CFG, tag="STRICT")
         if RUN_BACKTEST_RELAX:
-            with mute_logs():
-                backtest_signals_90_days(symbol_list, cfg=RELAX_CFG, tag="RELAX", silent=True)
+            backtest_signals_90_days([s for s in symbol_list], cfg=RELAX_CFG, tag="RELAX")
     except Exception as e:
         logging.error(f"Backtest error: {e}")
     # === RUN LIVE BOT ===
@@ -727,5 +719,3 @@ def append_to_google_sheet(sheet, row):
         sheet.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error(f"❌ Không ghi được Google Sheet: {e}")
-
-
