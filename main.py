@@ -25,6 +25,7 @@ from pytz import timezone
 import pytz
 from datetime import datetime, timedelta
 
+
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -662,42 +663,62 @@ def _parse_vn_time(s):
     # nếu không parse được, trả None -> sẽ giữ lại (an toàn)
     return None
 
-
 def prepend_with_retention(ws, new_rows, keep_days=3):
     """
-    Ghi dữ liệu mới (prepend) cho sheet 6 cột: 
-    Coin, Tín hiệu, Entry, SL, TP, Ngày
+    Chèn new_rows lên đầu Google Sheet ws, giữ lại dữ liệu cũ trong vòng keep_days ngày.
+    new_rows: list of lists (mỗi list là 1 dòng)
     """
     try:
-        # Lấy toàn bộ dữ liệu hiện có
-        existing = ws.get_all_values()
-        headers = existing[0] if existing else ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
-        data = existing[1:] if len(existing) > 1 else []
+        # Lấy toàn bộ dữ liệu hiện tại
+        existing_data = ws.get_all_values()
 
-        # Giữ lại dữ liệu trong 3 ngày gần nhất
-        today = datetime.utcnow() + timedelta(hours=7)  # UTC+7
-        three_days_ago = today - timedelta(days=3)
-        kept = []
-        for row in data:
+        # Nếu sheet đang trống → thêm header trước
+        if not existing_data:
+            headers = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Xu hướng ngắn", "Xu hướng trung", "Ngày"]
+            ws.insert_row(headers, 1)
+            existing_data = [headers]
+
+        headers = existing_data[0]
+        old_rows = existing_data[1:]
+
+        # Lọc dữ liệu cũ theo ngày
+        today = datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
+        retained_rows = []
+        for row in old_rows:
             try:
-                row_date = datetime.strptime(row[5], "%d/%m/%Y %H:%M")
-                if row_date >= three_days_ago:
-                    kept.append(row)
-            except:
-                pass  # Bỏ qua nếu lỗi parse ngày
+                date_str = row[7]  # Cột Ngày (index 7)
+                if date_str.strip():
+                    row_date = datetime.strptime(date_str, "%d/%m/%Y %H:%M").date()
+                    if (today - row_date).days <= keep_days:
+                        retained_rows.append(row)
+                    else:
+                        pass  # quá hạn → bỏ
+                else:
+                    retained_rows.append(row)  # nếu không có ngày → giữ nguyên
+            except Exception:
+                retained_rows.append(row)  # lỗi parse ngày → giữ nguyên
 
-        # Ghép dữ liệu mới lên trên
-        combined = new_rows[::-1] + kept  # Đảo new_rows để push theo thứ tự thời gian
+        # Đảm bảo mỗi dòng đều có 8 cột
+        def normalize_row(r):
+            r = list(r)
+            while len(r) < 8:
+                r.append("")
+            return r[:8]
 
-        # Chỉ lấy đúng 6 cột
-        combined = [r[:6] for r in combined]
+        new_rows_norm = [normalize_row(r) for r in new_rows]
+        retained_rows_norm = [normalize_row(r) for r in retained_rows]
 
-        # Update lại sheet
-        ws.update([headers] + combined, value_input_option="USER_ENTERED")
+        # Gộp lại: header + 5 dòng mới + dữ liệu cũ (đã lọc)
+        final_data = [headers] + new_rows_norm + retained_rows_norm
 
-        logging.info(f"[SHEET] ✅ Prepend {len(new_rows)} dòng, giữ lại {len(kept)} dòng cũ")
+        # Xóa dữ liệu cũ rồi ghi lại
+        ws.clear()
+        ws.update("A1", final_data)
+
+        logging.info(f"[SHEET] ✅ Prepend {len(new_rows_norm)} dòng mới, giữ lại {len(retained_rows_norm)} dòng cũ (≤ {keep_days} ngày)")
+
     except Exception as e:
-        logging.warning(f"[SHEET] ❌ Lỗi prepend_with_retention: {e}")
+        logging.error(f"[SHEET] Lỗi khi prepend_with_retention: {e}")
 
 def run_bot():
     logging.basicConfig(level=logging.INFO)
@@ -798,16 +819,30 @@ def run_bot():
     except Exception as e:
         logging.error(f"[SHEET] ghi batch lỗi: {e}")
 
-    # ======= GỬI TELEGRAM 1 LẦN (chỉ kèo > 3 sao) =======
+    # ===== GỬI TELEGRAM 1 LẦN (chỉ khi >= 3 sao) =====
     try:
         msgs = []
+        logging.debug(f"[TG] Tổng số tín hiệu nhận được: {len(tg_candidates)}")
+    
         for mode, sym, side, entry, sl, tp, rating in tg_candidates:
-            if rating >= 3:  # > 2 sao
-                msgs.append(f"[{mode}] | {sym} | {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n⭐️ {rating}/5")
-        if msgs and 'send_telegram_message' in globals():
-            send_telegram_message("🔥 TỔNG HỢP TÍN HIỆU MỚI (>=3⭐️)\n\n" + "\n\n".join(msgs))
+            logging.debug(f"[TG] Kiểm tra: {sym} | {side} | Rating: {rating} | Entry: {entry} | SL: {sl} | TP: {tp}")
+            
+            if rating >= 3:  # >= 3 sao
+                msgs.append(f"[{mode}] | {sym} {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n⭐ {rating}/5")
+            else:
+                logging.info(f"[TG] Bỏ qua {sym} do rating < 3 ({rating})")
+    
+        if msgs:
+            if 'send_telegram_message' in globals():
+                send_telegram_message("📌 TỔNG HỢP TÍN HIỆU MỚI (>=3⭐)\n\n" + "\n\n".join(msgs))
+                logging.info(f"[TG] Đã gửi {len(msgs)} tín hiệu về Telegram.")
+            else:
+                logging.error("[TG] Hàm send_telegram_message không tồn tại, không gửi được Telegram.")
+        else:
+            logging.warning("[TG] Không có tín hiệu nào đạt điều kiện gửi Telegram.")
+    
     except Exception as e:
-        logging.error(f"[TG] gửi tổng hợp lỗi: {e}")
+        logging.error(f"[TG] Gửi tổng hợp lỗi: {e}")
     
 def clean_old_rows():
     try:
