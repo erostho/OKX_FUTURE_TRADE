@@ -622,7 +622,7 @@ def backtest_signals_90_days(symbol_list):
 
 
 # ====== CẤU HÌNH ======
-RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
+RUN_BACKTEST = False  # ✅ Đổi sang False nếu không muốn chạy backtest
 # ====== LUỒNG CHÍNH ======
 if RUN_BACKTEST:
     logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
