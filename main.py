@@ -851,8 +851,8 @@ def send_telegram_message(message):
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
-def read_symbols_from_sheet(sheet_name="THEO DÕII") -> list:
-    """Đọc cột A của sheet THEO DÕII thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
+def read_symbols_from_sheet(sheet_name="THEO DÕI") -> list:
+    """Đọc cột A của sheet THEO DÕI thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
     try:
         ws = client.open_by_key(sheet_id).worksheet(sheet_name)
         rows = ws.get_all_values()
@@ -882,19 +882,19 @@ def _first_hit_result(future_df: pd.DataFrame, side: str, entry: float, sl: floa
             if lo <= tp:   return "WIN"
     return "OPEN"
 
-def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕII",
+def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
                                         sheet_dst="BACKTEST_RESULT",
                                         cfg=None, tag="STRICT",
                                         look_ahead=20):
     """
-    - Lấy list coin từ sheet THEO DÕII (cột A).
+    - Lấy list coin từ sheet THEO DÕI (cột A).
     - Quét 90 ngày dữ liệu 15m; tại mỗi vị trí, nếu detect pass -> kiểm tra TP/SL trong 'look_ahead' nến.
     - Không log chi tiết; chỉ ghi kết quả về sheet BACKTEST_RESULT.
     """
     cfg = cfg or STRICT_CFG
     symbols = read_symbols_from_sheet(sheet_src)
     if not symbols:
-        logging.warning("[BACKTEST] THEO DÕII rỗng – không có gì để test.")
+        logging.warning("[BACKTEST] THEO DÕI rỗng – không có gì để test.")
         return
 
     results_rows = []  # sẽ ghi 1 lần
@@ -973,7 +973,7 @@ if RUN_BACKTEST:
     try:
         # STRICT
         backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕII",
+            sheet_src="THEO DÕI",
             sheet_dst="BACKTEST_RESULT",
             cfg=STRICT_CFG,
             tag="STRICT",
@@ -981,7 +981,7 @@ if RUN_BACKTEST:
         )
         # (tuỳ chọn) chạy thêm RELAX
         backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕII",
+            sheet_src="THEO DÕI",
             sheet_dst="BACKTEST_RESULT",
             cfg=RELAX_CFG,
             tag="RELAX",
