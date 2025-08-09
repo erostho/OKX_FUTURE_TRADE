@@ -386,7 +386,7 @@ def detect_signal(df_15m: pd.DataFrame,
     macd_short_min = cfg.get("MACD_DIFF_SHORT_MIN", 0.001)
     allow_1h_neu   = cfg.get("ALLOW_1H_NEUTRAL", False)
     body_atr_k     = cfg.get("BREAKOUT_BODY_ATR", 0.6)
-    sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.03)  # 3%
+    sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.05)  # 5%
 
     fail = []  # gom lý do rớt
 
@@ -727,8 +727,8 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
-                    sheet_rows.append([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
-                    tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
+                    sheet_rows.prepend([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.prepend(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
         if ok:
@@ -767,8 +767,8 @@ def run_bot():
                         rating = 2
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                    sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
-                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
+                    sheet_rows.prepend([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.prepend(("RELAX", symbol, side, entry, sl, tp, rating))
 
         if ok:
             log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ PASS", "info")
@@ -851,8 +851,8 @@ def send_telegram_message(message):
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
-def read_symbols_from_sheet(sheet_name="THEO DÕI") -> list:
-    """Đọc cột A của sheet THEO DÕI thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
+def read_symbols_from_sheet(sheet_name="THEO DÕII") -> list:
+    """Đọc cột A của sheet THEO DÕII thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
     try:
         ws = client.open_by_key(sheet_id).worksheet(sheet_name)
         rows = ws.get_all_values()
@@ -882,19 +882,19 @@ def _first_hit_result(future_df: pd.DataFrame, side: str, entry: float, sl: floa
             if lo <= tp:   return "WIN"
     return "OPEN"
 
-def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
+def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕII",
                                         sheet_dst="BACKTEST_RESULT",
                                         cfg=None, tag="STRICT",
                                         look_ahead=20):
     """
-    - Lấy list coin từ sheet THEO DÕI (cột A).
+    - Lấy list coin từ sheet THEO DÕII (cột A).
     - Quét 90 ngày dữ liệu 15m; tại mỗi vị trí, nếu detect pass -> kiểm tra TP/SL trong 'look_ahead' nến.
     - Không log chi tiết; chỉ ghi kết quả về sheet BACKTEST_RESULT.
     """
     cfg = cfg or STRICT_CFG
     symbols = read_symbols_from_sheet(sheet_src)
     if not symbols:
-        logging.warning("[BACKTEST] THEO DÕI rỗng – không có gì để test.")
+        logging.warning("[BACKTEST] THEO DÕII rỗng – không có gì để test.")
         return
 
     results_rows = []  # sẽ ghi 1 lần
@@ -973,7 +973,7 @@ if RUN_BACKTEST:
     try:
         # STRICT
         backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕI",
+            sheet_src="THEO DÕII",
             sheet_dst="BACKTEST_RESULT",
             cfg=STRICT_CFG,
             tag="STRICT",
@@ -981,7 +981,7 @@ if RUN_BACKTEST:
         )
         # (tuỳ chọn) chạy thêm RELAX
         backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕI",
+            sheet_src="THEO DÕII",
             sheet_dst="BACKTEST_RESULT",
             cfg=RELAX_CFG,
             tag="RELAX",
