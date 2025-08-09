@@ -154,7 +154,7 @@ def load_news_events():
         with open(path,"r") as f: return json.load(f)
     except: return []
 
-from datetime import datetime, timezone
+
 def in_news_blackout(window_min: int):
     now = datetime.now(timezone.utc)
     for e in load_news_events():
@@ -632,13 +632,18 @@ def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
 def prepend_to_sheet(row_data: list):
     try:
         old_data = sheet.get_all_values()
-        headers = old_data[0]
-        body = old_data[1:]
-        
+
+        if not old_data:  # Sheet trống
+            headers = ["Symbol", "Side", "Entry", "SL", "TP", "-", "-", "Date"]
+            body = []
+        else:
+            headers = old_data[0]
+            body = old_data[1:]
+
         # Chèn dòng mới vào đầu
         body.insert(0, row_data)
 
-        # Ghi lại toàn bộ (bao gồm cả header)
+        # Ghi lại toàn bộ (bao gồm header)
         sheet.update([headers] + body)
         logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
 
@@ -807,14 +812,6 @@ def send_telegram_message(message):
     except Exception as e:
         logging.error(f"❌ Lỗi gửi Telegram: {e}")
 
-
-# === GHI GOOGLE SHEET ===
-
-def append_to_google_sheet(sheet, row):
-    try:
-        sheet.append_row(row, value_input_option="USER_ENTERED")
-    except Exception as e:
-        logging.error(f"❌ Không ghi được Google Sheet: {e}")
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
