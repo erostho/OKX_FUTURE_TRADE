@@ -674,7 +674,7 @@ def prepend_with_retention(ws, new_rows, keep_days=3):
 
         # Nếu sheet đang trống → thêm header trước
         if not existing_data:
-            headers = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Xu hướng ngắn", "Xu hướng trung", "Ngày"]
+            headers = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Xu hướng ngắn", "Xu hướng trung", "Ngày", "Mode"]
             ws.insert_row(headers, 1)
             existing_data = [headers]
 
@@ -698,12 +698,12 @@ def prepend_with_retention(ws, new_rows, keep_days=3):
             except Exception:
                 retained_rows.append(row)  # lỗi parse ngày → giữ nguyên
 
-        # Đảm bảo mỗi dòng đều có 8 cột
+        # Đảm bảo mỗi dòng đều có 9 cột
         def normalize_row(r):
             r = list(r)
-            while len(r) < 8:
+            while len(r) < 9:
                 r.append("")
-            return r[:8]
+            return r[:9]
 
         new_rows_norm = [normalize_row(r) for r in new_rows]
         retained_rows_norm = [normalize_row(r) for r in retained_rows]
@@ -783,7 +783,7 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn])
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, cfg.get("TAG","")])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
@@ -824,7 +824,7 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn])
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, cfg.get("TAG","")])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
         if ok:
