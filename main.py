@@ -450,7 +450,13 @@ def get_score(tf):
         return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
     except:
         return 0
-
+# Map timeframe dùng để chấm điểm xu hướng theo từng lớp
+# (đúng với code bạn đang dùng là 15m/1h; nếu có 4h thì thêm vào 'long')
+tf_map = {
+    'short': ['15m'],
+    'mid':   ['1h'],
+    'long':  []          # hoặc ['4h'] nếu bạn có dữ liệu 4h
+}
 short_score = sum([get_score(tf) for tf in tf_map['short']])
 mid_score = sum([get_score(tf) for tf in tf_map['mid']])
 
