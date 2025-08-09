@@ -509,43 +509,43 @@ def _scan_with_cfg(coin_list, cfg, tag):
         logging.info(f"🔍 [{tag}] Phân tích {symbol}...")
         # mute all inner DEBUG/INFO for this symbol
         with mute_logs():
-        inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-        df_15m = fetch_ohlcv_okx(inst_id, "15m")
-        df_1h = fetch_ohlcv_okx(inst_id, "1h")
-        if df_15m is None or df_1h is None:
-            continue
-        df_15m = calculate_indicators(df_15m).dropna()
-        df_1h = calculate_indicators(df_1h).dropna()
-        # Volume prefilter
-        if not is_volume_spike(df_15m):
-            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
-            continue
-        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
-        if not all(col in df_15m.columns for col in required_cols):
-            logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
-            continue
-        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
-        if signal:
-            short_trend, mid_trend = analyze_trend_multi(symbol)
-            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
-            now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-            count += 1
-            valid_signals.append([
-                symbol,
-                f"{signal} " + ("⭐️" * rating) + f" [{tag}]",
-                entry, sl, tp, short_trend, mid_trend, now
-            ])
-            if rating >= 4:
-                messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
-            done_symbols.add(symbol)
-            summary="✅ đạt tín hiệu"
-        
-        if 'summary' not in locals():
-            summary="❌ không đạt (rớt filter)"
-        
-        # log one line per symbol per mode
-        log_once(tag, symbol, f"[{tag}] {symbol}: {summary}", level="info")
-            pass
+            inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+            df_15m = fetch_ohlcv_okx(inst_id, "15m")
+            df_1h = fetch_ohlcv_okx(inst_id, "1h")
+            if df_15m is None or df_1h is None:
+                continue
+            df_15m = calculate_indicators(df_15m).dropna()
+            df_1h = calculate_indicators(df_1h).dropna()
+            # Volume prefilter
+            if not is_volume_spike(df_15m):
+                logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
+                continue
+            required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
+            if not all(col in df_15m.columns for col in required_cols):
+                logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
+                continue
+            signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
+            if signal:
+                short_trend, mid_trend = analyze_trend_multi(symbol)
+                rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
+                now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+                count += 1
+                valid_signals.append([
+                    symbol,
+                    f"{signal} " + ("⭐️" * rating) + f" [{tag}]",
+                    entry, sl, tp, short_trend, mid_trend, now
+                ])
+                if rating >= 4:
+                    messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
+                done_symbols.add(symbol)
+                summary="✅ đạt tín hiệu"
+            
+            if 'summary' not in locals():
+                summary="❌ không đạt (rớt filter)"
+            
+            # log one line per symbol per mode
+            log_once(tag, symbol, f"[{tag}] {symbol}: {summary}", level="info")
+                pass
 # append to sheet & telegram using existing helpers
     try:
         sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
