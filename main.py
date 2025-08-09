@@ -19,27 +19,26 @@ import datetime
 import json
 import os
 import logging
+
+# ==== STRUCTURED LOG HELPERS ====
+LOG_NAME = "SIGNAL"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logger = logging.getLogger(LOG_NAME)
+
+def log_pass(stage: str, symbol: str, **kv):
+    extras = " ".join(f"{k}={v}" for k,v in kv.items())
+    logger.info(f"PASS|{stage}|{symbol}|{extras}")
+
+def log_drop(stage: str, symbol: str, reason: str, **kv):
+    extras = " ".join(f"{k}={v}" for k,v in kv.items())
+    logger.info(f"DROP|{stage}|{symbol}|{reason} {extras}")
+
+def drop_return():
+    return None, None, None, None, False
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pytz import timezone
 import pytz
-# === CONFIG ADDED ===
-import os
-from datetime import datetime, timezone, time
-
-VOLUME_MODE = os.getenv("VOLUME_MODE", "auto")       # 'auto' | 'percentile' | 'factor'
-VOLUME_PERCENTILE = int(os.getenv("VOLUME_PERCENTILE", "75"))
-VOLUME_FACTOR = float(os.getenv("VOLUME_FACTOR", "1.5"))
-RISK_PER_TRADE = float(os.getenv("RISK_PER_TRADE", "0.01"))
-SESSION_START = os.getenv("SESSION_START", "09:00")
-SESSION_END = os.getenv("SESSION_END", "23:00")
-NEWS_BLACKOUT_MIN = int(os.getenv("NEWS_BLACKOUT_MIN", "45"))  # minutes before/after news
-
-# Example static news list (UTC isoformat). Update as needed.
-NEWS_EVENTS_UTC = [
-    # "2025-08-09T12:30:00Z",  # CPI placeholder
-]
-
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -83,50 +82,14 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
         return None
     return df.dropna(subset=required_cols)
 
-
-def _choose_volume_percentile(adx, bb_width):
-    if (adx is not None and adx < 20) or (bb_width is not None and bb_width < 0.010):
-        return 85
-    elif (adx is not None and adx < 25) or (bb_width is not None and bb_width < 0.015):
-        return 80
-    else:
-        return 70
-
-def is_volume_spike(df, adx=None, bb_width=None, percentile=None):
-    """Smart volume spike:
-    - If VOLUME_MODE='auto': use ADX/BBWidth to choose percentile (70/80/85)
-    - If 'percentile': use VOLUME_PERCENTILE or given percentile
-    - If 'factor': v_now >= mean(vol[:-1]) * VOLUME_FACTOR
-    Returns True/False and logs details.
-    """
+def is_volume_spike(df):
     try:
-        vols = df['volume'].iloc[-30:]
-        if len(vols) < 10:
-            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: {len(vols)} nến")
+        volumes = df["volume"].iloc[-20:]
+
+        if len(volumes) < 10:
+            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(volumes)} nến")
             return False
 
-        v_now = float(vols.iloc[-1])
-
-        mode = VOLUME_MODE.lower()
-        why = ''
-        ok = False
-
-        if mode == 'factor':
-            base = float(vols[:-1].mean())
-            thr = base * VOLUME_FACTOR
-            ok = v_now >= thr
-            why = f"mean*{VOLUME_FACTOR:.2f}={thr:.0f}"
-        else:
-            p = percentile if percentile is not None else (VOLUME_PERCENTILE if mode=='percentile' else _choose_volume_percentile(adx, bb_width))
-            thr = float(np.percentile(vols[:-1], int(p)))
-            ok = v_now >= thr
-            why = f"P{int(p)}={thr:.0f}"
-
-        logging.debug(f"[DEBUG][VOLUME] v_now={v_now:.0f} | mode={VOLUME_MODE} | {why} | pass={ok}")
-        return ok
-    except Exception as e:
-        logging.debug(f"[DEBUG][Volume FAIL] Lỗi khi kiểm tra volume: {e}")
-        return False
         v_now = volumes.iloc[-1]
         threshold = np.percentile(volumes[:-1], 70) # TOP 30%
 
@@ -460,39 +423,6 @@ def prepend_to_sheet(row_data: list):
     except Exception as e:
         logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
 
-
-def _in_session(now_local=None):
-    try:
-        from datetime import datetime as _dt, time as _time
-        import pytz
-    except Exception:
-        _dt = datetime; _time = time
-        pytz = None
-
-    if now_local is None:
-        now_local = datetime.now().astimezone()
-    try:
-        hh1, mm1 = map(int, SESSION_START.split(':'))
-        hh2, mm2 = map(int, SESSION_END.split(':'))
-    except Exception:
-        hh1,mm1,hh2,mm2 = 9,0,23,0
-    t = now_local.time()
-    return _time(hh1,mm1) <= t <= _time(hh2,mm2)
-
-def _in_news_blackout(now_utc=None):
-    if now_utc is None:
-        now_utc = datetime.now(timezone.utc)
-    window = datetime.timedelta(minutes=NEWS_BLACKOUT_MIN)
-    for iso in NEWS_EVENTS_UTC:
-        try:
-            ts = datetime.datetime.fromisoformat(iso.replace('Z','+00:00'))
-            if abs(now_utc - ts) <= window:
-                return True
-        except Exception:
-            continue
-    return False
-
-
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
@@ -502,12 +432,6 @@ def run_bot():
     count = 0
 
     for symbol in coin_list:
-        if not _in_session():
-            logging.info('[SESSION] Outside trading window, skip scanning...')
-            break
-        if _in_news_blackout():
-            logging.info('[NEWS] In blackout window, skip scanning...')
-            break
         logging.info(f"🔍 Phân tích {symbol}...")
 
         inst_id = symbol.upper().replace("/", "-") + "-SWAP"
@@ -522,8 +446,7 @@ def run_bot():
         df_1h = calculate_indicators(df_1h).dropna()
         
         # ✅ Check volume 
-        volume_ok = is_volume_spike(df_15m, adx=float(df_15m['adx'].iloc[-1]) if 'adx' in df_15m.columns else None,
-                                         bb_width=float((df_15m['bb_upper'].iloc[-1]-df_15m['bb_lower'].iloc[-1])/df_15m['close'].iloc[-1]) if set(['bb_upper','bb_lower','close']).issubset(df_15m.columns) else None)
+        volume_ok = is_volume_spike(df_15m)
         if not volume_ok:
             logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
             continue
@@ -653,7 +576,7 @@ def append_to_google_sheet(sheet, row):
 
 def backtest_signals_90_days(symbol_list):
     # Giả định đã có fetch_ohlcv_okx và detect_signal
-    today = datetime.datetime.now(datetime.timezone.utc)
+    today = datetime.datetime.now(timezone.utc)
     start_time = today - datetime.timedelta(days=90)
     results = []
 
