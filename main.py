@@ -23,6 +23,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pytz import timezone
 import pytz
+from datetime import timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -627,29 +628,7 @@ def analyze_trend_multi(symbol):
         return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
 
     return to_text(short_score), to_text(mid_score)
-    
-
-def send_telegram_message(message: str):
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")  # hoặc ghi trực tiếp chuỗi token nếu bạn test thủ công
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")      # tương tự, gán chat_id thủ công nếu cần
-
-    if not bot_token or not chat_id:
-        print("❌ TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID chưa được cấu hình.")
-        return
-
-    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown"
-    }
-
-    try:
-        response = requests.post(url, data=payload)
-        response.raise_for_status()
-        print("✅ Đã gửi tin nhắn Telegram.")
-    except Exception as e:
-        print(f"❌ Lỗi gửi Telegram: {e}")
+ 
 
 def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
     if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
@@ -664,27 +643,83 @@ def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
         return 3
     else:
         return 2
-        
-def prepend_to_sheet(row_data: list):
-    try:
-        old_data = sheet.get_all_values()
 
-        if not old_data:  # Sheet trống
+def _to_user_entered(x):
+    if x is None:
+        return ""
+    if isinstance(x, float):
+        s = f"{x:.8f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+    return str(x)
+
+def _parse_vn_time(s):
+    # hỗ trợ cả "dd/mm/YYYY HH:MM" và ISO
+    for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return dt.datetime.strptime(s, fmt)
+        except Exception:
+            continue
+    # nếu không parse được, trả None -> sẽ giữ lại (an toàn)
+    return None
+
+def prepend_rows_with_retention(ws, rows, keep_days=3, tz_name="Asia/Ho_Chi_Minh"):
+    """
+    Prepend nhiều dòng lên đầu sheet, chỉ loại các dòng cũ hơn keep_days.
+    Không xóa toàn bộ sheet DATA_FUTURE.
+    ws: gspread Worksheet
+    rows: List[List[Any]] theo đúng format cột của bạn
+          [symbol, side + " ⭐⭐⭐", entry, sl, tp, "-", "-", "dd/mm/YYYY HH:MM"]
+    """
+    try:
+        # Lấy toàn bộ dữ liệu hiện có
+        old = ws.get_all_values()  # 2D list
+        if old:
+            headers = old[0]
+            body = old[1:]
+        else:
             headers = ["Symbol", "Side", "Entry", "SL", "TP", "-", "-", "Date"]
             body = []
-        else:
-            headers = old_data[0]
-            body = old_data[1:]
 
-        # Chèn dòng mới vào đầu
-        body.insert(0, row_data)
+        # Chuẩn hoá rows mới
+        cleaned_new = [[_to_user_entered(c) for c in r] for r in rows]
 
-        # Ghi lại toàn bộ (bao gồm header)
-        sheet.update([headers] + body)
-        logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
+        # Thời điểm hiện tại (VN)
+        now_vn = dt.datetime.now(pytz.timezone(tz_name))
+        cutoff = now_vn - timedelta(days=keep_days)
 
+        # Lọc body cũ: chỉ giữ những dòng có Date >= cutoff
+        kept = []
+        for r in body:
+            if not r:
+                continue
+            # date nằm ở cột cuối cùng theo format bạn đang dùng
+            date_str = r[-1] if len(r) >= 1 else ""
+            tt = _parse_vn_time(date_str)
+            if tt is None:
+                # không parse được -> giữ lại cho an toàn
+                kept.append(r)
+                continue
+            # tt có thể là naive -> gán tz VN để so sánh
+            if tt.tzinfo is None:
+                tt = pytz.timezone(tz_name).localize(tt)
+            if tt >= cutoff:
+                kept.append(r)
+
+        # Gộp: new rows lên đầu (đảo để bảo toàn thứ tự push), rồi tới phần kept
+        combined = cleaned_new[::-1] + kept
+
+        # Update lại sheet (chỉ ghi đè nội dung, không xoá sạch)
+        ws.update([headers] + combined, value_input_option="USER_ENTERED")
+
+        # Thu nhỏ số hàng để không còn các dòng quá hạn nằm bên dưới
+        try:
+            ws.resize(rows=len(combined) + 1)
+        except Exception:
+            pass
+
+        logging.info(f"[SHEET] ✅ Prepend {len(cleaned_new)} dòng, giữ lại {len(kept)} dòng <={keep_days} ngày.")
     except Exception as e:
-        logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
+        logging.warning(f"[SHEET] ❌ Lỗi prepend_with_retention: {e}")
 
 def run_bot():
     logging.basicConfig(level=logging.INFO)
@@ -777,7 +812,11 @@ def run_bot():
 
     # ======= GỘP GHI GOOGLE SHEET MỘT LẦN =======
     try:
-        prepend_to_sheet(sheet_rows)
+        if sheet_rows:  # list các dòng đã gom
+            ws = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")  # đúng tên sheet bạn đang dùng
+            prepend_rows_with_retention(ws, sheet_rows, keep_days=3)
+        else:
+            logging.info("[SHEET] Không có dòng nào để ghi.")
     except Exception as e:
         logging.error(f"[SHEET] ghi batch lỗi: {e}")
 
