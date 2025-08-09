@@ -15,7 +15,7 @@ import requests
 import pandas as pd
 import numpy as np
 import time
-import datetime
+import datetime as dt
 import json
 import os
 import logging
@@ -667,8 +667,10 @@ def run_bot():
             if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
                 df_15m = calculate_indicators(df_15m).dropna()
                 df_1h  = calculate_indicators(df_1h ).dropna()
-                side, entry, sl, tp, ok = detect_signal(
-                    df_15m, df_1h, symbol, cfg=STRICT_CFG, silent=True, context="LIVE-STRICT"
+                side, entry, sl, tp, ok, reason = detect_signal(
+                    df_15m, df_1h, symbol,
+                    cfg=STRICT_CFG, silent=True, context="LIVE-STRICT",
+                    return_reason=True
                 )
                 if ok:
                     strict_hits.add(symbol)
@@ -688,8 +690,10 @@ def run_bot():
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
-        if ok:  log_once("STRICT", symbol, f"[STRICT] {symbol}: ✅ đạt tín hiệu", "info")
-        else:   log_once("STRICT", symbol, f"[STRICT] {symbol}: ❌ không đạt (rớt filter)", "info")
+        if ok:
+            log_once("STRICT", symbol, f"[STRICT] {symbol}: ✅ PASS", "info")
+        else:
+            log_once("STRICT", symbol, f"[STRICT] {symbol}: ❌ rớt filter – {reason}", "info")
 
     # -------- RELAX pass (bỏ symbol đã ra ở STRICT) --------
     relax_list = [s for s in coin_list if s not in strict_hits]
@@ -705,8 +709,10 @@ def run_bot():
             if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
                 df_15m = calculate_indicators(df_15m).dropna()
                 df_1h  = calculate_indicators(df_1h ).dropna()
-                side, entry, sl, tp, ok = detect_signal(
-                    df_15m, df_1h, symbol, cfg=RELAX_CFG, silent=True, context="LIVE-RELAX"
+                side, entry, sl, tp, ok, reason = detect_signal(
+                    df_15m, df_1h, symbol,
+                    cfg=RELAX_CFG, silent=True, context="LIVE-RELAX",
+                    return_reason=True
                 )
                 if ok:
                     # rating: dùng hàm gốc nếu có, else RELAX=2 sao
@@ -723,8 +729,10 @@ def run_bot():
                     sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
-        if ok:  log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ đạt tín hiệu", "info")
-        else:   log_once("RELAX", symbol, f"[RELAX] {symbol}: ❌ không đạt (rớt filter)", "info")
+        if ok:
+            log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ PASS", "info")
+        else:
+            log_once("RELAX", symbol, f"[RELAX] {symbol}: ❌ rớt filter – {reason}", "info")
 
     # ======= GỘP GHI GOOGLE SHEET MỘT LẦN =======
     try:
