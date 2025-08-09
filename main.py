@@ -720,6 +720,23 @@ def prepend_with_retention(ws, new_rows, keep_days=3):
     except Exception as e:
         logging.error(f"[SHEET] Lỗi khi prepend_with_retention: {e}")
 
+# === GỬI TELEGRAM ===
+def send_telegram_message(message):
+    try:
+        token = TELEGRAM_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            logging.warning(f"Telegram error: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Lỗi gửi Telegram: {e}")
+        
 def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
@@ -880,23 +897,7 @@ def get_top_usdt_pairs(limit=300):
         return []
 if __name__ == "__main__":
     run_bot()
-# === GỬI TELEGRAM ===
 
-def send_telegram_message(message):
-    try:
-        token = TELEGRAM_TOKEN
-        chat_id = TELEGRAM_CHAT_ID
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
-        }
-        response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            logging.warning(f"Telegram error: {response.text}")
-    except Exception as e:
-        logging.error(f"❌ Lỗi gửi Telegram: {e}")
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
