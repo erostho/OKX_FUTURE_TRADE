@@ -727,8 +727,8 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
-                    sheet_rows.prepend([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
-                    tg_candidates.prepend(("STRICT", symbol, side, entry, sl, tp, rating))
+                    sheet_rows.append([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
         if ok:
@@ -767,8 +767,8 @@ def run_bot():
                         rating = 2
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                    sheet_rows.prepend([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
-                    tg_candidates.prepend(("RELAX", symbol, side, entry, sl, tp, rating))
+                    sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
         if ok:
             log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ PASS", "info")
