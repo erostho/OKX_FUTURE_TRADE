@@ -10,7 +10,7 @@ Tính năng chính:
 ✅ Mô hình giá: Flag, Wedge, Head & Shoulders (dạng đơn giản)
 ✅ Entry hợp lệ nếu nằm trong vùng Fibonacci retracement (0.5–0.618)
 """
-
+# ==== STRUCTURED LOG HELPERS ====
 import requests
 import pandas as pd
 import numpy as np
@@ -19,8 +19,14 @@ import datetime
 import json
 import os
 import logging
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from pytz import timezone
+import pytz
 
-# ==== STRUCTURED LOG HELPERS ====
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOG_NAME = "SIGNAL"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
 logger = logging.getLogger(LOG_NAME)
@@ -35,14 +41,7 @@ def log_drop(stage: str, symbol: str, reason: str, **kv):
 
 def drop_return():
     return None, None, None, None, False
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from pytz import timezone
-import pytz
 
-logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -75,6 +74,118 @@ ADX_THRESHOLD = 12
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
+# ====== PRESET & HELPERS ======
+STRICT_CFG = {
+    "VOLUME_PERCENTILE": 80,   # top 20%
+    "ADX_MIN_15M": 22,
+    "BBW_MIN": 0.012,
+    "RR_MIN": 1.5,
+    "NEWS_BLACKOUT_MIN": 60,   # phút
+    "ATR_CLEARANCE_MIN": 0.8,  # >= 0.8 ATR
+    "USE_VWAP": True,
+    "RELAX_EXCEPT": False,
+    "TAG": "STRICT",
+}
+RELAX_CFG = {
+    "VOLUME_PERCENTILE": 85,   # top 15%
+    "ADX_MIN_15M": 15,
+    "BBW_MIN": 0.010,
+    "RR_MIN": 1.6,
+    "NEWS_BLACKOUT_MIN": 45,
+    "ATR_CLEARANCE_MIN": 1.0,
+    "USE_VWAP": True,
+    "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
+    "TAG": "RELAX",
+}
+
+# log 1 dòng/coin/mode + tắt log tạm thời
+from contextlib import contextmanager
+import sys, io, logging
+_logged_once = {}
+def log_once(mode, symbol, msg, level="info"):
+    key = (mode, symbol)
+    if _logged_once.get(key): return
+    _logged_once[key] = True
+    getattr(logging, level)(msg)
+
+def reset_log_once_for_mode(mode, symbols):
+    for s in symbols:
+        _logged_once.pop((mode, s), None)
+
+@contextmanager
+def mute_logs():
+    prev = logging.getLogger().level
+    logging.getLogger().setLevel(logging.WARNING)
+    try: yield
+    finally: logging.getLogger().setLevel(prev)
+
+@contextmanager
+def suppress_output():
+    _stdout, _stderr = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+    try: yield
+    finally: sys.stdout, sys.stderr = _stdout, _stderr
+
+# ====== News blackout ======
+def load_news_events():
+    import json, os, requests
+    url = os.getenv("NEWS_JSON_URL","").strip()
+    if url:
+        try:
+            r = requests.get(url, timeout=8)
+            if r.ok: return r.json()
+        except: pass
+    path = os.getenv("NEWS_JSON_FILE","news_events.json")
+    try:
+        with open(path,"r") as f: return json.load(f)
+    except: return []
+
+from datetime import datetime, timezone
+def in_news_blackout(window_min: int):
+    now = datetime.now(timezone.utc)
+    for e in load_news_events():
+        t = e.get("time") or e.get("time_utc")
+        if not t: continue
+        try:
+            if t.endswith("Z"): tt = datetime.fromisoformat(t.replace("Z","+00:00"))
+            else: tt = datetime.fromisoformat(t)
+        except: continue
+        if abs((tt - now).total_seconds()) <= window_min*60:
+            return True
+    return False
+
+# ====== VWAP + ATR clearance ======
+import numpy as np
+def _atr(df, n=14):
+    tr = np.maximum.reduce([
+        (df["high"]-df["low"]).abs(),
+        (df["high"]-df["close"].shift()).abs(),
+        (df["low"] -df["close"].shift()).abs()
+    ])
+    return tr.rolling(n).mean()
+
+def anchored_vwap(df, anchor_idx):
+    sub = df.iloc[anchor_idx:]
+    tp = (sub["high"] + sub["low"] + sub["close"]) / 3.0
+    pv = (tp * sub["volume"]).cumsum()
+    vv = sub["volume"].cumsum().replace(0, np.nan)
+    vwap = pv / vv
+    return float(vwap.iloc[-1])
+
+def pick_anchor_index(df, side):
+    win = df.iloc[-50:-5]
+    return (win["low"].idxmin() if side=="LONG" else win["high"].idxmax())
+def atr_clearance(df, side, mult):
+    atr = float(_atr(df).iloc[-1])
+    last = df.iloc[-1]
+    z = df.iloc[-20:-1]
+    if side=="LONG":
+        obstacle = z["high"].max(); dist = obstacle - last["close"]
+    else:
+        obstacle = z["low"].min();  dist = last["close"] - obstacle
+    if atr==0 or np.isnan(atr): return 0.0, False
+    return dist/atr, (dist/atr) >= mult
+
 def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
     """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
     missing = df[required_cols].isnull().sum().sum()
@@ -229,121 +340,213 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     return df.dropna(subset=required_cols)
     
 
-def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
-    import logging
+def detect_signal(df_15m: pd.DataFrame,
+                  df_1h: pd.DataFrame,
+                  symbol: str,
+                  cfg: dict = None,
+                  silent: bool = True,
+                  context: str = "LIVE"):
+    """
+    Trả về: (side, entry, sl, tp, ok)
+    side ∈ {"LONG","SHORT"} hoặc None
+    """
+
+    cfg = cfg or STRICT_CFG
+    pct_near_sr = cfg.get("SR_NEAR_PCT", 0.03)         # 3% nếu không set
+    rr_min      = cfg.get("RR_MIN", 1.5)
+    bbw_min     = cfg.get("BBW_MIN", 0.012)
+    adx_min     = cfg.get("ADX_MIN_15M", 22)
+    vol_p       = cfg.get("VOLUME_PERCENTILE", 80)
+    news_win    = cfg.get("NEWS_BLACKOUT_MIN", 60)
+    atr_need    = cfg.get("ATR_CLEARANCE_MIN", 0.8)
+    use_vwap    = cfg.get("USE_VWAP", True)
+    allow_adx_ex= cfg.get("RELAX_EXCEPT", False)
+    body_atr_k  = cfg.get("BREAKOUT_BODY_ATR", 0.6)
+
+    # --------- Chuẩn bị chỉ báo 15m (nếu thiếu cột thì tính gọn) ---------
     df = df_15m.copy()
-    df = clean_missing_data(df)
-    if df is None or len(df) < 30:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
+    req_cols = {"open","high","low","close","volume"}
+    if not req_cols.issubset(df.columns) or len(df) < 60:
         return None, None, None, None, False
 
-    # Tính chỉ báo
-    df["ema20"] = df["close"].ewm(span=20).mean()
-    df["ema50"] = df["close"].ewm(span=50).mean()
-    df["macd"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-    df["macd_signal"] = df["macd"].ewm(span=9).mean()
-    delta = df["close"].diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-    avg_gain = pd.Series(gain).rolling(window=14).mean()
-    avg_loss = pd.Series(loss).rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df["rsi"] = 100 - (100 / (1 + rs))
-    df = calculate_adx(df)
-    df["bb_mid"] = df["close"].rolling(20).mean()
-    df["bb_std"] = df["close"].rolling(20).std()
-    df["bb_upper"] = df["bb_mid"] + 2 * df["bb_std"]
-    df["bb_lower"] = df["bb_mid"] - 2 * df["bb_std"]
+    def _ensure_cols(dfx: pd.DataFrame):
+        # EMA
+        if "ema20" not in dfx.columns: dfx["ema20"] = dfx["close"].ewm(span=20).mean()
+        if "ema50" not in dfx.columns: dfx["ema50"] = dfx["close"].ewm(span=50).mean()
+        # RSI
+        if "rsi" not in dfx.columns:
+            delta = dfx["close"].diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, np.nan)
+            rs = gain / loss
+            dfx["rsi"] = 100 - (100/(1+rs))
+        # MACD
+        if "macd" not in dfx.columns or "macd_signal" not in dfx.columns:
+            ema12 = dfx["close"].ewm(span=12).mean()
+            ema26 = dfx["close"].ewm(span=26).mean()
+            dfx["macd"] = ema12 - ema26
+            dfx["macd_signal"] = dfx["macd"].ewm(span=9).mean()
+        # BB width
+        if "bb_width" not in dfx.columns:
+            ma20 = dfx["close"].rolling(20).mean()
+            std20= dfx["close"].rolling(20).std()
+            dfx["bb_upper"] = ma20 + 2*std20
+            dfx["bb_lower"] = ma20 - 2*std20
+            dfx["bb_width"] = (dfx["bb_upper"] - dfx["bb_lower"]) / dfx["close"]
+        # ADX (nếu đã có thì giữ, không thì bỏ qua dùng fallback)
+        if "adx" not in dfx.columns:
+            # fallback nhẹ: không tính lại để đỡ nặng — coi như ADX đủ nếu thiếu
+            dfx["adx"] = 25.0
+        return dfx
 
+    df = _ensure_cols(df).dropna()
     latest = df.iloc[-1]
-    close_price = latest["close"]
-    ema_up = latest["ema20"] > latest["ema50"]
-    ema_down = latest["ema20"] < latest["ema50"]
-    macd_diff = abs(latest["macd"] - latest["macd_signal"]) / close_price
-    rsi = latest["rsi"]
-    adx = latest["adx"]
-    bb_width = (latest["bb_upper"] - latest["bb_lower"]) / close_price
+    close_price = float(latest["close"])
 
-    # Volume spike top 70%
-    if not is_volume_spike(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
+    # --------- Volume spike (percentile) ---------
+    vols = df["volume"].iloc[-20:]
+    if len(vols) < 10:
+        return None, None, None, None, False
+    v_now = float(vols.iloc[-1])
+    vol_thr = float(np.percentile(vols.iloc[:-1], vol_p))
+    if not (v_now >= vol_thr):
+        return None, None, None, None, False
+    # --------- Lọc choppy: ADX + BBW ---------
+    adx = float(df["adx"].iloc[-1])
+    bbw = float(df["bb_width"].iloc[-1])
+
+    if adx < adx_min and not allow_adx_ex:
+        return None, None, None, None, False
+    if bbw < bbw_min:
         return None, None, None, None, False
 
-    # Choppy filter
-    if adx < 20:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
-        return None, None, None, None, False
-    if bb_width < 0.02:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
-        return None, None, None, None, False
+    # Nếu cho phép ngoại lệ ADX (RELAX): bắt buộc thân nến >= k*ATR để tránh break giả
+    if adx < adx_min and allow_adx_ex:
+        last = df.iloc[-1]
+        body = abs(last["close"] - last["open"])
+        atr  = float(_atr(df).iloc[-1])
+        if atr <= 0 or body < body_atr_k * atr:
+            return None, None, None, None, False
 
-    # Price Action (Engulfing hoặc Breakout)
-    recent = df["close"].iloc[-4:].tolist()
-    is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
-    if not is_engulfing and not detect_breakout_pullback(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
-        return None, None, None, None, False
+    # --------- Xác nhận đa khung (1H) ---------
+    ema_up_15 = latest["ema20"] > latest["ema50"]
+    ema_dn_15 = latest["ema20"] < latest["ema50"]
+    rsi_15    = float(latest["rsi"])
+    macd_diff = abs(float(latest["macd"] - latest["macd_signal"])) / max(close_price, 1e-9)
 
-    # Gần vùng hỗ trợ/kháng cự
-    support, resistance = find_support_resistance(df)
-    near_sr = abs(close_price - support)/support < 0.03 or abs(close_price - resistance)/resistance < 0.03
+    if df_1h is not None and len(df_1h) > 60:
+        d1 = df_1h.copy()
+        d1 = _ensure_cols(d1).dropna()
+        l1 = d1.iloc[-1]
+        ema_up_1h = l1["ema20"] > l1["ema50"]
+        rsi_1h    = float(l1["rsi"])
+    else:
+        ema_up_1h = True
+        rsi_1h    = 50.0
 
-    # Entry - SL - TP - RR
-    df_recent = df.iloc[-10:]
-    entry = close_price
-    sl = df_recent["low"].min() if ema_up else df_recent["high"].max()
-    tp = df_recent["high"].max() if ema_up else df_recent["low"].min()
-    rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
-
-    if any(x is None for x in [entry, sl, tp]):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
-        return None, None, None, None, False
-
-    if rr < 1.5:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
-        return None, None, None, None, False
-
-    if abs(entry - sl)/entry < 0.003:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
+    side = None
+    # LONG mạnh khi: EMA up cả 15m/1h, RSI>55/50, MACD diff đủ lớn, ADX đạt ngưỡng
+    if ema_up_15 and ema_up_1h and rsi_15 > 55 and rsi_1h > 50 and macd_diff > 0.05 and adx >= adx_min:
+        side = "LONG"
+    # SHORT mạnh khi: EMA down cả 15m/1h, RSI<45/50, MACD diff > nhỏ, ADX đạt ngưỡng
+    elif ema_dn_15 and (not ema_up_1h) and rsi_15 < 45 and rsi_1h < 50 and macd_diff > 0.001 and adx >= adx_min:
+        side = "SHORT"
+    else:
         return None, None, None, None, False
 
-    # Multi-timeframe confirmation (1H đồng pha 15m)
+    # --------- Vị trí theo S/R (ép hướng): LONG near support, SHORT near resistance ---------
     try:
-        df1h = calculate_indicators(df_1h.copy())
-        ema_up_1h = df1h["ema20"].iloc[-1] > df1h["ema50"].iloc[-1]
-        rsi_1h = df1h["rsi"].iloc[-1]
-    except Exception as e:
-        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
+        low_sr, high_sr = find_support_resistance(df, lookback=40)
+    except Exception:
+        low_sr, high_sr = float(df["low"].iloc[-40:-1].min()), float(df["high"].iloc[-40:-1].max())
+
+    px = close_price
+    near_sup = abs(px - low_sr)  / max(low_sr, 1e-9) <= pct_near_sr
+    near_res = abs(px - high_sr) / max(high_sr,1e-9) <= pct_near_sr
+    if (side == "LONG"  and not near_sup) or (side == "SHORT" and not near_res):
         return None, None, None, None, False
 
-    # Kiểm tra xu hướng BTC
+    # --------- Entry/SL/TP/RR ---------
+    if side == "LONG":
+        sl = float(df["low"].iloc[-10:-1].min())
+        tp = float(df["high"].iloc[-10:-1].max())
+    else:
+        sl = float(df["high"].iloc[-10:-1].max())
+        tp = float(df["low"].iloc[-10:-1].min())
+    entry = px
+    risk = max(abs(entry - sl), 1e-9)
+    rr   = abs(tp - entry) / risk
+    if rr < rr_min:
+        return None, None, None, None, False
+    # SL quá sát (tránh nhiễu)
+    if abs(entry - sl)/max(entry,1e-9) < 0.003:  # 0.3%
+        return None, None, None, None, False
+
+    # --------- News blackout ---------
     try:
-        btc_df = fetch_ohlcv_okx("BTC-USDT", "15m", limit=10)
-        btc_df["close"] = pd.to_numeric(btc_df["close"])
-        btc_change = (btc_df["close"].iloc[-1] - btc_df["close"].iloc[-3]) / btc_df["close"].iloc[-3]
-    except Exception as e:
-        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
-        btc_change = 0
+        if in_news_blackout(news_win):
+            return None, None, None, None, False
+    except Exception:
+        pass  # nếu chưa cấu hình news thì bỏ qua
 
-    # Xác nhận tín hiệu
-    signal = None
-    if (
-        ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.05 and adx > 20 and near_sr
-    ):
-        if btc_change >= -0.01:
-            signal = "LONG"
-    elif (
-        ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
-        and macd_diff > 0.001 and adx > 20 and near_sr
-    ):
-        if btc_change <= 0.01:
-            signal = "SHORT"
+    # --------- VWAP blocker (anchored) ---------
+    if use_vwap and len(df) > 55:
+        try:
+            anchor_idx = pick_anchor_index(df, side)
+            # anchor_idx có thể là index label; chuyển về vị trí nếu cần
+            if not isinstance(anchor_idx, int):
+                try:
+                    aidx = df.index.get_loc(anchor_idx)
+                except Exception:
+                    aidx = max(0, len(df)-50)
+            else:
+                aidx = anchor_idx
+            vwap = anchored_vwap(df, aidx)
+            dist = abs(entry - vwap) / max(vwap, 1e-9)
+            near = dist <= 0.001  # 0.1%
+            if near and ((side == "LONG" and entry < vwap) or (side == "SHORT" and entry > vwap)):
+                return None, None, None, None, False
+        except Exception:
+            pass
 
-    # ✅ Log cuối cùng nếu coin vượt tất cả bộ lọc
-    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
-    return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
+    # --------- ATR clearance phía trước ---------
+    try:
+        clr_ratio, clr_ok = atr_clearance(df, side, atr_need)
+        if not clr_ok:
+            return None, None, None, None, False
+    except Exception:
+        # nếu không tính được ATR thì không chặn
+        pass
 
+    # --------- Đồng pha BTC (1H) + kiểm tra biến động BTC ngắn hạn ---------
+    try:
+        btc_15 = fetch_ohlcv_okx("BTC-USDT-SWAP", "15m")
+        btc_1h = fetch_ohlcv_okx("BTC-USDT-SWAP", "1h")
+        btc_up_1h = True
+        if isinstance(btc_1h, pd.DataFrame) and len(btc_1h) > 60:
+            b1 = calculate_indicators(btc_1h.copy()).dropna().iloc[-1]
+            btc_up_1h = bool(b1["ema20"] > b1["ema50"])
+        # chặn ngược hướng BTC 1h
+        if side == "LONG" and not btc_up_1h:
+            return None, None, None, None, False
+        if side == "SHORT" and btc_up_1h:
+            return None, None, None, None, False
+
+        # biến động BTC ngắn hạn (15m) – tránh gió ngược mạnh
+        if isinstance(btc_15, pd.DataFrame) and len(btc_15) > 5:
+            c0 = float(btc_15["close"].iloc[-1]); c3 = float(btc_15["close"].iloc[-4])
+            btc_change = (c0 - c3)/max(c3,1e-9)
+            if side == "LONG" and btc_change < -0.01:   # BTC giảm >1% trong ~45m
+                return None, None, None, None, False
+            if side == "SHORT" and btc_change > 0.01:   # BTC tăng >1% trong ~45m
+                return None, None, None, None, False
+    except Exception:
+        pass  # nếu fetch lỗi, không chặn
+
+    # --------- PASS ---------
+    if not silent:
+        logging.info(f"✅ {symbol} VƯỢT QUA HẾT BỘ LỌC ({side})")
+    return side, float(entry), float(sl), float(tp), True
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -427,84 +630,99 @@ def run_bot():
     logging.basicConfig(level=logging.INFO)
     coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
 
-    valid_signals = []
-    messages = []
-    count = 0
+    # bộ nhớ tạm để GỘP kết quả
+    sheet_rows = []          # mỗi phần tử = row prepend_to_sheet([...]) theo format gốc của bạn
+    tg_candidates = []       # (mode, symbol, side, entry, sl, tp, rating)
+
+    # -------- STRICT pass --------
+    reset_log_once_for_mode("STRICT", coin_list)
+    strict_hits = set()
 
     for symbol in coin_list:
-        logging.info(f"🔍 Phân tích {symbol}...")
+        ok = False; side = entry = sl = tp = None; rating = 0
 
-        inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-
-        df_15m = fetch_ohlcv_okx(inst_id, "15m")
-        df_1h = fetch_ohlcv_okx(inst_id, "1h")
-
-        if df_15m is None or df_1h is None:
-            continue
-
-        df_15m = calculate_indicators(df_15m).dropna()
-        df_1h = calculate_indicators(df_1h).dropna()
-        
-        # ✅ Check volume 
-        volume_ok = is_volume_spike(df_15m)
-        if not volume_ok:
-            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
-            continue
-
-        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
-        if not all(col in df_15m.columns for col in required_cols):
-            logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
-            continue
-
-        if df_15m[required_cols].isnull().any().any():
-            logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
-            continue
-
-        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
-
-        if signal:
-            short_trend, mid_trend = analyze_trend_multi(symbol)
-            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
-
-            now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 1
-            count += 1
-            valid_signals.append([
-                symbol,
-                signal + " " + ("⭐️" * rating),
-                entry,
-                sl,
-                tp,
-                short_trend,
-                mid_trend,
-                now
-            ])
-            
-            # 🟡 GỬI TELEGRAM nếu rating >= 3
-            if rating >= 4:
-                messages.append(
-                    f"{symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})"
+        with mute_logs():
+            inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+            df_15m = fetch_ohlcv_okx(inst_id, "15m")
+            df_1h  = fetch_ohlcv_okx(inst_id, "1h")
+            if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
+                df_15m = calculate_indicators(df_15m).dropna()
+                df_1h  = calculate_indicators(df_1h ).dropna()
+                side, entry, sl, tp, ok = detect_signal(
+                    df_15m, df_1h, symbol, cfg=STRICT_CFG, silent=True, context="LIVE-STRICT"
                 )
-        
-        time.sleep(1)
-    
-    # ✅ Gửi 1 tin nhắn tổng hợp
-    if messages:
-        message = "🆕 *TỔNG HỢP TÍN HIỆU MỚI*\n\n" + "\n".join(messages)
-        send_telegram_message(message)
+                if ok:
+                    strict_hits.add(symbol)
+                    # rating: dùng hàm gốc nếu có, else mặc định STRICT=3 sao
+                    if 'calculate_signal_rating' in globals():
+                        try:
+                            rating = int(calculate_signal_rating(side, "Tăng" if side=="LONG" else "Giảm",
+                                                                 "Tăng" if side=="LONG" else "Giảm", True))
+                        except Exception:
+                            rating = 3
+                    else:
+                        rating = 3
 
-    # ✅ Ghi 1 lần duy nhất vào sheet
-    if valid_signals:
-        try:
-            sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
-            for row in valid_signals:
-                prepend_to_sheet(row)
-            clean_old_rows()
-        except Exception as e:
-            logging.warning(f"Không thể ghi sheet: {e}")
-        
-    # ✅ Log tổng kết
-    logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
+                    now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+                    # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
+                    sheet_rows.append([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
+
+        # log tóm tắt 1 dòng/coin
+        if ok:  log_once("STRICT", symbol, f"[STRICT] {symbol}: ✅ đạt tín hiệu", "info")
+else:   log_once("STRICT", symbol, f"[STRICT] {symbol}: ❌ không đạt (rớt filter)", "info")
+
+    # -------- RELAX pass (bỏ symbol đã ra ở STRICT) --------
+    relax_list = [s for s in coin_list if s not in strict_hits]
+    reset_log_once_for_mode("RELAX", relax_list)
+
+    for symbol in relax_list:
+        ok = False; side = entry = sl = tp = None; rating = 0
+
+        with mute_logs():
+            inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+            df_15m = fetch_ohlcv_okx(inst_id, "15m")
+            df_1h  = fetch_ohlcv_okx(inst_id, "1h")
+            if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
+                df_15m = calculate_indicators(df_15m).dropna()
+                df_1h  = calculate_indicators(df_1h ).dropna()
+                side, entry, sl, tp, ok = detect_signal(
+                    df_15m, df_1h, symbol, cfg=RELAX_CFG, silent=True, context="LIVE-RELAX"
+                )
+                if ok:
+                    # rating: dùng hàm gốc nếu có, else RELAX=2 sao
+                    if 'calculate_signal_rating' in globals():
+                        try:
+                            rating = int(calculate_signal_rating(side, "Tăng" if side=="LONG" else "Giảm",
+                                                                 "Tăng" if side=="LONG" else "Giảm", True))
+                        except Exception:
+                            rating = 2
+                    else:
+                        rating = 2
+
+                    now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+                    sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
+
+        if ok:  log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ đạt tín hiệu", "info")
+        else:   log_once("RELAX", symbol, f"[RELAX] {symbol}: ❌ không đạt (rớt filter)", "info")
+
+    # ======= GỘP GHI GOOGLE SHEET MỘT LẦN =======
+    try:
+        prepend_to_sheet(sheet_rows)
+    except Exception as e:
+        logging.error(f"[SHEET] ghi batch lỗi: {e}")
+
+    # ======= GỬI TELEGRAM 1 LẦN (chỉ kèo > 3 sao) =======
+    try:
+        msgs = []
+        for mode, sym, side, entry, sl, tp, rating in tg_candidates:
+            if rating >= 4:  # > 3 sao
+                msgs.append(f"[{mode}] {sym} {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n⭐️ {rating}/5")
+        if msgs and 'send_telegram_message' in globals():
+            send_telegram_message("🔥 TỔNG HỢP KÈO CHẤT (>=4⭐️)\n\n" + "\n\n".join(msgs))
+    except Exception as e:
+        logging.error(f"[TG] gửi tổng hợp lỗi: {e}")
     
 def clean_old_rows():
     try:
