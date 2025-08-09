@@ -94,7 +94,7 @@ STRICT_CFG = {
     "ALLOW_1H_NEUTRAL": False,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 60,   # top 40%
+    "VOLUME_PERCENTILE": 50,   # top 50%
     "ADX_MIN_15M": 12,
     "BBW_MIN": 0.009,
     "RR_MIN": 1.3,
@@ -169,13 +169,14 @@ def in_news_blackout(window_min: int):
     return False
 
 # ====== VWAP + ATR clearance ======
-import numpy as np
+
 def _atr(df, n=14):
     tr = np.maximum.reduce([
-        (df["high"]-df["low"]).abs(),
-        (df["high"]-df["close"].shift()).abs(),
-        (df["low"] -df["close"].shift()).abs()
+        (df["high"] - df["low"]).abs(),
+        (df["high"] - df["close"].shift()).abs(),
+        (df["low"] - df["close"].shift()).abs()
     ])
+    tr = pd.Series(tr)  # ✅ Ép về Series để dùng .rolling()
     return tr.rolling(n).mean()
 
 def anchored_vwap(df, anchor_idx):
