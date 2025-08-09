@@ -97,8 +97,8 @@ STRICT_CFG = {
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 60,   # top 40%
-    "ADX_MIN_15M": 12,
-    "BBW_MIN": 0.009,
+    "ADX_MIN_15M": 15,
+    "BBW_MIN": 0.01,
     "RR_MIN": 1.3,
     "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.6, # >= 0.6ART
@@ -109,7 +109,7 @@ RELAX_CFG = {
     "RSI_SHORT_MAX": 48,
     "RSI_1H_LONG_MIN": 50,
     "RSI_1H_SHORT_MAX": 50,
-    "MACD_DIFF_LONG_MIN": 0.02,
+    "MACD_DIFF_LONG_MIN": 0.03,
     "MACD_DIFF_SHORT_MIN": 0.0005,
     "ALLOW_1H_NEUTRAL": True,
 }
