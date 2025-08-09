@@ -156,7 +156,7 @@ def load_news_events():
 
 
 def in_news_blackout(window_min: int):
-    now = datetime.now(timezone.utc)
+    now = dt.datetime.now(timezone.utc)
     for e in load_news_events():
         t = e.get("time") or e.get("time_utc")
         if not t: continue
@@ -470,16 +470,51 @@ def detect_signal(df_15m: pd.DataFrame,
     cond_1h_long_ok  = (ema_up_1h and rsi_1h > rsi1h_long_min) or (allow_1h_neu and ema_up_1h)
     cond_1h_short_ok = ((not ema_up_1h) and rsi_1h < rsi1h_short_max) or (allow_1h_neu and (not ema_up_1h))
 
+    # ===== XÁC NHẬN HƯỚNG & ĐỒNG PHA (STRICT=3/3, RELAX>=2/3) =====
     side = None
-    if ema_up_15 and cond_1h_long_ok and rsi_15 > rsi_long_min and macd_diff > macd_long_min and adx >= adx_min:
+    
+    # vote theo 3 nhóm: EMA(+1), RSI(+1), MACD(+1)
+    long_vote  = 0
+    short_vote = 0
+    
+    # 1) EMA (15m + xác nhận 1h)
+    if ema_up_15 and cond_1h_long_ok:
+        long_vote += 1
+    elif ema_dn_15 and cond_1h_short_ok:
+        short_vote += 1
+    
+    # 2) RSI
+    if rsi_15 > rsi_long_min:
+        long_vote += 1
+    elif rsi_15 < rsi_short_max:
+        short_vote += 1
+    
+    # 3) MACD: dùng hướng thô (macd - signal) + ngưỡng độ lớn macd_diff
+    macd_raw = float(latest["macd"]) - float(latest["macd_signal"])
+    if macd_raw > 0 and macd_diff > macd_long_min:
+        long_vote += 1
+    elif macd_raw < 0 and macd_diff > macd_short_min:
+        short_vote += 1
+    
+    # yêu cầu đồng pha: RELAX=2/3, STRICT=3/3
+    need_align = 2 if cfg.get("TAG", "STRICT") == "RELAX" else 3
+    
+    # xét ADX cùng lúc (giữ nguyên ngưỡng bạn đã đặt)
+    if long_vote >= need_align and adx >= adx_min:
         side = "LONG"
-    elif ema_dn_15 and cond_1h_short_ok and rsi_15 < rsi_short_max and macd_diff > macd_short_min and adx >= adx_min:
+    elif short_vote >= need_align and adx >= adx_min:
         side = "SHORT"
     else:
-        fail.append("ALIGN EMA/RSI/MACD")
+        # báo lý do rớt chi tiết
+        best = max(long_vote, short_vote)
+        fail.append(f"ALIGN {best}/3 (y/c {need_align}/3)")
+        if adx < adx_min:
+            fail.append(f"ADX {adx:.1f} < {adx_min}")
+    
     # nếu đã có lỗi ở trên, trả sớm
     if fail:
         return _ret(None, None, None, None, False)
+
 
     # ---------- ép vị trí near S/R theo hướng ----------
     try:
@@ -689,7 +724,7 @@ def run_bot():
                     else:
                         rating = 3
 
-                    now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+                    now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     sheet_rows.append([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
@@ -730,7 +765,7 @@ def run_bot():
                     else:
                         rating = 2
 
-                    now_vn = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+                    now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
@@ -761,12 +796,12 @@ def clean_old_rows():
         data = sheet.get_all_values()
         headers = data[0]
         rows = data[1:]
-        today = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
+        today = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
 
         new_rows = []
         for row in rows:
             try:
-                row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
+                row_date = dt.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
                 if (today - row_date).days < 3:
                     new_rows.append(row)
             except:
@@ -870,8 +905,8 @@ def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
         return
 
     # mốc thời gian 90 ngày
-    end_utc = datetime.datetime.now(datetime.timezone.utc)
-    start_utc = end_utc - datetime.timedelta(days=90)
+    end_utc = dt.datetime.now(dt.timezone.utc)
+    start_utc = end_utc - dt.timedelta(days=90)
 
     for sym in symbols:
         inst_id = sym.replace("/", "-").upper()
