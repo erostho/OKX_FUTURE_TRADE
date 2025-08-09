@@ -85,17 +85,31 @@ STRICT_CFG = {
     "USE_VWAP": True,
     "RELAX_EXCEPT": False,
     "TAG": "STRICT",
+    "RSI_LONG_MIN": 55,
+    "RSI_SHORT_MAX": 45,
+    "RSI_1H_LONG_MIN": 50,
+    "RSI_1H_SHORT_MAX": 50,
+    "MACD_DIFF_LONG_MIN": 0.05,
+    "MACD_DIFF_SHORT_MIN": 0.001,
+    "ALLOW_1H_NEUTRAL": False,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 85,   # top 15%
-    "ADX_MIN_15M": 15,
-    "BBW_MIN": 0.010,
-    "RR_MIN": 1.6,
-    "NEWS_BLACKOUT_MIN": 45,
-    "ATR_CLEARANCE_MIN": 1.0,
+    "VOLUME_PERCENTILE": 60,   # top 40%
+    "ADX_MIN_15M": 12,
+    "BBW_MIN": 0.009,
+    "RR_MIN": 1.3,
+    "NEWS_BLACKOUT_MIN": 30, # phút
+    "ATR_CLEARANCE_MIN": 0.6, # >= 0.6ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
+    "RSI_LONG_MIN": 52,
+    "RSI_SHORT_MAX": 48,
+    "RSI_1H_LONG_MIN": 50,
+    "RSI_1H_SHORT_MAX": 50,
+    "MACD_DIFF_LONG_MIN": 0.02,
+    "MACD_DIFF_SHORT_MIN": 0.0005,
+    "ALLOW_1H_NEUTRAL": True,
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -202,13 +216,13 @@ def is_volume_spike(df):
             return False
 
         v_now = volumes.iloc[-1]
-        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
+        threshold = np.percentile(volumes[:-1], 60) # TOP 40%
 
         if np.isnan(v_now) or np.isnan(threshold):
             logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
             return False
 
-        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 60% = {threshold:.0f}")
 
         if v_now <= threshold:
             logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
@@ -446,14 +460,33 @@ def detect_signal(df_15m: pd.DataFrame,
 
     side = None
     # LONG mạnh khi: EMA up cả 15m/1h, RSI>55/50, MACD diff đủ lớn, ADX đạt ngưỡng
-    if ema_up_15 and ema_up_1h and rsi_15 > 55 and rsi_1h > 50 and macd_diff > 0.05 and adx >= adx_min:
-        side = "LONG"
+    # if ema_up_15 and ema_up_1h and rsi_15 > 52 and rsi_1h > 50 and macd_diff > 0.02 and adx >= adx_min:
+        # side = "LONG"
     # SHORT mạnh khi: EMA down cả 15m/1h, RSI<45/50, MACD diff > nhỏ, ADX đạt ngưỡng
-    elif ema_dn_15 and (not ema_up_1h) and rsi_15 < 45 and rsi_1h < 50 and macd_diff > 0.001 and adx >= adx_min:
+    # elif ema_dn_15 and (not ema_up_1h) and rsi_15 < 48 and rsi_1h < 50 and macd_diff > 0.0005 and adx >= adx_min:
+        # side = "SHORT"
+    # else:
+        # return None, None, None, None, False
+                      
+    rsi_long_min   = cfg.get("RSI_LONG_MIN", 55)
+    rsi_short_max  = cfg.get("RSI_SHORT_MAX", 45)
+    rsi1h_long_min = cfg.get("RSI_1H_LONG_MIN", 50)
+    rsi1h_short_max= cfg.get("RSI_1H_SHORT_MAX", 50)
+    macd_long_min  = cfg.get("MACD_DIFF_LONG_MIN", 0.05)
+    macd_short_min = cfg.get("MACD_DIFF_SHORT_MIN", 0.001)
+    allow_1h_neu   = cfg.get("ALLOW_1H_NEUTRAL", False)
+    
+    cond_1h_long_ok  = (ema_up_1h and rsi_1h > rsi1h_long_min) or (allow_1h_neu and ema_up_1h)
+    cond_1h_short_ok = ((not ema_up_1h) and rsi_1h < rsi1h_short_max) or (allow_1h_neu and (not ema_up_1h))
+    
+    if ema_up_15 and cond_1h_long_ok and rsi_15 > rsi_long_min and macd_diff > macd_long_min and adx >= adx_min:
+        side = "LONG"
+    elif ema_dn_15 and cond_1h_short_ok and rsi_15 < rsi_short_max and macd_diff > macd_short_min and adx >= adx_min:
         side = "SHORT"
     else:
         return None, None, None, None, False
 
+                      
     # --------- Vị trí theo S/R (ép hướng): LONG near support, SHORT near resistance ---------
     try:
         low_sr, high_sr = find_support_resistance(df, lookback=40)
