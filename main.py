@@ -97,19 +97,19 @@ STRICT_CFG = {
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 65,   # top 35%
-    "ADX_MIN_15M": 15,
+    "ADX_MIN_15M": 17,
     "BBW_MIN": 0.01,
-    "RR_MIN": 1.3,
-    "NEWS_BLACKOUT_MIN": 30, # phút
-    "ATR_CLEARANCE_MIN": 0.6, # >= 0.6ART
+    "RR_MIN": 1.4,
+    "NEWS_BLACKOUT_MIN": 40, # phút
+    "ATR_CLEARANCE_MIN": 0.65, # >= 0.65ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
-    "RSI_LONG_MIN": 52,
-    "RSI_SHORT_MAX": 48,
+    "RSI_LONG_MIN": 53,
+    "RSI_SHORT_MAX": 47,     # GIẢM là lỏng
     "RSI_1H_LONG_MIN": 50,
     "RSI_1H_SHORT_MAX": 50,
-    "MACD_DIFF_LONG_MIN": 0.03,
+    "MACD_DIFF_LONG_MIN": 0.035,
     "MACD_DIFF_SHORT_MIN": 0.0005,
     "ALLOW_1H_NEUTRAL": True,
 }
