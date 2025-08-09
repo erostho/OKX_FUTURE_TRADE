@@ -808,54 +808,120 @@ def append_to_google_sheet(sheet, row):
     except Exception as e:
         logging.error(f"❌ Không ghi được Google Sheet: {e}")
         
-# === BACKTEST 90 NGÀY ===
-def backtest_signals_90_days(symbol_list):
-    # Giả định đã có fetch_ohlcv_okx và detect_signal
-    today = datetime.datetime.now(timezone.utc)
-    start_time = today - datetime.timedelta(days=90)
-    results = []
+# ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
 
-    for symbol in symbol_list:
-        logging.info(f"🔍 Backtest: {symbol}")
+def read_symbols_from_sheet(sheet_name="THEO DÕI") -> list:
+    """Đọc cột A của sheet THEO DÕI thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
+    try:
+        ws = client.open_by_key(sheet_id).worksheet(sheet_name)
+        rows = ws.get_all_values()
+        syms = []
+        for r in rows:
+            if not r: 
+                continue
+            s = (r[0] or "").strip().upper()
+            if not s or s == "COIN" or s == "SYMBOL":
+                continue
+            syms.append(s)
+        return syms
+    except Exception as e:
+        logging.error(f"[BACKTEST] Lỗi đọc sheet {sheet_name}: {e}")
+        return []
+
+def _first_hit_result(future_df: pd.DataFrame, side: str, entry: float, sl: float, tp: float) -> str:
+    """Đi qua nến tương lai, xem chạm SL hay TP trước (dựa intrabar: low/high)."""
+    for _, row in future_df.iterrows():
+        hi = float(row["high"]); lo = float(row["low"])
+        if side == "LONG":
+            # chạm SL trước hay TP trước?
+            if lo <= sl:   return "LOSS"
+            if hi >= tp:   return "WIN"
+        else:
+            if hi >= sl:   return "LOSS"
+            if lo <= tp:   return "WIN"
+    return "OPEN"
+
+def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
+                                        sheet_dst="BACKTEST_RESULT",
+                                        cfg=None, tag="STRICT",
+                                        look_ahead=20):
+    """
+    - Lấy list coin từ sheet THEO DÕI (cột A).
+    - Quét 90 ngày dữ liệu 15m; tại mỗi vị trí, nếu detect pass -> kiểm tra TP/SL trong 'look_ahead' nến.
+    - Không log chi tiết; chỉ ghi kết quả về sheet BACKTEST_RESULT.
+    """
+    cfg = cfg or STRICT_CFG
+    symbols = read_symbols_from_sheet(sheet_src)
+    if not symbols:
+        logging.warning("[BACKTEST] THEO DÕI rỗng – không có gì để test.")
+        return
+
+    results_rows = []  # sẽ ghi 1 lần
+
+    try:
+        ws = client.open_by_key(sheet_id).worksheet(sheet_dst)
+    except Exception as e:
+        logging.error(f"[BACKTEST] Không mở được sheet {sheet_dst}: {e}")
+        return
+
+    # mốc thời gian 90 ngày
+    end_utc = datetime.datetime.now(datetime.timezone.utc)
+    start_utc = end_utc - datetime.timedelta(days=90)
+
+    for sym in symbols:
+        inst_id = sym.replace("/", "-").upper()
+        if not inst_id.endswith("-USDT"):
+            inst_id += "-USDT"
+        inst_id += "-SWAP"
+
         try:
-            df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
-            if df is None or len(df) < 100:
+            with mute_logs():
+                df15 = fetch_ohlcv_okx(inst_id, "15m")
+                df1h  = fetch_ohlcv_okx(inst_id, "1h")
+            if df15 is None or len(df15) < 200 or df1h is None or len(df1h) < 120:
+                # thiếu dữ liệu, bỏ qua coin này
                 continue
 
-            df = calculate_indicators(df)
-            for i in range(50, len(df)-20):  # chừa nến để kiểm tra sau
-                sub_df = df.iloc[i-50:i].copy()
-                df_1h = df.iloc[i-100:i].copy()  # placeholder
-                signal, entry, sl, tp, _ = detect_signal(sub_df, df_1h, symbol)
-                if signal and entry and sl and tp:
-                    future_data = df.iloc[i:i+20]
-                    result = "NONE"
-                    for j in range(len(future_data)):
-                        price = future_data.iloc[j]["high"] if signal == "LONG" else future_data.iloc[j]["low"]
-                        if signal == "LONG" and price >= tp:
-                            result = "WIN"
-                            break
-                        elif signal == "LONG" and price <= sl:
-                            result = "LOSS"
-                            break
-                        elif signal == "SHORT" and price <= tp:
-                            result = "WIN"
-                            break
-                        elif signal == "SHORT" and price >= sl:
-                            result = "LOSS"
-                            break
-                    results.append([symbol, signal, entry, sl, tp, result, df.iloc[i]["ts"].strftime("%Y-%m-%d %H:%M")])
-        except Exception as e:
-            logging.error(f"Backtest lỗi {symbol}: {e}")
+            df15 = calculate_indicators(df15).dropna()
+            df1h = calculate_indicators(df1h).dropna()
+        except Exception:
             continue
 
-    # Ghi kết quả ra sheet BACKTEST_RESULT
+        # chỉ lấy đoạn 90 ngày gần nhất
+        df15 = df15[df15.index >= pd.Timestamp(start_utc)]
+        if len(df15) < 100:  # quá ít nến
+            continue
+
+        # quét sliding window
+        for i in range(60, len(df15) - look_ahead):
+            sub15 = df15.iloc[:i].copy()
+            # 1h dùng đến cùng thời điểm
+            t_i = df15.index[i-1]
+            sub1h = df1h[df1h.index <= t_i].copy()
+            if len(sub1h) < 60: 
+                continue
+
+            # detect (im lặng, không log); nếu bạn muốn lý do rớt -> return_reason=True
+            side, entry, sl, tp, ok = detect_signal(sub15, sub1h, sym, cfg=cfg, silent=True, context=f"BT-{tag}")
+            if not ok:
+                continue
+
+            future = df15.iloc[i:i+look_ahead].copy()
+            result = _first_hit_result(future, side, entry, sl, tp)
+
+            # Ghi 1 dòng kết quả theo format sheet của bạn: [Coin, Tín hiệu, Entry, SL, TP, Xu hướng, Xu hướng, Ngày]
+            ts_vn = (t_i.tz_localize("UTC").astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))).strftime("%d/%m/%Y %H:%M")
+            star  = "⭐️⭐️⭐️" if tag == "STRICT" else "⭐️⭐️"
+            results_rows.append([sym, f"{side} {star}", entry, sl, tp, "-", result, ts_vn])
+
+    # ghi 1 lần
     try:
-        sheet = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
-        for row in results:
-            sheet.append_row(row, value_input_option="USER_ENTERED")
+        # nếu bạn có Apps Script nhận batch -> dùng requests POST; không thì append từng dòng:
+        for r in results_rows:
+            ws.append_row(r, value_input_option="USER_ENTERED")
+        logging.info(f"[BACKTEST] Ghi {len(results_rows)} dòng vào sheet {sheet_dst} xong.")
     except Exception as e:
-        logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
+        logging.error(f"[BACKTEST] Lỗi ghi sheet {sheet_dst}: {e}")
 
 
 # ====== CẤU HÌNH ======
@@ -864,7 +930,22 @@ RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
 if RUN_BACKTEST:
     logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
     try:
-        backtest_signals_90_days(symbol_list)
+        # STRICT
+        backtest_signals_90_days_from_sheet(
+            sheet_src="THEO DÕI",
+            sheet_dst="BACKTEST_RESULT",
+            cfg=STRICT_CFG,
+            tag="STRICT",
+            look_ahead=20
+        )
+        # (tuỳ chọn) chạy thêm RELAX
+        backtest_signals_90_days_from_sheet(
+            sheet_src="THEO DÕI",
+            sheet_dst="BACKTEST_RESULT",
+            cfg=RELAX_CFG,
+            tag="RELAX",
+            look_ahead=20
+        )
         logging.info("✅ Hoàn thành backtest 90 ngày.")
     except Exception as e:
         logging.error(f"❌ Lỗi khi backtest: {e}")
