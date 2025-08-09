@@ -670,7 +670,7 @@ def run_bot():
 
         # log tóm tắt 1 dòng/coin
         if ok:  log_once("STRICT", symbol, f"[STRICT] {symbol}: ✅ đạt tín hiệu", "info")
-else:   log_once("STRICT", symbol, f"[STRICT] {symbol}: ❌ không đạt (rớt filter)", "info")
+        else:   log_once("STRICT", symbol, f"[STRICT] {symbol}: ❌ không đạt (rớt filter)", "info")
 
     # -------- RELAX pass (bỏ symbol đã ra ở STRICT) --------
     relax_list = [s for s in coin_list if s not in strict_hits]
