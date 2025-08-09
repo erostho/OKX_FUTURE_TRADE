@@ -570,17 +570,6 @@ def append_to_google_sheet(sheet, row):
         sheet.append_row(row, value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error(f"❌ Không ghi được Google Sheet: {e}")
-
-# ====== CẤU HÌNH ======
-RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
-# ====== LUỒNG CHÍNH ======
-if RUN_BACKTEST:
-    logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
-    try:
-        backtest_signals_90_days(symbol_list)
-        logging.info("✅ Hoàn thành backtest 90 ngày.")
-    except Exception as e:
-        logging.error(f"❌ Lỗi khi backtest: {e}")
         
 # === BACKTEST 90 NGÀY ===
 def backtest_signals_90_days(symbol_list):
@@ -631,3 +620,14 @@ def backtest_signals_90_days(symbol_list):
     except Exception as e:
         logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
 
+
+# ====== CẤU HÌNH ======
+RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
+# ====== LUỒNG CHÍNH ======
+if RUN_BACKTEST:
+    logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
+    try:
+        backtest_signals_90_days(symbol_list)
+        logging.info("✅ Hoàn thành backtest 90 ngày.")
+    except Exception as e:
+        logging.error(f"❌ Lỗi khi backtest: {e}")
