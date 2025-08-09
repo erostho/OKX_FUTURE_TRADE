@@ -485,9 +485,19 @@ def send_telegram_message(message: str):
 def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
     if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
         return 5
-    elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
+    elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm") and volume_ok:
         return 5
-    elif short_trend.startswith("Tăng") and mid_trenddef _scan_with_cfg(coin_list, cfg, tag):
+    elif volume_ok and (
+        (signal == "LONG" and short_trend.startswith("Tăng")) or
+        (signal == "SHORT" and short_trend.startswith("Giảm"))
+    ):
+        return 4
+    elif volume_ok:
+        return 3
+    else:
+        return 1
+
+def _scan_with_cfg(coin_list, cfg, tag):
     global CURRENT_CFG
     CURRENT_CFG = cfg
     valid_signals = []
