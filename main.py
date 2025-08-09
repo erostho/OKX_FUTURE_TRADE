@@ -19,6 +19,22 @@ import datetime
 import json
 import os
 import logging
+
+# ==== STRUCTURED LOG HELPERS ====
+LOG_NAME = "SIGNAL"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logger = logging.getLogger(LOG_NAME)
+
+def log_pass(stage: str, symbol: str, **kv):
+    extras = " ".join(f"{k}={v}" for k,v in kv.items())
+    logger.info(f"PASS|{stage}|{symbol}|{extras}")
+
+def log_drop(stage: str, symbol: str, reason: str, **kv):
+    extras = " ".join(f"{k}={v}" for k,v in kv.items())
+    logger.info(f"DROP|{stage}|{symbol}|{reason} {extras}")
+
+def drop_return():
+    return None, None, None, None, False
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pytz import timezone
@@ -27,33 +43,6 @@ import pytz
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# ====== LOG HELPERS (log-once & mute logs) ======
-from contextlib import contextmanager
-_logged_once = {}
-
-def log_once(mode: str, symbol: str, msg: str, level="info"):
-    key = (mode, symbol)
-    if _logged_once.get(key):
-        return
-    _logged_once[key] = True
-    if level=="debug":
-        logging.debug(msg)
-    else:
-        logging.info(msg)
-
-def reset_log_once_for_mode(mode_tag: str, symbols: list):
-    for s in symbols:
-        _logged_once.pop((mode_tag, s), None)
-
-@contextmanager
-def mute_logs():
-    prev = logging.getLogger().level
-    logging.getLogger().setLevel(logging.ERROR)
-    try:
-        yield
-    finally:
-        logging.getLogger().setLevel(prev)
 
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -85,28 +74,6 @@ SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 12
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 
-# === PRESET CONFIGS FOR STRICT/RELAX MODES ===
-STRICT_CFG = {
-    "ADX_MIN_15M": 22, "ADX_MIN_1H": 20,
-    "BBW_MIN": 0.012, "BREAKOUT_BODY_ATR": 0.6,
-    "VOLUME_MODE": os.getenv("VOLUME_MODE", "auto"),
-    "VOLUME_PERCENTILE": int(os.getenv("VOLUME_PERCENTILE", "80")),
-    "VOLUME_FACTOR": float(os.getenv("VOLUME_FACTOR", "1.6")),
-    "RELAX_EXCEPT": False,
-    "TAG": "STRICT"
-}
-RELAX_CFG = {
-    "ADX_MIN_15M": 15, "ADX_MIN_1H": 15,
-    "BBW_MIN": 0.010, "BREAKOUT_BODY_ATR": 0.7,
-    "VOLUME_MODE": os.getenv("VOLUME_MODE", "auto"),
-    "VOLUME_PERCENTILE": int(os.getenv("VOLUME_PERCENTILE", "85")),
-    "VOLUME_FACTOR": float(os.getenv("VOLUME_FACTOR", "1.6")),
-    "RELAX_EXCEPT": True,
-    "TAG": "RELAX"
-}
-CURRENT_CFG = STRICT_CFG  # will be set in run_bot/backtest before scanning
-
-
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max_missing=2):
     """Nếu thiếu 1-2 giá trị, loại bỏ. Nếu thiếu nhiều hơn, trả về None"""
@@ -115,49 +82,29 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
         return None
     return df.dropna(subset=required_cols)
 
-
 def is_volume_spike(df):
-    """
-    Volume spike with smart modes:
-      - auto: percentile depends on ADX & BB width (needs indicators present)
-      - percentile: fixed percentile on last 29 bars
-      - factor: v_now >= mean(vols[:-1]) * factor
-    Reads CURRENT_CFG for thresholds.
-    """
     try:
-        vols = df["volume"].iloc[-30:]
-        if len(vols) < 10:
-            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(vols)} nến")
+        volumes = df["volume"].iloc[-20:]
+
+        if len(volumes) < 10:
+            logging.debug(f"[DEBUG][Volume FAIL] Không đủ dữ liệu volume: chỉ có {len(volumes)} nến")
             return False
-        v_now = float(vols.iloc[-1])
-        mode = CURRENT_CFG.get("VOLUME_MODE", "auto")
-        if mode == "auto":
-            adx = float(df["adx"].iloc[-1]) if "adx" in df.columns else np.nan
-            if "bb_upper" in df.columns and "bb_lower" in df.columns:
-                bbw = float((df["bb_upper"].iloc[-1] - df["bb_lower"].iloc[-1]) / max(df["close"].iloc[-1], 1e-12))
-            else:
-                bbw = np.nan
-            # choose percentile
-            if (not np.isnan(adx) and adx < 20) or (not np.isnan(bbw) and bbw < 0.010):
-                p = 85
-            elif (not np.isnan(adx) and adx < 25) or (not np.isnan(bbw) and bbw < 0.015):
-                p = 80
-            else:
-                p = 70
-            thr = float(np.percentile(vols[:-1], p))
-            logging.debug(f"[DEBUG][Volume Check] mode=auto P={p}, v_now={v_now:.0f}, thr={thr:.0f}")
-            return bool(v_now >= thr)
-        elif mode == "percentile":
-            p = int(CURRENT_CFG.get("VOLUME_PERCENTILE", 75))
-            thr = float(np.percentile(vols[:-1], p))
-            logging.debug(f"[DEBUG][Volume Check] mode=percentile P={p}, v_now={v_now:.0f}, thr={thr:.0f}")
-            return bool(v_now >= thr)
-        else:
-            factor = float(CURRENT_CFG.get("VOLUME_FACTOR", 1.6))
-            base = float(np.mean(vols[:-1]))
-            thr = base * factor
-            logging.debug(f"[DEBUG][Volume Check] mode=factor base={base:.0f} x{factor} thr={thr:.0f}, v_now={v_now:.0f}")
-            return bool(v_now >= thr)
+
+        v_now = volumes.iloc[-1]
+        threshold = np.percentile(volumes[:-1], 70) # TOP 30%
+
+        if np.isnan(v_now) or np.isnan(threshold):
+            logging.debug(f"[DEBUG][Volume FAIL] Dữ liệu volume bị NaN - v_now={v_now}, threshold={threshold}")
+            return False
+
+        logging.debug(f"[DEBUG][Volume Check] Volume hiện tại = {v_now:.0f}, Threshold 70% = {threshold:.0f}")
+
+        if v_now <= threshold:
+            logging.debug(f"[DEBUG][Volume FAIL] Volume chưa đủ spike")
+            return False
+
+        return True
+
     except Exception as e:
         logging.debug(f"[DEBUG][Volume FAIL] Lỗi khi kiểm tra volume: {e}")
         return False
@@ -280,28 +227,7 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
-
-def candle_quality_ok(df, side):
-    """
-    Kiểm tra chất lượng nến để tránh tín hiệu nhiễu.
-    - side: "long" hoặc "short"
-    - df: DataFrame chứa OHLCV
-    """
-    last = df.iloc[-1]
-    body = abs(last['close'] - last['open'])
-    wick_top = last['high'] - max(last['close'], last['open'])
-    wick_bottom = min(last['close'], last['open']) - last['low']
-
-    # Ví dụ lọc: thân nến >= 50% tổng range
-    range_total = last['high'] - last['low']
-    if range_total == 0:
-        return False
-
-    body_ratio = body / range_total
-    if side == "long":
-        return (last['close'] > last['open']) and (body_ratio >= 0.5) and (wick_bottom <= body)
-    else:
-        return (last['close'] < last['open']) and (body_ratio >= 0.5) and (wick_top <= body)
+    
 
 def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     import logging
@@ -344,25 +270,10 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         return None, None, None, None, False
 
     # Choppy filter
-    if adx < CURRENT_CFG.get("ADX_MIN_15M", 20):
-        # RELAX exception: allow if breakout + strong candle + volume spike
-        if CURRENT_CFG.get("RELAX_EXCEPT", False):
-            bo_up, bo_down = False, False
-            try:
-                bo_up, bo_down, pb_up, pb_down = detect_breakout_pullback(df)
-            except Exception:
-                pass
-            v_ok = is_volume_spike(df)
-            candle_ok = candle_quality_ok(df, "long" if bo_up else "short")
-            if not ((bo_up or bo_down) and v_ok and candle_ok):
-                print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
-                return None, None, None, None, False
-        else:
-            print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
-            return None, None, None, None, False
+    if adx < 20:
         print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
-    if bb_width < CURRENT_CFG.get("BBW_MIN", 0.02):
+    if bb_width < 0.02:
         print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
@@ -418,13 +329,13 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     signal = None
     if (
         ema_up and not ema_up_1h and rsi > 55 and rsi_1h > 50
-        and macd_diff > 0.05 and adx > CURRENT_CFG.get("ADX_MIN_15M", 20) and near_sr
+        and macd_diff > 0.05 and adx > 20 and near_sr
     ):
         if btc_change >= -0.01:
             signal = "LONG"
     elif (
         ema_down and not ema_up_1h and rsi < 45 and rsi_1h < 50
-        and macd_diff > 0.001 and adx > CURRENT_CFG.get("ADX_MIN_15M", 20) and near_sr
+        and macd_diff > 0.001 and adx > 20 and near_sr
     ):
         if btc_change <= 0.01:
             signal = "SHORT"
@@ -440,28 +351,23 @@ def analyze_trend_multi(symbol):
         'mid':   ['1D', '1W', '1W', '1M']
     }
 
-def get_score(tf):
-    try:
-        df = fetch_ohlcv(symbol, tf.lower(), 50)
-        df = calculate_indicators(df)
-        rsi = df['rsi'].iloc[-1]
-        ema20 = df['ema20'].iloc[-1]
-        ema50 = df['ema50'].iloc[-1]
-        return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
-    except:
-        return 0
-# Map timeframe dùng để chấm điểm xu hướng theo từng lớp
-# (đúng với code bạn đang dùng là 15m/1h; nếu có 4h thì thêm vào 'long')
-tf_map = {
-    'short': ['15m'],
-    'mid':   ['1h'],
-    'long':  []          # hoặc ['4h'] nếu bạn có dữ liệu 4h
-}
-short_score = sum([get_score(tf) for tf in tf_map['short']])
-mid_score = sum([get_score(tf) for tf in tf_map['mid']])
+    def get_score(tf):
+        try:
+            df = fetch_ohlcv(symbol, tf.lower(), 50)
+            df = calculate_indicators(df)
+            rsi = df['rsi'].iloc[-1]
+            ema20 = df['ema20'].iloc[-1]
+            ema50 = df['ema50'].iloc[-1]
+            return 2 if (rsi > 60 and ema20 > ema50) else 1 if (rsi > 50 and ema20 > ema50) else 0
+        except:
+            return 0
 
-def to_text(score):
-    return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
+    short_score = sum([get_score(tf) for tf in tf_map['short']])
+    mid_score = sum([get_score(tf) for tf in tf_map['mid']])
+
+    def to_text(score):
+        return "Tăng (★★★)" if score >= 6 else "Không rõ (★)" if score >= 2 else "Giảm (✖)"
+
     return to_text(short_score), to_text(mid_score)
     
 
@@ -490,104 +396,190 @@ def send_telegram_message(message: str):
 def calculate_signal_rating(signal, short_trend, mid_trend, volume_ok):
     if signal == "LONG" and short_trend.startswith("Tăng") and mid_trend.startswith("Tăng") and volume_ok:
         return 5
-    elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm") and volume_ok:
+    elif signal == "SHORT" and short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
         return 5
-    elif volume_ok and (
-        (signal == "LONG" and short_trend.startswith("Tăng")) or
-        (signal == "SHORT" and short_trend.startswith("Giảm"))
-    ):
+    elif short_trend.startswith("Tăng") and mid_trend.startswith("Tăng"):
         return 4
-    elif volume_ok:
+    elif short_trend.startswith("Giảm") and mid_trend.startswith("Giảm"):
+        return 4
+    elif signal in ["LONG", "SHORT"]:
         return 3
     else:
-        return 1
+        return 2
+        
+def prepend_to_sheet(row_data: list):
+    try:
+        old_data = sheet.get_all_values()
+        headers = old_data[0]
+        body = old_data[1:]
+        
+        # Chèn dòng mới vào đầu
+        body.insert(0, row_data)
 
-def _scan_with_cfg(coin_list, cfg, tag):
-    global CURRENT_CFG
-    CURRENT_CFG = cfg
+        # Ghi lại toàn bộ (bao gồm cả header)
+        sheet.update([headers] + body)
+        logging.info(f"✅ Đã ghi dòng mới lên đầu: {row_data[0]}")
+
+    except Exception as e:
+        logging.warning(f"❌ Lỗi ghi sheet (prepend): {e}")
+
+def run_bot():
+    logging.basicConfig(level=logging.INFO)
+    coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
+
     valid_signals = []
     messages = []
-    done_symbols = set()
     count = 0
-    for symbol in coin_list:
-        reset = False
-        logging.info(f"🔍 [{tag}] Phân tích {symbol}...")
-        # mute all inner DEBUG/INFO for this symbol
-        with mute_logs():
-            inst_id = symbol.upper().replace("/", "-") + "-SWAP"
-            df_15m = fetch_ohlcv_okx(inst_id, "15m")
-            df_1h = fetch_ohlcv_okx(inst_id, "1h")
-            if df_15m is None or df_1h is None:
-                continue
-            df_15m = calculate_indicators(df_15m).dropna()
-            df_1h = calculate_indicators(df_1h).dropna()
-            # Volume prefilter
-            if not is_volume_spike(df_15m):
-                logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
-                continue
-            required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
-            if not all(col in df_15m.columns for col in required_cols):
-                logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
-                continue
-            signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
-            if signal:
-                short_trend, mid_trend = analyze_trend_multi(symbol)
-                rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
-                now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                count += 1
-                valid_signals.append([
-                    symbol,
-                    f"{signal} " + ("⭐️" * rating) + f" [{tag}]",
-                    entry, sl, tp, short_trend, mid_trend, now
-                ])
-            if rating >= 4:
-                messages.append(f"[{tag}] {symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})")
-                done_symbols.add(symbol)
-                summary="✅ đạt tín hiệu"
-            
-            if 'summary' not in locals():
-                summary="❌ không đạt (rớt filter)"
-            
-            # log one line per symbol per mode
-            log_once(tag, symbol, f"[{tag}] {symbol}: {summary}", level="info")
-            pass
-# append to sheet & telegram using existing helpers
-    try:
-        sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
-        sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
-        try:
-            headers = sheet.row_values(1)
-        except Exception:
-            headers = ["Symbol", "Signal", "Entry", "SL", "TP", "Short Trend", "Mid Trend", "Timestamp"]
-            sheet.insert_row(headers, 1)
-        body = sheet.get_all_values()[1:]
-        for row in valid_signals[::-1]:
-            body.insert(0, row)
-        sheet.update([headers] + body)
-        logging.info(f"✅ [{tag}] Đã ghi {len(valid_signals)} tín hiệu")
-    except Exception as e:
-        logging.warning(f"❌ [{tag}] Lỗi ghi sheet: {e}")
-    for msg in messages:
-        try:
-            send_telegram_message(msg)
-        except Exception as e:
-            logging.warning(f"TG error: {e}")
-    return done_symbols
 
-def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
+    for symbol in coin_list:
+        logging.info(f"🔍 Phân tích {symbol}...")
+
+        inst_id = symbol.upper().replace("/", "-") + "-SWAP"
+
+        df_15m = fetch_ohlcv_okx(inst_id, "15m")
+        df_1h = fetch_ohlcv_okx(inst_id, "1h")
+
+        if df_15m is None or df_1h is None:
+            continue
+
+        df_15m = calculate_indicators(df_15m).dropna()
+        df_1h = calculate_indicators(df_1h).dropna()
+        
+        # ✅ Check volume 
+        volume_ok = is_volume_spike(df_15m)
+        if not volume_ok:
+            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
+            continue
+
+        required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
+        if not all(col in df_15m.columns for col in required_cols):
+            logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
+            continue
+
+        if df_15m[required_cols].isnull().any().any():
+            logging.warning(f"⚠️ Có giá trị null trong df_15m: {df_15m[required_cols].isnull().sum().to_dict()}")
+            continue
+
+        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
+
+        if signal:
+            short_trend, mid_trend = analyze_trend_multi(symbol)
+            rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)  # ⭐️⭐️⭐️...
+
+            now = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
+            # 🟢 LƯU VÀO GOOGLE SHEET nếu rating >= 1
+            count += 1
+            valid_signals.append([
+                symbol,
+                signal + " " + ("⭐️" * rating),
+                entry,
+                sl,
+                tp,
+                short_trend,
+                mid_trend,
+                now
+            ])
+            
+            # 🟡 GỬI TELEGRAM nếu rating >= 3
+            if rating >= 4:
+                messages.append(
+                    f"{symbol} ({signal}) {entry} → TP {tp} / SL {sl} ({'⭐️' * rating})"
+                )
+        
+        time.sleep(1)
+    
+    # ✅ Gửi 1 tin nhắn tổng hợp
+    if messages:
+        message = "🆕 *TỔNG HỢP TÍN HIỆU MỚI*\n\n" + "\n".join(messages)
+        send_telegram_message(message)
+
+    # ✅ Ghi 1 lần duy nhất vào sheet
+    if valid_signals:
+        try:
+            sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
+            for row in valid_signals:
+                prepend_to_sheet(row)
+            clean_old_rows()
+        except Exception as e:
+            logging.warning(f"Không thể ghi sheet: {e}")
+        
+    # ✅ Log tổng kết
+    logging.info(f"✅ KẾT THÚC: Đã phân tích {len(coin_list)} coin. Có {count} coin thoả điều kiện.")
+    
+def clean_old_rows():
+    try:
+        data = sheet.get_all_values()
+        headers = data[0]
+        rows = data[1:]
+        today = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
+
+        new_rows = []
+        for row in rows:
+            try:
+                row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
+                if (today - row_date).days < 3:
+                    new_rows.append(row)
+            except:
+                new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
+
+        # Ghi lại: headers + rows mới
+        sheet.clear()
+        sheet.update([headers] + new_rows)
+        logging.info(f"🧹 Đã xoá những dòng quá 3 ngày (giữ lại {len(new_rows)} dòng)")
+
+    except Exception as e:
+        logging.warning(f"❌ Lỗi khi xoá dòng cũ: {e}")
+
+def get_top_usdt_pairs(limit=300):
+    url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
+    try:
+        res = requests.get(url)
+        data = res.json()['data']
+        usdt_pairs = [item['instId'] for item in data if item['quoteCcy'] == 'USDT']
+        return usdt_pairs[:limit]
+    except Exception as e:
+        logging.error(f"Lỗi lấy danh sách coin: {e}")
+        return []
+if __name__ == "__main__":
+    run_bot()
+
+
+# === GỬI TELEGRAM ===
+
+def send_telegram_message(message):
+    try:
+        token = TELEGRAM_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            logging.warning(f"Telegram error: {response.text}")
+    except Exception as e:
+        logging.error(f"❌ Lỗi gửi Telegram: {e}")
+
+
+# === GHI GOOGLE SHEET ===
+
+def append_to_google_sheet(sheet, row):
+    try:
+        sheet.append_row(row, value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error(f"❌ Không ghi được Google Sheet: {e}")
+        
+# === BACKTEST 90 NGÀY ===
+def backtest_signals_90_days(symbol_list):
     # Giả định đã có fetch_ohlcv_okx và detect_signal
-    today = datetime.datetime.now(datetime.timezone.utc)
+    today = datetime.datetime.now(timezone.utc)
     start_time = today - datetime.timedelta(days=90)
     results = []
 
-    global CURRENT_CFG
-    if cfg is None:
-        cfg = STRICT_CFG
-    CURRENT_CFG = cfg
-
     for symbol in symbol_list:
-        with mute_logs():
-            logging.info(f"🔍 Backtest: {symbol}")
+        logging.info(f"🔍 Backtest: {symbol}")
         try:
             df = fetch_ohlcv_okx(symbol, "15m", limit=3000)
             if df is None or len(df) < 100:
@@ -629,90 +621,13 @@ def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
         logging.error(f"Lỗi ghi BACKTEST_RESULT: {e}")
 
 
-def run_bot():
-    logging.basicConfig(level=logging.INFO)
-    coin_list = get_top_usdt_pairs(limit=COINS_LIMIT)
-    # Pass 1: STRICT
-    strict_done = _scan_with_cfg(coin_list, STRICT_CFG, "STRICT")
-    # Pass 2: RELAX on remaining symbols
-    relax_symbols = [s for s in coin_list if s not in strict_done]
-    _ = _scan_with_cfg(relax_symbols, RELAX_CFG, "RELAX")
-
-def clean_old_rows():
+# ====== CẤU HÌNH ======
+RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
+# ====== LUỒNG CHÍNH ======
+if RUN_BACKTEST:
+    logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
     try:
-        data = sheet.get_all_values()
-        headers = data[0]
-        rows = data[1:]
-        today = datetime.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
-
-        new_rows = []
-        for row in rows:
-            try:
-                row_date = datetime.datetime.strptime(row[7], "%d/%m/%Y %H:%M").date()
-                if (today - row_date).days < 3:
-                    new_rows.append(row)
-            except:
-                new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
-
-        # Ghi lại: headers + rows mới
-        sheet.clear()
-        sheet.update([headers] + new_rows)
-        logging.info(f"🧹 Đã xoá những dòng quá 3 ngày (giữ lại {len(new_rows)} dòng)")
-
+        backtest_signals_90_days(symbol_list)
+        logging.info("✅ Hoàn thành backtest 90 ngày.")
     except Exception as e:
-        logging.warning(f"❌ Lỗi khi xoá dòng cũ: {e}")
-
-def get_top_usdt_pairs(limit=300):
-    url = "https://www.okx.com/api/v5/public/instruments?instType=SPOT"
-    try:
-        res = requests.get(url)
-        data = res.json()['data']
-        usdt_pairs = [item['instId'] for item in data if item['quoteCcy'] == 'USDT']
-        return usdt_pairs[:limit]
-    except Exception as e:
-        logging.error(f"Lỗi lấy danh sách coin: {e}")
-        return []
-
-if __name__ == "__main__":
-    # === FLAGS ===
-    RUN_BACKTEST_STRICT = True
-    RUN_BACKTEST_RELAX  = True
-    # Load universe
-    symbol_list = get_top_usdt_pairs(limit=COINS_LIMIT)
-    try:
-        if RUN_BACKTEST_STRICT:
-            backtest_signals_90_days(symbol_list, cfg=STRICT_CFG, tag="STRICT")
-        if RUN_BACKTEST_RELAX:
-            backtest_signals_90_days([s for s in symbol_list], cfg=RELAX_CFG, tag="RELAX")
-    except Exception as e:
-        logging.error(f"Backtest error: {e}")
-    # === RUN LIVE BOT ===
-    run_bot()
-
-
-# === GỬI TELEGRAM ===
-
-def send_telegram_message(message):
-    try:
-        token = TELEGRAM_TOKEN
-        chat_id = TELEGRAM_CHAT_ID
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "HTML"
-        }
-        response = requests.post(url, data=payload)
-        if response.status_code != 200:
-            logging.warning(f"Telegram error: {response.text}")
-    except Exception as e:
-        logging.error(f"❌ Lỗi gửi Telegram: {e}")
-
-
-# === GHI GOOGLE SHEET ===
-
-def append_to_google_sheet(sheet, row):
-    try:
-        sheet.append_row(row, value_input_option="USER_ENTERED")
-    except Exception as e:
-        logging.error(f"❌ Không ghi được Google Sheet: {e}")
+        logging.error(f"❌ Lỗi khi backtest: {e}")
