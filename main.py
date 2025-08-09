@@ -23,7 +23,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from pytz import timezone
 import pytz
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -662,62 +662,40 @@ def _parse_vn_time(s):
     # nếu không parse được, trả None -> sẽ giữ lại (an toàn)
     return None
 
-def prepend_rows_with_retention(ws, rows, keep_days=3, tz_name="Asia/Ho_Chi_Minh"):
+
+def prepend_with_retention(ws, new_rows):
     """
-    Prepend nhiều dòng lên đầu sheet, chỉ loại các dòng cũ hơn keep_days.
-    Không xóa toàn bộ sheet DATA_FUTURE.
-    ws: gspread Worksheet
-    rows: List[List[Any]] theo đúng format cột của bạn
-          [symbol, side + " ⭐⭐⭐", entry, sl, tp, "-", "-", "dd/mm/YYYY HH:MM"]
+    Ghi dữ liệu mới (prepend) cho sheet 6 cột: 
+    Coin, Tín hiệu, Entry, SL, TP, Ngày
     """
     try:
         # Lấy toàn bộ dữ liệu hiện có
-        old = ws.get_all_values()  # 2D list
-        if old:
-            headers = old[0]
-            body = old[1:]
-        else:
-            headers = ["Symbol", "Side", "Entry", "SL", "TP", "-", "-", "Date"]
-            body = []
+        existing = ws.get_all_values()
+        headers = existing[0] if existing else ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
+        data = existing[1:] if len(existing) > 1 else []
 
-        # Chuẩn hoá rows mới
-        cleaned_new = [[_to_user_entered(c) for c in r] for r in rows]
-
-        # Thời điểm hiện tại (VN)
-        now_vn = dt.datetime.now(pytz.timezone(tz_name))
-        cutoff = now_vn - timedelta(days=keep_days)
-
-        # Lọc body cũ: chỉ giữ những dòng có Date >= cutoff
+        # Giữ lại dữ liệu trong 3 ngày gần nhất
+        today = datetime.utcnow() + timedelta(hours=7)  # UTC+7
+        three_days_ago = today - timedelta(days=3)
         kept = []
-        for r in body:
-            if not r:
-                continue
-            # date nằm ở cột cuối cùng theo format bạn đang dùng
-            date_str = r[-1] if len(r) >= 1 else ""
-            tt = _parse_vn_time(date_str)
-            if tt is None:
-                # không parse được -> giữ lại cho an toàn
-                kept.append(r)
-                continue
-            # tt có thể là naive -> gán tz VN để so sánh
-            if tt.tzinfo is None:
-                tt = pytz.timezone(tz_name).localize(tt)
-            if tt >= cutoff:
-                kept.append(r)
+        for row in data:
+            try:
+                row_date = datetime.strptime(row[5], "%d/%m/%Y %H:%M")
+                if row_date >= three_days_ago:
+                    kept.append(row)
+            except:
+                pass  # Bỏ qua nếu lỗi parse ngày
 
-        # Gộp: new rows lên đầu (đảo để bảo toàn thứ tự push), rồi tới phần kept
-        combined = cleaned_new[::-1] + kept
+        # Ghép dữ liệu mới lên trên
+        combined = new_rows[::-1] + kept  # Đảo new_rows để push theo thứ tự thời gian
 
-        # Update lại sheet (chỉ ghi đè nội dung, không xoá sạch)
+        # Chỉ lấy đúng 6 cột
+        combined = [r[:6] for r in combined]
+
+        # Update lại sheet
         ws.update([headers] + combined, value_input_option="USER_ENTERED")
 
-        # Thu nhỏ số hàng để không còn các dòng quá hạn nằm bên dưới
-        try:
-            ws.resize(rows=len(combined) + 1)
-        except Exception:
-            pass
-
-        logging.info(f"[SHEET] ✅ Prepend {len(cleaned_new)} dòng, giữ lại {len(kept)} dòng <={keep_days} ngày.")
+        logging.info(f"[SHEET] ✅ Prepend {len(new_rows)} dòng, giữ lại {len(kept)} dòng cũ")
     except Exception as e:
         logging.warning(f"[SHEET] ❌ Lỗi prepend_with_retention: {e}")
 
@@ -814,7 +792,7 @@ def run_bot():
     try:
         if sheet_rows:  # list các dòng đã gom
             ws = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")  # đúng tên sheet bạn đang dùng
-            prepend_rows_with_retention(ws, sheet_rows, keep_days=3)
+            prepend_with_retention(ws, sheet_rows, keep_days=3)
         else:
             logging.info("[SHEET] Không có dòng nào để ghi.")
     except Exception as e:
