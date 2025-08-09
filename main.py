@@ -906,143 +906,131 @@ if __name__ == "__main__":
 
         
 # ===== BACKTEST: đọc danh sách từ sheet THEO DÕI & ghi về BACKTEST_RESULT =====
+# ==== PARSE & SHEET HELPERS (THEO DÕI -> BACKTEST_RESULT) ====
 
-def read_symbols_from_sheet(sheet_name="THEO DÕI") -> list:
-    """Đọc cột A của sheet THEO DÕI thành list symbol ('HUMA-USDT'...). Bỏ trống, bỏ header."""
-    try:
-        ws = client.open_by_key(sheet_id).worksheet(sheet_name)
-        rows = ws.get_all_values()
-        syms = []
-        for r in rows:
-            if not r: 
-                continue
-            s = (r[0] or "").strip().upper()
-            if not s or s == "COIN" or s == "SYMBOL":
-                continue
-            syms.append(s)
-        return syms
-    except Exception as e:
-        logging.error(f"[BACKTEST] Lỗi đọc sheet {sheet_name}: {e}")
-        return []
+def _to_user_entered(x):
+    if x is None: return ""
+    if isinstance(x, float):
+        s = f"{x:.8f}".rstrip("0").rstrip(".")
+        return s if s else "0"
+    return str(x)
 
-def _first_hit_result(future_df: pd.DataFrame, side: str, entry: float, sl: float, tp: float) -> str:
-    """Đi qua nến tương lai, xem chạm SL hay TP trước (dựa intrabar: low/high)."""
-    for _, row in future_df.iterrows():
-        hi = float(row["high"]); lo = float(row["low"])
-        if side == "LONG":
-            # chạm SL trước hay TP trước?
-            if lo <= sl:   return "LOSS"
-            if hi >= tp:   return "WIN"
-        else:
-            if hi >= sl:   return "LOSS"
-            if lo <= tp:   return "WIN"
-    return "OPEN"
-
-def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
-                                        sheet_dst="BACKTEST_RESULT",
-                                        cfg=None, tag="STRICT",
-                                        look_ahead=20):
-    """
-    - Lấy list coin từ sheet THEO DÕI (cột A).
-    - Quét 90 ngày dữ liệu 15m; tại mỗi vị trí, nếu detect pass -> kiểm tra TP/SL trong 'look_ahead' nến.
-    - Không log chi tiết; chỉ ghi kết quả về sheet BACKTEST_RESULT.
-    """
-    cfg = cfg or STRICT_CFG
-    symbols = read_symbols_from_sheet(sheet_src)
-    if not symbols:
-        logging.warning("[BACKTEST] THEO DÕI rỗng – không có gì để test.")
-        return
-
-    results_rows = []  # sẽ ghi 1 lần
-
-    try:
-        ws = client.open_by_key(sheet_id).worksheet(sheet_dst)
-    except Exception as e:
-        logging.error(f"[BACKTEST] Không mở được sheet {sheet_dst}: {e}")
-        return
-
-    # mốc thời gian 90 ngày
-    end_utc = dt.datetime.now(dt.timezone.utc)
-    start_utc = end_utc - dt.timedelta(days=90)
-
-    for sym in symbols:
-        inst_id = sym.replace("/", "-").upper()
-        if not inst_id.endswith("-USDT"):
-            inst_id += "-USDT"
-        inst_id += "-SWAP"
-
+def _parse_vn_time(s: str):
+    # hỗ trợ "dd/MM/YYYY HH:MM"
+    for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
         try:
-            with mute_logs():
-                df15 = fetch_ohlcv_okx(inst_id, "15m")
-                df1h  = fetch_ohlcv_okx(inst_id, "1h")
-            if df15 is None or len(df15) < 200 or df1h is None or len(df1h) < 120:
-                # thiếu dữ liệu, bỏ qua coin này
-                continue
-
-            df15 = calculate_indicators(df15).dropna()
-            df1h = calculate_indicators(df1h).dropna()
+            return dt.datetime.strptime(s, fmt).replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
         except Exception:
             continue
+    return None
 
-        # chỉ lấy đoạn 90 ngày gần nhất
-        df15 = df15[df15.index >= pd.Timestamp(start_utc)]
-        if len(df15) < 100:  # quá ít nến
+def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
+    """Đọc sheet THEO DÕI -> trả list tuple:
+       (symbol, side, entry, sl, tp, trend_s, trend_m, when_vn, mode)"""
+    ws = client.open_by_key(sheet_id).worksheet(sheet_name)
+    rows = ws.get_all_values()
+    if not rows or len(rows) < 2:
+        logging.info("[BACKTEST] THEO DÕI rỗng.")
+        return []
+
+    head = rows[0]
+    col = {name: i for i, name in enumerate(head)}
+    need = ["Coin","Tín hiệu","Entry","SL","TP","Xu hướng ngắn","Xu hướng trung","Ngày","Mode"]
+    for n in need:
+        if n not in col:
+            logging.warning(f"[BACKTEST] Thiếu cột '{n}' trong sheet THEO DÕI.")
+            return []
+
+    out = []
+    for r in rows[1:]:
+        try:
+            sym = r[col["Coin"]].strip()
+            side = r[col["Tín hiệu"]].strip().upper()   # LONG/SHORT
+            entry = float(str(r[col["Entry"]]).replace(",",""))
+            sl    = float(str(r[col["SL"]]).replace(",",""))
+            tp    = float(str(r[col["TP"]]).replace(",",""))
+            trend_s = r[col["Xu hướng ngắn"]].strip()
+            trend_m = r[col["Xu hướng trung"]].strip()
+            when_vn = _parse_vn_time(r[col["Ngày"]].strip())
+            mode    = r[col["Mode"]].strip().upper() if r[col["Mode"]] else "RELAX"
+            if not sym or side not in ("LONG","SHORT") or when_vn is None:
+                continue
+            out.append((sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode))
+        except Exception:
             continue
+    return out
 
-        # quét sliding window
-        for i in range(60, len(df15) - look_ahead):
-            sub15 = df15.iloc[:i].copy()
-            # 1h dùng đến cùng thời điểm
-            t_i = df15.index[i-1]
-            sub1h = df1h[df1h.index <= t_i].copy()
-            if len(sub1h) < 60: 
-                continue
+def write_backtest_row(row):
+    """row = [Coin, Tín hiệu, Entry, SL, TP, Xu hướng ngắn, Xu hướng trung, Ngày, Mode, Kết quả]"""
+    ws = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
+    ws.append_row([_to_user_entered(x) for x in row], value_input_option="USER_ENTERED")
+    
+def _first_touch_result(df, side, entry, sl, tp):
+    """
+    df: DataFrame OHLCV 15m sau thời điểm entry (có cột: open, high, low, close, timestamp)
+    Trả "WIN"/"LOSS"/"OPEN"
+    """
+    if df is None or len(df) == 0:
+        return "OPEN"
+    for _, row in df.iterrows():
+        h = float(row["high"]); l = float(row["low"])
+        if side == "LONG":
+            # chạm SL trước -> LOSS, chạm TP trước -> WIN
+            if l <= sl: return "LOSS"
+            if h >= tp: return "WIN"
+        else:  # SHORT
+            if h >= sl: return "LOSS"
+            if l <= tp: return "WIN"
+    return "OPEN"
+def backtest_from_watchlist():
+    items = read_watchlist_from_sheet("THEO DÕI")
+    if not items:
+        logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
+        return
 
-            # detect (im lặng, không log); nếu bạn muốn lý do rớt -> return_reason=True
-            side, entry, sl, tp, ok = detect_signal(sub15, sub1h, sym, cfg=cfg, silent=True, context=f"BT-{tag}")
-            if not ok:
-                continue
+    written = 0
+    for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
+        try:
+            # thời điểm bắt đầu lấy nến: từ khi có tín hiệu
+            # chuyển về UTC (OKX trả UTC)
+            when_utc = when_vn.astimezone(pytz.utc)
+            # lấy tối đa ~7 ngày sau tín hiệu => 7*24*4 = 672 nến 15m
+            inst_id = sym.upper().replace("/","-") + "-SWAP"
+            df = fetch_ohlcv_okx(inst_id, "15m", since=None, limit=900)   # dùng hàm sẵn có của bạn
+            if df is None or len(df) == 0:
+                res = "OPEN"
+            else:
+                # lọc các nến có timestamp >= when_utc
+                if "timestamp" in df.columns:
+                    df_after = df[df["timestamp"] >= when_utc.timestamp()*1000].copy()
+                else:
+                    # nếu không có, ước lượng bằng index
+                    df_after = df.copy()
+                # chỉ giữ tối đa 700 nến sau tín hiệu
+                df_after = df_after.iloc[:700]
+                res = _first_touch_result(df_after, side, entry, sl, tp)
 
-            future = df15.iloc[i:i+look_ahead].copy()
-            result = _first_hit_result(future, side, entry, sl, tp)
+            row = [
+                sym, side, entry, sl, tp,
+                trend_s, trend_m,
+                when_vn.strftime("%d/%m/%Y %H:%M"),
+                mode, res
+            ]
+            write_backtest_row(row)
+            written += 1
+        except Exception as e:
+            logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
-            # Ghi 1 dòng kết quả theo format sheet của bạn: [Coin, Tín hiệu, Entry, SL, TP, Xu hướng, Xu hướng, Ngày]
-            ts_vn = (t_i.tz_localize("UTC").astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))).strftime("%d/%m/%Y %H:%M")
-            star  = "⭐️⭐️⭐️" if tag == "STRICT" else "⭐️⭐️"
-            results_rows.append([sym, f"{side} {star}", entry, sl, tp, "-", result, ts_vn])
-
-    # ghi 1 lần
-    try:
-        # nếu bạn có Apps Script nhận batch -> dùng requests POST; không thì append từng dòng:
-        for r in results_rows:
-            ws.append_row(r, value_input_option="USER_ENTERED")
-        logging.info(f"[BACKTEST] Ghi {len(results_rows)} dòng vào sheet {sheet_dst} xong.")
-    except Exception as e:
-        logging.error(f"[BACKTEST] Lỗi ghi sheet {sheet_dst}: {e}")
+    logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
 
 
 # ====== CẤU HÌNH ======
-RUN_BACKTEST = False  # ✅ Đổi sang False nếu không muốn chạy backtest
-# ====== LUỒNG CHÍNH ======
+RUN_BACKTEST = True   # bật để chạy, tắt nếu không cần
+
 if RUN_BACKTEST:
-    logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
+    logging.info("🚀 Bắt đầu backtest từ sheet THEO DÕI…")
     try:
-        # STRICT
-        backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕI",
-            sheet_dst="BACKTEST_RESULT",
-            cfg=STRICT_CFG,
-            tag="STRICT",
-            look_ahead=20
-        )
-        # (tuỳ chọn) chạy thêm RELAX
-        backtest_signals_90_days_from_sheet(
-            sheet_src="THEO DÕI",
-            sheet_dst="BACKTEST_RESULT",
-            cfg=RELAX_CFG,
-            tag="RELAX",
-            look_ahead=20
-        )
-        logging.info("✅ Hoàn thành backtest 90 ngày.")
+        backtest_from_watchlist()
+        logging.info("✅ Hoàn thành backtest.")
     except Exception as e:
         logging.error(f"❌ Lỗi khi backtest: {e}")
