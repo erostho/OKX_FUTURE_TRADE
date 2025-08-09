@@ -353,121 +353,30 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
         return None
     return df.dropna(subset=required_cols)
     
-
 def detect_signal(df_15m: pd.DataFrame,
                   df_1h: pd.DataFrame,
                   symbol: str,
                   cfg: dict = None,
                   silent: bool = True,
-                  context: str = "LIVE"):
+                  context: str = "LIVE",
+                  return_reason: bool = False):
     """
-    Trả về: (side, entry, sl, tp, ok)
-    side ∈ {"LONG","SHORT"} hoặc None
+    Return:
+      mặc định: (side, entry, sl, tp, ok)
+      nếu return_reason=True: (side, entry, sl, tp, ok, reason_str)
     """
-
     cfg = cfg or STRICT_CFG
-    pct_near_sr = cfg.get("SR_NEAR_PCT", 0.03)         # 3% nếu không set
-    rr_min      = cfg.get("RR_MIN", 1.5)
-    bbw_min     = cfg.get("BBW_MIN", 0.012)
-    adx_min     = cfg.get("ADX_MIN_15M", 22)
-    vol_p       = cfg.get("VOLUME_PERCENTILE", 80)
-    news_win    = cfg.get("NEWS_BLACKOUT_MIN", 60)
-    atr_need    = cfg.get("ATR_CLEARANCE_MIN", 0.8)
-    use_vwap    = cfg.get("USE_VWAP", True)
-    allow_adx_ex= cfg.get("RELAX_EXCEPT", False)
-    body_atr_k  = cfg.get("BREAKOUT_BODY_ATR", 0.6)
+    # ---- tham số từ preset (có default để không vỡ) ----
+    vol_p        = cfg.get("VOLUME_PERCENTILE", 70)
+    adx_min      = cfg.get("ADX_MIN_15M", 20)
+    bbw_min      = cfg.get("BBW_MIN", 0.010)
+    rr_min       = cfg.get("RR_MIN", 1.5)
+    news_win     = cfg.get("NEWS_BLACKOUT_MIN", 60)
+    atr_need     = cfg.get("ATR_CLEARANCE_MIN", 0.8)
+    use_vwap     = cfg.get("USE_VWAP", True)
+    allow_adx_ex = cfg.get("RELAX_EXCEPT", False)
 
-    # --------- Chuẩn bị chỉ báo 15m (nếu thiếu cột thì tính gọn) ---------
-    df = df_15m.copy()
-    req_cols = {"open","high","low","close","volume"}
-    if not req_cols.issubset(df.columns) or len(df) < 60:
-        return None, None, None, None, False
-
-    def _ensure_cols(dfx: pd.DataFrame):
-        # EMA
-        if "ema20" not in dfx.columns: dfx["ema20"] = dfx["close"].ewm(span=20).mean()
-        if "ema50" not in dfx.columns: dfx["ema50"] = dfx["close"].ewm(span=50).mean()
-        # RSI
-        if "rsi" not in dfx.columns:
-            delta = dfx["close"].diff()
-            gain = delta.clip(lower=0).rolling(14).mean()
-            loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, np.nan)
-            rs = gain / loss
-            dfx["rsi"] = 100 - (100/(1+rs))
-        # MACD
-        if "macd" not in dfx.columns or "macd_signal" not in dfx.columns:
-            ema12 = dfx["close"].ewm(span=12).mean()
-            ema26 = dfx["close"].ewm(span=26).mean()
-            dfx["macd"] = ema12 - ema26
-            dfx["macd_signal"] = dfx["macd"].ewm(span=9).mean()
-        # BB width
-        if "bb_width" not in dfx.columns:
-            ma20 = dfx["close"].rolling(20).mean()
-            std20= dfx["close"].rolling(20).std()
-            dfx["bb_upper"] = ma20 + 2*std20
-            dfx["bb_lower"] = ma20 - 2*std20
-            dfx["bb_width"] = (dfx["bb_upper"] - dfx["bb_lower"]) / dfx["close"]
-        # ADX (nếu đã có thì giữ, không thì bỏ qua dùng fallback)
-        if "adx" not in dfx.columns:
-            # fallback nhẹ: không tính lại để đỡ nặng — coi như ADX đủ nếu thiếu
-            dfx["adx"] = 25.0
-        return dfx
-
-    df = _ensure_cols(df).dropna()
-    latest = df.iloc[-1]
-    close_price = float(latest["close"])
-
-    # --------- Volume spike (percentile) ---------
-    vols = df["volume"].iloc[-20:]
-    if len(vols) < 10:
-        return None, None, None, None, False
-    v_now = float(vols.iloc[-1])
-    vol_thr = float(np.percentile(vols.iloc[:-1], vol_p))
-    if not (v_now >= vol_thr):
-        return None, None, None, None, False
-    # --------- Lọc choppy: ADX + BBW ---------
-    adx = float(df["adx"].iloc[-1])
-    bbw = float(df["bb_width"].iloc[-1])
-
-    if adx < adx_min and not allow_adx_ex:
-        return None, None, None, None, False
-    if bbw < bbw_min:
-        return None, None, None, None, False
-
-    # Nếu cho phép ngoại lệ ADX (RELAX): bắt buộc thân nến >= k*ATR để tránh break giả
-    if adx < adx_min and allow_adx_ex:
-        last = df.iloc[-1]
-        body = abs(last["close"] - last["open"])
-        atr  = float(_atr(df).iloc[-1])
-        if atr <= 0 or body < body_atr_k * atr:
-            return None, None, None, None, False
-
-    # --------- Xác nhận đa khung (1H) ---------
-    ema_up_15 = latest["ema20"] > latest["ema50"]
-    ema_dn_15 = latest["ema20"] < latest["ema50"]
-    rsi_15    = float(latest["rsi"])
-    macd_diff = abs(float(latest["macd"] - latest["macd_signal"])) / max(close_price, 1e-9)
-
-    if df_1h is not None and len(df_1h) > 60:
-        d1 = df_1h.copy()
-        d1 = _ensure_cols(d1).dropna()
-        l1 = d1.iloc[-1]
-        ema_up_1h = l1["ema20"] > l1["ema50"]
-        rsi_1h    = float(l1["rsi"])
-    else:
-        ema_up_1h = True
-        rsi_1h    = 50.0
-
-    side = None
-    # LONG mạnh khi: EMA up cả 15m/1h, RSI>55/50, MACD diff đủ lớn, ADX đạt ngưỡng
-    # if ema_up_15 and ema_up_1h and rsi_15 > 52 and rsi_1h > 50 and macd_diff > 0.02 and adx >= adx_min:
-        # side = "LONG"
-    # SHORT mạnh khi: EMA down cả 15m/1h, RSI<45/50, MACD diff > nhỏ, ADX đạt ngưỡng
-    # elif ema_dn_15 and (not ema_up_1h) and rsi_15 < 48 and rsi_1h < 50 and macd_diff > 0.0005 and adx >= adx_min:
-        # side = "SHORT"
-    # else:
-        # return None, None, None, None, False
-                      
+    # nới/chặt theo preset (nếu đã thêm)
     rsi_long_min   = cfg.get("RSI_LONG_MIN", 55)
     rsi_short_max  = cfg.get("RSI_SHORT_MAX", 45)
     rsi1h_long_min = cfg.get("RSI_1H_LONG_MIN", 50)
@@ -475,31 +384,117 @@ def detect_signal(df_15m: pd.DataFrame,
     macd_long_min  = cfg.get("MACD_DIFF_LONG_MIN", 0.05)
     macd_short_min = cfg.get("MACD_DIFF_SHORT_MIN", 0.001)
     allow_1h_neu   = cfg.get("ALLOW_1H_NEUTRAL", False)
-    
+    body_atr_k     = cfg.get("BREAKOUT_BODY_ATR", 0.6)
+    sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.03)  # 3%
+
+    fail = []  # gom lý do rớt
+
+    def _ret(side, entry, sl, tp, ok):
+        if return_reason:
+            return side, entry, sl, tp, ok, (", ".join(fail) if fail else "PASS")
+        return side, entry, sl, tp, ok
+
+    # ---------- dữ liệu & chỉ báo cơ bản ----------
+    if df_15m is None or len(df_15m) < 60:
+        fail.append("DATA: thiếu 15m")
+        return _ret(None, None, None, None, False)
+    df = df_15m.copy()
+
+    # đảm bảo các cột cần thiết (không phá code cũ)
+    def _ensure_cols(dfx):
+        if "ema20" not in dfx.columns: dfx["ema20"] = dfx["close"].ewm(span=20).mean()
+        if "ema50" not in dfx.columns: dfx["ema50"] = dfx["close"].ewm(span=50).mean()
+        if "rsi" not in dfx.columns:
+            delta = dfx["close"].diff()
+            gain = delta.clip(lower=0).rolling(14).mean()
+            loss = (-delta.clip(upper=0)).rolling(14).mean().replace(0, np.nan)
+            rs = gain / loss
+            dfx["rsi"] = 100 - (100/(1+rs))
+        if "macd" not in dfx.columns or "macd_signal" not in dfx.columns:
+            ema12 = dfx["close"].ewm(span=12).mean()
+            ema26 = dfx["close"].ewm(span=26).mean()
+            dfx["macd"] = ema12 - ema26
+            dfx["macd_signal"] = dfx["macd"].ewm(span=9).mean()
+        if "bb_width" not in dfx.columns:
+            ma20 = dfx["close"].rolling(20).mean()
+            std20= dfx["close"].rolling(20).std()
+            dfx["bb_upper"] = ma20 + 2*std20
+            dfx["bb_lower"] = ma20 - 2*std20
+            dfx["bb_width"] = (dfx["bb_upper"] - dfx["bb_lower"]) / dfx["close"]
+        if "adx" not in dfx.columns:
+            dfx["adx"] = 25.0  # fallback nhẹ nếu thiếu
+        return dfx
+
+    df = _ensure_cols(df).dropna()
+    latest = df.iloc[-1]
+    price  = float(latest["close"])
+
+    # ---------- volume percentile ----------
+    vols = df["volume"].iloc[-20:]
+    if len(vols) < 10:
+        fail.append("DATA: thiếu volume 15m")
+        return _ret(None, None, None, None, False)
+    v_now = float(vols.iloc[-1]); v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
+    if not (v_now >= v_thr):
+        fail.append(f"VOLUME < P{vol_p}")
+
+    # ---------- choppy filter: ADX + BBWidth ----------
+    adx = float(df["adx"].iloc[-1]); bbw = float(df["bb_width"].iloc[-1])
+    if adx < adx_min and not allow_adx_ex:
+        fail.append(f"ADX {adx:.1f}<{adx_min}")
+    if bbw < bbw_min:
+        fail.append(f"BBW {bbw:.4f}<{bbw_min}")
+
+    # ngoại lệ ADX (RELAX): bắt buộc body >= k*ATR
+    if adx < adx_min and allow_adx_ex:
+        last = df.iloc[-1]
+        body = abs(last["close"] - last["open"])
+        atr  = float(_atr(df).iloc[-1])
+        if not (atr > 0 and body >= body_atr_k * atr):
+            fail.append("ADX-except: body<k*ATR")
+
+    # ---------- xác nhận đa khung ----------
+    ema_up_15 = latest["ema20"] > latest["ema50"]
+    ema_dn_15 = latest["ema20"] < latest["ema50"]
+    rsi_15    = float(latest["rsi"])
+    macd_diff = abs(float(latest["macd"] - latest["macd_signal"])) / max(price, 1e-9)
+
+    if df_1h is not None and len(df_1h) > 60:
+        d1 = _ensure_cols(df_1h.copy()).dropna()
+        l1 = d1.iloc[-1]
+        ema_up_1h = bool(l1["ema20"] > l1["ema50"])
+        rsi_1h    = float(l1["rsi"])
+    else:
+        ema_up_1h = True; rsi_1h = 50.0
+
     cond_1h_long_ok  = (ema_up_1h and rsi_1h > rsi1h_long_min) or (allow_1h_neu and ema_up_1h)
     cond_1h_short_ok = ((not ema_up_1h) and rsi_1h < rsi1h_short_max) or (allow_1h_neu and (not ema_up_1h))
-    
+
+    side = None
     if ema_up_15 and cond_1h_long_ok and rsi_15 > rsi_long_min and macd_diff > macd_long_min and adx >= adx_min:
         side = "LONG"
     elif ema_dn_15 and cond_1h_short_ok and rsi_15 < rsi_short_max and macd_diff > macd_short_min and adx >= adx_min:
         side = "SHORT"
     else:
-        return None, None, None, None, False
+        fail.append("ALIGN EMA/RSI/MACD")
+    # nếu đã có lỗi ở trên, trả sớm
+    if fail:
+        return _ret(None, None, None, None, False)
 
-                      
-    # --------- Vị trí theo S/R (ép hướng): LONG near support, SHORT near resistance ---------
+    # ---------- ép vị trí near S/R theo hướng ----------
     try:
         low_sr, high_sr = find_support_resistance(df, lookback=40)
     except Exception:
-        low_sr, high_sr = float(df["low"].iloc[-40:-1].min()), float(df["high"].iloc[-40:-1].max())
+        low_sr = float(df["low"].iloc[-40:-1].min())
+        high_sr= float(df["high"].iloc[-40:-1].max())
+    px = price
+    near_sup = abs(px - low_sr)/max(low_sr,1e-9) <= sr_near_pct
+    near_res = abs(px - high_sr)/max(high_sr,1e-9) <= sr_near_pct
+    if side == "LONG" and not near_sup:   fail.append("SR: không near support")
+    if side == "SHORT" and not near_res:  fail.append("SR: không near resistance")
+    if fail: return _ret(None, None, None, None, False)
 
-    px = close_price
-    near_sup = abs(px - low_sr)  / max(low_sr, 1e-9) <= pct_near_sr
-    near_res = abs(px - high_sr) / max(high_sr,1e-9) <= pct_near_sr
-    if (side == "LONG"  and not near_sup) or (side == "SHORT" and not near_res):
-        return None, None, None, None, False
-
-    # --------- Entry/SL/TP/RR ---------
+    # ---------- Entry/SL/TP/RR ----------
     if side == "LONG":
         sl = float(df["low"].iloc[-10:-1].min())
         tp = float(df["high"].iloc[-10:-1].max())
@@ -507,79 +502,70 @@ def detect_signal(df_15m: pd.DataFrame,
         sl = float(df["high"].iloc[-10:-1].max())
         tp = float(df["low"].iloc[-10:-1].min())
     entry = px
-    risk = max(abs(entry - sl), 1e-9)
-    rr   = abs(tp - entry) / risk
-    if rr < rr_min:
-        return None, None, None, None, False
-    # SL quá sát (tránh nhiễu)
-    if abs(entry - sl)/max(entry,1e-9) < 0.003:  # 0.3%
-        return None, None, None, None, False
+    risk  = max(abs(entry - sl), 1e-9)
+    rr    = abs(tp - entry)/risk
+    if rr < rr_min:                        fail.append(f"RR {rr:.2f}<{rr_min}")
+    if abs(entry - sl)/max(entry,1e-9) < 0.003: fail.append("SL quá sát <0.3%")
+    if fail: return _ret(None, None, None, None, False)
 
-    # --------- News blackout ---------
+    # ---------- news blackout ----------
     try:
         if in_news_blackout(news_win):
-            return None, None, None, None, False
+            fail.append("NEWS blackout")
     except Exception:
-        pass  # nếu chưa cấu hình news thì bỏ qua
+        pass
+    if fail: return _ret(None, None, None, None, False)
 
-    # --------- VWAP blocker (anchored) ---------
+    # ---------- anchored VWAP blocker ----------
     if use_vwap and len(df) > 55:
         try:
-            anchor_idx = pick_anchor_index(df, side)
-            # anchor_idx có thể là index label; chuyển về vị trí nếu cần
-            if not isinstance(anchor_idx, int):
+            aidx = pick_anchor_index(df, side)
+            if not isinstance(aidx, int):
                 try:
-                    aidx = df.index.get_loc(anchor_idx)
+                    aidx = df.index.get_loc(aidx)
                 except Exception:
                     aidx = max(0, len(df)-50)
-            else:
-                aidx = anchor_idx
             vwap = anchored_vwap(df, aidx)
-            dist = abs(entry - vwap) / max(vwap, 1e-9)
-            near = dist <= 0.001  # 0.1%
-            if near and ((side == "LONG" and entry < vwap) or (side == "SHORT" and entry > vwap)):
-                return None, None, None, None, False
+            dist = abs(entry - vwap)/max(vwap,1e-9)
+            if dist <= 0.001 and ((side=="LONG" and entry < vwap) or (side=="SHORT" and entry > vwap)):
+                fail.append("VWAP chặn")
         except Exception:
             pass
+    if fail: return _ret(None, None, None, None, False)
 
-    # --------- ATR clearance phía trước ---------
+    # ---------- ATR clearance (cản gần) ----------
     try:
         clr_ratio, clr_ok = atr_clearance(df, side, atr_need)
         if not clr_ok:
-            return None, None, None, None, False
+            fail.append(f"ATR clearance {clr_ratio:.2f}<{atr_need}")
     except Exception:
-        # nếu không tính được ATR thì không chặn
         pass
+    if fail: return _ret(None, None, None, None, False)
 
-    # --------- Đồng pha BTC (1H) + kiểm tra biến động BTC ngắn hạn ---------
+    # ---------- Đồng pha BTC ----------
     try:
-        btc_15 = fetch_ohlcv_okx("BTC-USDT-SWAP", "15m")
         btc_1h = fetch_ohlcv_okx("BTC-USDT-SWAP", "1h")
         btc_up_1h = True
         if isinstance(btc_1h, pd.DataFrame) and len(btc_1h) > 60:
             b1 = calculate_indicators(btc_1h.copy()).dropna().iloc[-1]
             btc_up_1h = bool(b1["ema20"] > b1["ema50"])
-        # chặn ngược hướng BTC 1h
-        if side == "LONG" and not btc_up_1h:
-            return None, None, None, None, False
-        if side == "SHORT" and btc_up_1h:
-            return None, None, None, None, False
-
-        # biến động BTC ngắn hạn (15m) – tránh gió ngược mạnh
+        if side == "LONG" and not btc_up_1h:  fail.append("BTC ngược hướng 1h")
+        if side == "SHORT" and btc_up_1h:     fail.append("BTC ngược hướng 1h")
+        # biến động 15m ngắn hạn
+        btc_15 = fetch_ohlcv_okx("BTC-USDT-SWAP", "15m")
         if isinstance(btc_15, pd.DataFrame) and len(btc_15) > 5:
             c0 = float(btc_15["close"].iloc[-1]); c3 = float(btc_15["close"].iloc[-4])
-            btc_change = (c0 - c3)/max(c3,1e-9)
-            if side == "LONG" and btc_change < -0.01:   # BTC giảm >1% trong ~45m
-                return None, None, None, None, False
-            if side == "SHORT" and btc_change > 0.01:   # BTC tăng >1% trong ~45m
-                return None, None, None, None, False
+            chg = (c0 - c3)/max(c3,1e-9)
+            if side == "LONG" and chg < -0.01: fail.append("BTC -1%/45m")
+            if side == "SHORT" and chg >  0.01: fail.append("BTC +1%/45m")
     except Exception:
-        pass  # nếu fetch lỗi, không chặn
+        pass
+    if fail: return _ret(None, None, None, None, False)
 
-    # --------- PASS ---------
+    # ---------- PASS ----------
     if not silent:
         logging.info(f"✅ {symbol} VƯỢT QUA HẾT BỘ LỌC ({side})")
-    return side, float(entry), float(sl), float(tp), True
+    return _ret(side, float(entry), float(sl), float(tp), True)
 
 def analyze_trend_multi(symbol):
     tf_map = {
