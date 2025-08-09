@@ -663,7 +663,7 @@ def _parse_vn_time(s):
     return None
 
 
-def prepend_with_retention(ws, new_rows):
+def prepend_with_retention(ws, new_rows, keep_days=3):
     """
     Ghi dữ liệu mới (prepend) cho sheet 6 cột: 
     Coin, Tín hiệu, Entry, SL, TP, Ngày
@@ -986,7 +986,7 @@ def backtest_signals_90_days_from_sheet(sheet_src="THEO DÕI",
 
 
 # ====== CẤU HÌNH ======
-RUN_BACKTEST = True  # ✅ Đổi sang False nếu không muốn chạy backtest
+RUN_BACKTEST = False  # ✅ Đổi sang False nếu không muốn chạy backtest
 # ====== LUỒNG CHÍNH ======
 if RUN_BACKTEST:
     logging.info("🚀 Bắt đầu chạy backtest 90 ngày...")
