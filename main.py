@@ -96,9 +96,9 @@ STRICT_CFG = {
     "ALLOW_1H_NEUTRAL": False,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 60,   # top 40%
+    "VOLUME_PERCENTILE": 65,   # top 35%
     "ADX_MIN_15M": 15,
-    "BBW_MIN": 0.009,
+    "BBW_MIN": 0.01,
     "RR_MIN": 1.3,
     "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.6, # >= 0.6ART
