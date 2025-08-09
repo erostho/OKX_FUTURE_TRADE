@@ -783,7 +783,7 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "STRICT")])
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "STRICT"])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
