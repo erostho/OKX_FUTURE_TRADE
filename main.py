@@ -719,7 +719,11 @@ def prepend_with_retention(ws, new_rows, keep_days=3):
 
     except Exception as e:
         logging.error(f"[SHEET] Lỗi khi prepend_with_retention: {e}")
-
+# === tính sao ===
+def stars(n:int) -> str:
+    n = max(0, min(5, int(n)))
+    return "⭐" * n
+    
 # === GỬI TELEGRAM ===
 def send_telegram_message(message):
     try:
@@ -778,7 +782,8 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
-                    sheet_rows.append([symbol, side + " ⭐️⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    side_with_stars = f"{side} {stars(rating)}"
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
 
         # log tóm tắt 1 dòng/coin
@@ -818,7 +823,8 @@ def run_bot():
                         rating = 2
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                    sheet_rows.append([symbol, side + " ⭐️⭐️", entry, sl, tp, "—", "—", now_vn])
+                    side_with_stars = f"{side} {stars(rating)}"
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
 
         if ok:
@@ -845,7 +851,7 @@ def run_bot():
             logging.debug(f"[TG] Kiểm tra: {sym} | {side} | Rating: {rating} | Entry: {entry} | SL: {sl} | TP: {tp}")
             
             if rating >= 3:  # >= 3 sao
-                msgs.append(f"[{mode}] | {sym} {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n⭐ {rating}/5")
+                msgs.append(f"[{mode}] | {sym} | {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n{stars(rating)} {rating}/5")
             else:
                 logging.info(f"[TG] Bỏ qua {sym} do rating < 3 ({rating})")
     
