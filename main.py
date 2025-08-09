@@ -567,24 +567,6 @@ def _scan_with_cfg(coin_list, cfg, tag):
         except Exception as e:
             logging.warning(f"TG error: {e}")
     return done_symbols
-# === BACKTEST 90 NGÀY ===
-        except Exception:
-            headers = ["Symbol", "Signal", "Entry", "SL", "TP", "Short Trend", "Mid Trend", "Timestamp"]
-            sheet.insert_row(headers, 1)
-        body = sheet.get_all_values()[1:]
-        for row in valid_signals[::-1]:
-            body.insert(0, row)
-        sheet.update([headers] + body)
-        logging.info(f"✅ [{tag}] Đã ghi {len(valid_signals)} tín hiệu")
-    except Exception as e:
-        logging.warning(f"❌ [{tag}] Lỗi ghi sheet: {e}")
-    for msg in messages:
-        try:
-            send_telegram_message(msg)
-        except Exception as e:
-            logging.warning(f"TG error: {e}")
-    return done_symbols
-# === BACKTEST 90 NGÀY ===
 
 def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
     # Giả định đã có fetch_ohlcv_okx và detect_signal
