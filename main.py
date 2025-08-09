@@ -28,6 +28,35 @@ logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# ====== LOG HELPERS (log-once & mute logs for backtest) ======
+from contextlib import contextmanager
+
+_logged_once = {}  # key = (mode, symbol) -> True
+
+def log_once(mode: str, symbol: str, msg: str, level="info"):
+    key = (mode, symbol)
+    if _logged_once.get(key):
+        return
+    _logged_once[key] = True
+    if level == "debug":
+        logging.debug(msg)
+    else:
+        logging.info(msg)
+
+def reset_log_once_for_mode(mode_tag: str, symbols: list):
+    for s in symbols:
+        _logged_once.pop((mode_tag, s), None)
+
+@contextmanager
+def mute_logs():
+    root_logger = logging.getLogger()
+    prev_level = root_logger.level
+    root_logger.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        root_logger.setLevel(prev_level)
+
 # ========== CẤU HÌNH ==========
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -276,12 +305,16 @@ def candle_quality_ok(df, side):
     else:
         return (last['close'] < last['open']) and (body_ratio >= 0.5) and (wick_top <= body)
 
-def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
+def detect_signal(df_15m:
+    def _log(msg):
+        if not silent:
+            _log(str(msg))
+ pd.DataFrame, df_1h: pd.DataFrame, symbol: str, cfg=None, silent=False, context="LIVE"):
     import logging
     df = df_15m.copy()
     df = clean_missing_data(df)
     if df is None or len(df) < 30:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do thiếu dữ liệu (<30 nến)")
         return None, None, None, None, False
 
     # Tính chỉ báo
@@ -313,7 +346,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
 
     # Volume spike top 70%
     if not is_volume_spike(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do không có volume spike")
         return None, None, None, None, False
 
     # Choppy filter
@@ -328,22 +361,22 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
             v_ok = is_volume_spike(df)
             candle_ok = candle_quality_ok(df, "long" if bo_up else "short")
             if not ((bo_up or bo_down) and v_ok and candle_ok):
-                print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+                _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
                 return None, None, None, None, False
         else:
-            print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+            _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
             return None, None, None, None, False
-        print(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do ADX = {adx:.2f} quá yếu (sideway)")
         return None, None, None, None, False
     if bb_width < CURRENT_CFG.get("BBW_MIN", 0.02):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do BB Width = {bb_width:.4f} quá hẹp")
         return None, None, None, None, False
 
     # Price Action (Engulfing hoặc Breakout)
     recent = df["close"].iloc[-4:].tolist()
     is_engulfing = len(recent) == 4 and ((recent[-1] > recent[-2] > recent[-3]) or (recent[-1] < recent[-2] < recent[-3]))
     if not is_engulfing and not detect_breakout_pullback(df):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do không có mô hình giá rõ ràng")
         return None, None, None, None, False
 
     # Gần vùng hỗ trợ/kháng cự
@@ -358,15 +391,15 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
     rr = abs(tp - entry) / abs(entry - sl) if (entry - sl) != 0 else 0
 
     if any(x is None for x in [entry, sl, tp]):
-        print(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do thiếu giá trị entry/sl/tp")
         return None, None, None, None, False
 
     if rr < 1.5:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do RR = {rr:.2f} < 1.5")
         return None, None, None, None, False
 
     if abs(entry - sl)/entry < 0.003:
-        print(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
+        _log(f"[DEBUG] {symbol}: ⚠️ loại do SL biên độ quá nhỏ = {(abs(entry - sl)/entry)*100:.2f}%")
         return None, None, None, None, False
 
     # Multi-timeframe confirmation (1H đồng pha 15m)
@@ -375,7 +408,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         ema_up_1h = df1h["ema20"].iloc[-1] > df1h["ema50"].iloc[-1]
         rsi_1h = df1h["rsi"].iloc[-1]
     except Exception as e:
-        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
+        _log(f"[DEBUG] {symbol}: ⚠️ lỗi khi phân tích khung 1H: {e}")
         return None, None, None, None, False
 
     # Kiểm tra xu hướng BTC
@@ -384,7 +417,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
         btc_df["close"] = pd.to_numeric(btc_df["close"])
         btc_change = (btc_df["close"].iloc[-1] - btc_df["close"].iloc[-3]) / btc_df["close"].iloc[-3]
     except Exception as e:
-        print(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
+        _log(f"[DEBUG] {symbol}: ⚠️ lỗi khi fetch BTC: {e}")
         btc_change = 0
 
     # Xác nhận tín hiệu
@@ -403,7 +436,7 @@ def detect_signal(df_15m: pd.DataFrame, df_1h: pd.DataFrame, symbol: str):
             signal = "SHORT"
 
     # ✅ Log cuối cùng nếu coin vượt tất cả bộ lọc
-    print(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
+    _log(f"[DEBUG] {symbol}: ✅ Hoàn tất phân tích, Signal = {signal}, RR = {rr:.2f}, SL = {(abs(entry - sl)/entry)*100:.2f}%, ADX = {adx:.2f}, BB width = {bb_width:.4f}")
     return (signal, entry, sl, tp, True) if signal else (None, None, None, None, False)
 
 
@@ -489,6 +522,7 @@ def prepend_to_sheet(row_data: list):
 def _scan_with_cfg(coin_list, cfg, tag):
     global CURRENT_CFG
     CURRENT_CFG = cfg
+    reset_log_once_for_mode(tag, coin_list)
     valid_signals = []
     messages = []
     done_symbols = set()
@@ -504,13 +538,15 @@ def _scan_with_cfg(coin_list, cfg, tag):
         df_1h = calculate_indicators(df_1h).dropna()
         # Volume prefilter
         if not is_volume_spike(df_15m):
-            logging.debug(f"[DEBUG] {symbol}: bị loại do KHÔNG đạt volume spike hoặc lỗi volume")
+            log_once(tag, symbol, f"[{tag}] {symbol}: không đạt điều kiện (volume)")
             continue
         required_cols = ['ema20', 'ema50', 'rsi', 'macd', 'macd_signal']
         if not all(col in df_15m.columns for col in required_cols):
             logging.warning(f"⚠️ Thiếu cột trong df_15m: {df_15m.columns}")
             continue
-        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol)
+        signal, entry, sl, tp, volume_ok = detect_signal(df_15m, df_1h, symbol, cfg=cfg, silent=True, context=f"LIVE-{tag}")
+        if not signal:
+            log_once(tag, symbol, f"[{tag}] {symbol}: không đạt điều kiện (filter)")
         if signal:
             short_trend, mid_trend = analyze_trend_multi(symbol)
             rating = calculate_signal_rating(signal, short_trend, mid_trend, volume_ok)
@@ -548,7 +584,7 @@ def _scan_with_cfg(coin_list, cfg, tag):
     return done_symbols
 # === BACKTEST 90 NGÀY ===
 
-def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT"):
+def backtest_signals_90_days(symbol_list, cfg=None, tag="STRICT", silent=True):
     # Giả định đã có fetch_ohlcv_okx và detect_signal
     today = datetime.datetime.now(datetime.timezone.utc)
     start_time = today - datetime.timedelta(days=90)
@@ -654,9 +690,11 @@ if __name__ == "__main__":
     symbol_list = get_top_usdt_pairs(limit=COINS_LIMIT)
     try:
         if RUN_BACKTEST_STRICT:
-            backtest_signals_90_days(symbol_list, cfg=STRICT_CFG, tag="STRICT")
+            with mute_logs():
+                backtest_signals_90_days(symbol_list, cfg=STRICT_CFG, tag="STRICT", silent=True)
         if RUN_BACKTEST_RELAX:
-            backtest_signals_90_days([s for s in symbol_list], cfg=RELAX_CFG, tag="RELAX")
+            with mute_logs():
+                backtest_signals_90_days(symbol_list, cfg=RELAX_CFG, tag="RELAX", silent=True)
     except Exception as e:
         logging.error(f"Backtest error: {e}")
     # === RUN LIVE BOT ===
