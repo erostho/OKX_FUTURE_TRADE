@@ -96,9 +96,9 @@ STRICT_CFG = {
     "ALLOW_1H_NEUTRAL": False,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 65,   # top 35%
-    "ADX_MIN_15M": 17,
-    "BBW_MIN": 0.01,
+    "VOLUME_PERCENTILE": 70,   # top 35%
+    "ADX_MIN_15M": 18,
+    "BBW_MIN": 0.012,
     "RR_MIN": 1.4,
     "NEWS_BLACKOUT_MIN": 40, # phút
     "ATR_CLEARANCE_MIN": 0.65, # >= 0.65ART
@@ -110,7 +110,7 @@ RELAX_CFG = {
     "RSI_1H_LONG_MIN": 50,
     "RSI_1H_SHORT_MAX": 50,
     "MACD_DIFF_LONG_MIN": 0.035,
-    "MACD_DIFF_SHORT_MIN": 0.0005,
+    "MACD_DIFF_SHORT_MIN": 0.0006,
     "ALLOW_1H_NEUTRAL": True,
 }
 
