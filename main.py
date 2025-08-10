@@ -109,21 +109,21 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 40,   # top 60%
-    "ADX_MIN_15M": 18,
-    "BBW_MIN": 0.010,
-    "RR_MIN": 1.3,
-    "NEWS_BLACKOUT_MIN": 50, # phút
+    "VOLUME_PERCENTILE": 30,   # top 70%
+    "ADX_MIN_15M": 15,
+    "BBW_MIN": 0.005,
+    "RR_MIN": 1.1,
+    "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
-    "RSI_LONG_MIN": 53,
-    "RSI_SHORT_MAX": 40,     # GIẢM là lỏng
+    "RSI_LONG_MIN": 50,
+    "RSI_SHORT_MAX": 45,    
     "RSI_1H_LONG_MIN": 50,
     "RSI_1H_SHORT_MAX": 50,
-    "MACD_DIFF_LONG_MIN": 0.035,
-    "MACD_DIFF_SHORT_MIN": 0.0003,
+    "MACD_DIFF_LONG_MIN": 0.02,
+    "MACD_DIFF_SHORT_MIN": 0.0001,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
