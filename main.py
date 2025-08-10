@@ -570,7 +570,7 @@ def _ema200_down(df, span=200, slope_look=5):
 
 def _clip01(x): return max(0.0, min(1.0, x))
 
-def score_signal(rr, adx, clv, dist_ema, volp):
+def score_signal(rr, adx, clv, dist_ema, volp, atr_pct):
     # Chuẩn hóa thô, bạn có thể tinh chỉnh:
     s_rr   = _clip01((rr-1.0)/1.5)          # RR 1→2.5
     s_adx  = _clip01((adx-15)/20)           # ADX 15→35
@@ -595,6 +595,9 @@ def detect_signal(df_15m: pd.DataFrame,
       nếu return_reason=True: (side, entry, sl, tp, ok, reason_str)
     """
     cfg = cfg or STRICT_CFG
+    price  = float(df_15m["close"].iloc[-1])
+    atr14  = float(_atr(df_15m, 14).iloc[-1])          # bạn đã dùng _atr ở nơi khác
+    atr_pct = atr14 / max(price, 1e-9)                 # ví dụ: 0.012 = 1.2%
     # ---- tham số từ preset (có default để không vỡ) ----
     vol_p        = cfg.get("VOLUME_PERCENTILE", 70)
     adx_min      = cfg.get("ADX_MIN_15M", 20)
@@ -1012,7 +1015,8 @@ def detect_signal(df_15m: pd.DataFrame,
     dist_ema = abs(float(last["close"]) - float(last.get("ema20", float(last["close"]))))
     volp     = vol_p if 'vol_p' in locals() else 60
     
-    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp)
+
+    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
     
     # Lưu thêm score vào tg_candidates
     tg_candidates.append((mode, symbol, side, entry, sl, tp, rating, sig_score))                  
