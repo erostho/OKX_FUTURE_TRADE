@@ -64,6 +64,7 @@ try:
     sheet_id = SHEET_CSV_URL.split("/d/")[1].split("/")[0]
     print(f"[DEBUG] sheet_id = {sheet_id}")
     sheet = client.open_by_key(sheet_id).worksheet("DATA_FUTURE")
+    time.sleep(1)
     print("[DEBUG] Đã mở sheet thành công.")
 except Exception as e:
     print(f"[ERROR] Không mở được sheet: {e}")
