@@ -1247,40 +1247,78 @@ def _parse_vn_time(s: str):
     return None
 
 def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
-    """Đọc sheet THEO DÕI -> trả list tuple:
-       (symbol, side, entry, sl, tp, trend_s, trend_m, when_vn, mode)"""
-    ws = client.open_by_key(sheet_id).worksheet(sheet_name)
-    rows = ws.get_all_values()
-    if not rows or len(rows) < 2:
-        logging.info("[BACKTEST] THEO DÕI rỗng.")
+    """
+    Đọc sheet THEO DÕI -> list tuple:
+    (symbol, side, entry, sl, tp, trend_s, trend_m, when_vn, mode)
+    """
+    try:
+        logging.info(f"[BACKTEST] 👉 mở sheet '{sheet_name}' (id={sheet_id})")
+        ws = client.open_by_key(sheet_id).worksheet(sheet_name)
+    except Exception as e:
+        logging.error(f"[BACKTEST] ❌ Không mở được worksheet '{sheet_name}': {e}")
         return []
 
-    head = rows[0]
-    col = {name: i for i, name in enumerate(head)}
-    need = ["Coin","Tín hiệu","Entry","SL","TP","Xu hướng ngắn","Xu hướng trung","Ngày","Mode"]
-    for n in need:
-        if n not in col:
-            logging.warning(f"[BACKTEST] Thiếu cột '{n}' trong sheet THEO DÕI.")
+    try:
+        rows = ws.get_all_values()
+        logging.info(f"[BACKTEST] Số dòng đọc được (kể cả header): {len(rows)}")
+        if not rows or len(rows) < 2:
+            logging.info("[BACKTEST] THEO DÕI rỗng (không có dòng dữ liệu dưới header).")
             return []
+    except Exception as e:
+        logging.error(f"[BACKTEST] ❌ Lỗi get_all_values: {e}")
+        return []
+
+    # Header + map cột
+    head = rows[0]
+    logging.debug(f"[BACKTEST] Header: {head}")
+    col = {name.strip(): i for i, name in enumerate(head)}
+    logging.debug(f"[BACKTEST] Map cột: {col}")
+
+    # Kiểm tra đủ cột
+    need = ["Coin","Tín hiệu","Entry","SL","TP","Xu hướng ngắn","Xu hướng trung","Ngày","Mode"]
+    missing = [n for n in need if n not in col]
+    if missing:
+        logging.warning(f"[BACKTEST] Thiếu cột trong THEO DÕI: {missing}")
+        return []
 
     out = []
-    for r in rows[1:]:
+    parsed = 0
+    for idx, r in enumerate(rows[1:], start=2):  # bắt đầu từ dòng 2 (1-based)
         try:
-            sym    = r[col["Coin"]].strip()
-            side   = r[col["Tín hiệu"]].strip().upper()      # LONG/SHORT
-            entry  = float(str(r[col["Entry"]]).replace(",", ""))
-            sl     = float(str(r[col["SL"]]).replace(",", ""))
-            tp     = float(str(r[col["TP"]]).replace(",", ""))
-            trend_s= r[col["Xu hướng ngắn"]].strip()
-            trend_m= r[col["Xu hướng trung"]].strip()
-            when_vn= parse_vn_time(r[col["Ngày"]].strip())
-            mode   = r[col["Mode"]].strip().upper() if r[col["Mode"]] else "RELAX"
-            
+            raw_when = (r[col["Ngày"]] or "").strip()
+            when_vn  = parse_vn_time(raw_when)
+            sym      = (r[col["Coin"]] or "").strip()
+            side     = (r[col["Tín hiệu"]] or "").strip().upper()
+            entry    = float(str(r[col["Entry"]]).replace(",", "")) if r[col["Entry"]] else None
+            sl       = float(str(r[col["SL"]]).replace(",", ""))     if r[col["SL"]]    else None
+            tp       = float(str(r[col["TP"]]).replace(",", ""))     if r[col["TP"]]    else None
+            trend_s  = (r[col["Xu hướng ngắn"]]  or "").strip()
+            trend_m  = (r[col["Xu hướng trung"]] or "").strip()
+            mode     = (r[col["Mode"]] or "RELAX").strip().upper()
+
+            # Log mẫu vài dòng đầu
+            if idx <= 5:
+                logging.debug(f"[BACKTEST] Row{idx}: sym={sym}, side={side}, entry={entry}, "
+                              f"sl={sl}, tp={tp}, trend_s='{trend_s}', trend_m='{trend_m}', "
+                              f"ngày='{raw_when}' -> when_vn={when_vn}, mode={mode}")
+
+            # Validate tối thiểu
             if not sym or side not in ("LONG","SHORT") or when_vn is None:
+                logging.warning(f"[BACKTEST] Bỏ dòng {idx}: sym/side/ngày không hợp lệ "
+                                f"(sym='{sym}', side='{side}', raw_when='{raw_when}')")
                 continue
+            if entry is None or sl is None or tp is None:
+                logging.warning(f"[BACKTEST] Bỏ dòng {idx}: thiếu Entry/SL/TP "
+                                f"(entry={entry}, sl={sl}, tp={tp})")
+                continue
+
             out.append((sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode))
-        except Exception:
-            continue
+            parsed += 1
+
+        except Exception as e:
+            logging.warning(f"[BACKTEST] Lỗi parse dòng {idx}: {e} | raw={r}")
+
+    logging.info(f"[BACKTEST] ✅ Parse xong: {parsed} dòng hợp lệ / {len(rows)-1} dữ liệu.")
     return out
 
 def write_backtest_row(row):
