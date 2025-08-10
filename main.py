@@ -1,4 +1,4 @@
-X"""
+"""
 Phiên bản nâng cấp chuyên sâu cho trader giữ lệnh 1–6 giờ.
 
 Tính năng chính:
