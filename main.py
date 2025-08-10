@@ -1264,7 +1264,24 @@ def _parse_vn_time(s: str):
         except Exception:
             continue
     return None
+    
+def _okx_inst_id(sym: str) -> str:
+    s = sym.upper().replace("/", "-")
+    return s if s.endswith("-SWAP") else s + "-SWAP"
 
+def _ensure_timestamp_ms(df: pd.DataFrame) -> pd.DataFrame:
+    d = df.copy()
+    if "timestamp" not in d.columns:
+        ts = pd.to_numeric(d.index, errors="coerce")
+        if ts.notna().all():
+            # nếu index đang là giây thì nhân 1000 -> ms
+            if ts.max() < 10**12:
+                ts = ts * 1000.0
+            d["timestamp"] = ts.astype("int64")
+    if "timestamp" in d.columns:
+        d = d.sort_values("timestamp").reset_index(drop=True)  # quan trọng: sort tăng dần
+    return d
+    
 def _ensure_ts_col(df):
     """Đảm bảo có cột timestamp (ms) và sort tăng dần."""
     import pandas as pd, numpy as np
@@ -1458,112 +1475,83 @@ def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
     return "OPEN"
 
 def backtest_from_watchlist():
+def backtest_from_watchlist():
     """
     Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
-    Quy ước:
-      - timeframe kiểm tra: 15m
-      - lấy tối đa ~700 nến sau thời điểm tín hiệu
-      - RESULT: WIN/LOSS/OPEN theo rule chạm SL/TP cái nào trước
+    - timeframe: 15m
+    - chỉ kiểm tra nến có timestamp >= thời điểm tín hiệu
+    - kết quả: WIN/LOSS/OPEN theo rule chạm SL/TP cái nào trước
     """
     items = read_watchlist_from_sheet("THEO DÕI")
     if not items:
         logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
         return
 
-    written   = 0
-    tf        = "15m"
+    tf = "15m"
     max_after = 700
+    written = 0
 
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
-            # thời điểm tín hiệu -> UTC (OKX trả UTC)
+            # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
             when_utc = when_vn.astimezone(pytz.utc)
+            ts_cut = int(when_utc.timestamp() * 1000)  # ms
 
-            # symbol OKX: BTC-USDT -> BTC-USDT-SWAP
-            inst_id = sym.upper().replace("/", "-")
-            if not inst_id.endswith("-SWAP"):
-                inst_id += "-SWAP"
+            # 2) chuẩn hoá instId OKX
+            inst_id = _okx_inst_id(sym)
 
-            # --- fetch OHLCV + chuẩn hoá + debug span thời gian ---
-            inst_id = sym.upper().replace("/", "-")
-            if not inst_id.endswith("-SWAP"):
-                inst_id += "-SWAP"
-            
-            # lấy dữ liệu (không dùng since để tránh lỗi)
+            # 3) lấy OHLCV 15m (limit=1000), không truyền 'since' để tránh lỗi
+            logging.debug(f"[BACKTEST] inst={inst_id} | when_vn={when_vn} | cut(utc)={when_utc}")
             df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
-            
-            # nếu SWAP rỗng -> thử SPOT để kiểm tra sai instId
+
             if df is None or len(df) == 0:
-                inst_id_spot = sym.upper().replace("/", "-")
-                logging.debug(f"[BT] {sym}: SWAP rỗng -> thử SPOT {inst_id_spot}")
-                df = fetch_ohlcv_okx(inst_id_spot, tf, limit=1000)
-            
-            # chuẩn hoá cột timestamp + sort tăng dần và in khoảng thời gian dữ liệu
-            df, tmin, tmax = _ensure_ts_col(df)
-            _log_frame_span("RAW", inst_id, when_utc, tmin, tmax)
-            
-            if df is None or len(df) == 0:
-                logging.debug(f"[BT] {sym} -> OPEN (không có dữ liệu OHLC)")
                 res = "OPEN"
+                logging.debug(f"[BT] {sym} {side} entry={entry} sl={sl} tp={tp} | OPEN (no candles)")
             else:
-                # --- lọc nến sau thời điểm tín hiệu ---
-                if "timestamp" in [c.lower() for c in df.columns]:
-                    ts_col = [c for c in df.columns if c.lower() == "timestamp"][0]
-                    ts_cut = int(when_utc.timestamp() * 1000)
-                    df_after = df[df[ts_col] >= ts_cut].copy()
-                    logging.debug(f"[BT] {sym}: after_cut={ts_cut} | rows_after={len(df_after)}")
+                # 4) đảm bảo có cột timestamp(ms) và sort tăng dần
+                df = _ensure_timestamp_ms(df)
+                if "timestamp" not in df.columns:
+                    res = "OPEN"
+                    logging.debug(f"[BT] {sym} {side} entry={entry} sl={sl} tp={tp} | OPEN (no timestamp column)")
+                else:
+                    # span thời gian để đối chiếu
+                    ts_min = int(df["timestamp"].iloc[0]); ts_max = int(df["timestamp"].iloc[-1])
+                    dt_min = datetime.fromtimestamp(ts_min/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+                    dt_max = datetime.fromtimestamp(ts_max/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+                    dt_cut = datetime.fromtimestamp(ts_cut/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+                    logging.debug(f"[BT] RAW {inst_id}: [{dt_min} .. {dt_max}] | entry={dt_cut}")
+
+                    # 5) chỉ lấy nến >= thời điểm tín hiệu
+                    df_after = df[df["timestamp"] >= ts_cut].copy()
+                    logging.debug(f"[BT] rows_after={len(df_after)}")
                     if len(df_after) == 0:
-                        logging.debug(f"[BT] {sym} -> OPEN (ts_entry > max_ts hoặc instId không khớp).")
                         res = "OPEN"
                     else:
                         if len(df_after) > max_after:
-                            df_after = df_after.iloc[:max_after]
+                            df_after = df_after.iloc[:max_after].copy()
+
+                        # 6) chấm kết quả first-touch
                         res = _first_touch_result(df_after, side, entry, sl, tp)
-                else:
-                    logging.debug(f"[BT] {sym} -> OPEN (không tìm thấy cột timestamp sau chuẩn hoá).")
-                    res = "OPEN"
 
-                # lọc các nến có timestamp >= when_utc
-                if "timestamp" in df.columns:
-                    ts_cut   = int(when_utc.timestamp() * 1000)
-                    df_after = df[df["timestamp"] >= ts_cut].copy()
-                else:
-                    # fallback: nếu thiếu timestamp thì dùng toàn bộ
-                    df_after = df.copy()
-
-                # chỉ giữ tối đa max_after nến sau tín hiệu
-                if len(df_after) > max_after:
-                    df_after = df_after.iloc[:max_after]
-                
-                # === DEBUG: in thông tin backtest cho mỗi dòng ===
-                if DEBUG_BACKTEST:
-                    try:
-                        n_all  = len(df)
-                    except NameError:
-                        n_all = -1
-                    n_after = len(df_after)
-                    ts_cut  = None
-                    if "timestamp" in df_after.columns and n_after > 0:
-                        ts_first = _ts_to_str(int(df_after["timestamp"].iloc[0]))
-                        ts_last  = _ts_to_str(int(df_after["timestamp"].iloc[-1]))
-                        # ts_cut ~ mốc lọc sau thời điểm tín hiệu
-                        try:
-                            ts_cut = int(when_utc.timestamp()*1000)
-                        except Exception:
-                            ts_cut = None
-                        logging.debug(
-                            f"[BT] {sym} {side} entry={entry:.6g} sl={sl:.6g} tp={tp:.6g} | "
-                            f"candles all={n_all} after={n_after} | cut={_ts_to_str(ts_cut)} | "
-                            f"range={ts_first} → {ts_last}"
-                        )
-                    else:
-                        logging.debug(
-                            f"[BT] {sym} {side} entry={entry:.6g} sl={sl:.6g} tp={tp:.6g} | "
-                            f"candles after={n_after} (no timestamp column)"
-                        )
-                
-                # gọi phán quyết
-                res = _first_touch_result(df_after, side, entry, sl, tp, sym=sym)
+                        # 7) log cây nến chạm đầu tiên (để debug vì sao WIN/LOSS)
+                        if res != "OPEN":
+                            for _, r in df_after.iterrows():
+                                t = int(r["timestamp"])
+                                t_str = datetime.fromtimestamp(t/1000, tz=timezone.utc).strftime('%d/%m/%Y %H:%M')
+                                if side == "LONG":
+                                    if r["low"] <= sl:
+                                        logging.debug(f"[BT] {sym} LONG LOSS @ {t_str} (low={r['low']} <= SL={sl})")
+                                        break
+                                    if r["high"] >= tp:
+                                        logging.debug(f"[BT] {sym} LONG WIN  @ {t_str} (high={r['high']} >= TP={tp})")
+                                        break
+                                else:
+                                    if r["high"] >= sl:
+                                        logging.debug(f"[BT] {sym} SHORT LOSS @ {t_str} (high={r['high']} >= SL={sl})")
+                                        break
+                                    if r["low"] <= tp:
+                                        logging.debug(f"[BT] {sym} SHORT WIN  @ {t_str} (low={r['low']} <= TP={tp})")
+                                        break
 
             row = [
                 sym, side, entry, sl, tp,
