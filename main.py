@@ -324,6 +324,21 @@ def is_bull_div(price: pd.Series, osc: pd.Series, lb=30, win=3) -> bool:
         return False
     return (i1l < i2l) and (p2l < p1l) and (o2v > o1v)
 
+def _safe_dt(ts):
+    """ts có thể là ms hoặc s; trả về datetime VN hoặc None."""
+    try:
+        import pandas as pd, pytz
+        if ts is None: 
+            return None
+        ts = float(ts)
+        if not (ts > 0):
+            return None
+        unit = 'ms' if ts > 1e12 else 's'  # ngưỡng thô: ms ~ 1e13, s ~ 1e9
+        dt_utc = pd.to_datetime(ts, unit=unit, utc=True)
+        return dt_utc.tz_convert('Asia/Ho_Chi_Minh')
+    except Exception:
+        return None
+        
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 1000):
     """
     Trả DataFrame cột: timestamp(ms), open, high, low, close, volume
@@ -368,7 +383,17 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 1000):
             rows.append([ts, o, h, l, c, vol])
 
         df = pd.DataFrame(rows, columns=["timestamp","open","high","low","close","volume"])
-
+        # nếu API trả index là epoch, đổi sang cột timestamp (ms)
+        if "timestamp" not in df.columns:
+            try:
+                ts = pd.to_numeric(df.index, errors="coerce")
+                if ts.notna().all():
+                    if ts.max() < 10**12:  # giây
+                        ts = ts * 1000.0
+                    df = df.copy()
+                    df["timestamp"] = ts
+            except Exception:
+                pass
         # Ép kiểu CHUẨN
         df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")  # ms
         for col in ("open","high","low","close","volume"):
@@ -1541,65 +1566,47 @@ def backtest_from_watchlist():
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
             # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
-            when_utc = when_vn.astimezone(timezone.utc)
-            ts_cut = int(when_utc.timestamp() * 1000)  # ms
-
-            # 2) chuẩn hoá instId OKX
-            inst_id = _okx_inst_id(sym)
-
-            # 3) lấy OHLCV 15m (limit=1000), không truyền 'since' để tránh lỗi
-            logging.debug(f"[BACKTEST] inst={inst_id} | when_vn={when_vn} | cut(utc)={when_utc}")
+            when_utc = when_vn.astimezone(pytz.utc)
+            ts_cut   = int(when_utc.timestamp() * 1000)   # ms
+    
+            # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
+            inst_id = sym.upper().replace("/", "-")
+            if not inst_id.endswith("-SWAP"):
+                inst_id += "-SWAP"
+    
+            # 3) lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
+            tf = "15m"
             df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
-
+    
             if df is None or len(df) == 0:
+                logging.debug(f"[BT] {sym} -> OPEN (no candles)")
                 res = "OPEN"
-                logging.debug(f"[BT] {sym} {side} entry={entry} sl={sl} tp={tp} | OPEN (no candles)")
             else:
-                # 4) đảm bảo có cột timestamp(ms) và sort tăng dần
-                df = _ensure_timestamp_ms(df)
+                # đảm bảo có cột timestamp (ms)
                 if "timestamp" not in df.columns:
-                    res = "OPEN"
-                    logging.debug(f"[BT] {sym} {side} entry={entry} sl={sl} tp={tp} | OPEN (no timestamp column)")
-                else:
-                    # span thời gian để đối chiếu
-                    ts_min = int(df["timestamp"].iloc[0]); ts_max = int(df["timestamp"].iloc[-1])
-                    dt_min = datetime.fromtimestamp(ts_min/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
-                    dt_max = datetime.fromtimestamp(ts_max/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
-                    dt_cut = datetime.fromtimestamp(ts_cut/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
-                    logging.debug(f"[BT] RAW {inst_id}: [{dt_min} .. {dt_max}] | entry={dt_cut}")
-
-                    # 5) chỉ lấy nến >= thời điểm tín hiệu
+                    try:
+                        ts = pd.to_numeric(df.index, errors="coerce")
+                        if ts.notna().all():
+                            if ts.max() < 10**12:  # giây -> đổi sang ms
+                                ts = ts * 1000.0
+                            df = df.copy()
+                            df["timestamp"] = ts
+                    except Exception:
+                        pass
+    
+                # lọc các nến từ lúc có tín hiệu trở đi
+                if "timestamp" in df.columns:
                     df_after = df[df["timestamp"] >= ts_cut].copy()
-                    logging.debug(f"[BT] rows_after={len(df_after)}")
-                    if len(df_after) == 0:
-                        res = "OPEN"
-                    else:
-                        if len(df_after) > max_after:
-                            df_after = df_after.iloc[:max_after].copy()
-
-                        # 6) chấm kết quả first-touch
-                        res = _first_touch_result(df_after, side, entry, sl, tp)
-
-                        # 7) log cây nến chạm đầu tiên (để debug vì sao WIN/LOSS)
-                        if res != "OPEN":
-                            for _, r in df_after.iterrows():
-                                t = int(r["timestamp"])
-                                t_str = datetime.fromtimestamp(t/1000, tz=timezone.utc).strftime('%d/%m/%Y %H:%M')
-                                if side == "LONG":
-                                    if r["low"] <= sl:
-                                        logging.debug(f"[BT] {sym} LONG LOSS @ {t_str} (low={r['low']} <= SL={sl})")
-                                        break
-                                    if r["high"] >= tp:
-                                        logging.debug(f"[BT] {sym} LONG WIN  @ {t_str} (high={r['high']} >= TP={tp})")
-                                        break
-                                else:
-                                    if r["high"] >= sl:
-                                        logging.debug(f"[BT] {sym} SHORT LOSS @ {t_str} (high={r['high']} >= SL={sl})")
-                                        break
-                                    if r["low"] <= tp:
-                                        logging.debug(f"[BT] {sym} SHORT WIN  @ {t_str} (low={r['low']} <= TP={tp})")
-                                        break
-
+                else:
+                    # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
+                    df_after = df.copy()
+    
+                # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
+                if len(df_after) > 700:
+                    df_after = df_after.iloc[:700]
+    
+                res = _first_touch_result(df_after, side, entry, sl, tp)
+    
             row = [
                 sym, side, entry, sl, tp,
                 trend_s, trend_m,
@@ -1607,8 +1614,7 @@ def backtest_from_watchlist():
                 mode, res
             ]
             write_backtest_row(row)
-            written += 1
-
+    
         except Exception as e:
             logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
