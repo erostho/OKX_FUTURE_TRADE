@@ -1266,15 +1266,16 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
     out = []
     for r in rows[1:]:
         try:
-            sym = r[col["Coin"]].strip()
-            side = r[col["Tín hiệu"]].strip().upper()   # LONG/SHORT
-            entry = float(str(r[col["Entry"]]).replace(",",""))
-            sl    = float(str(r[col["SL"]]).replace(",",""))
-            tp    = float(str(r[col["TP"]]).replace(",",""))
-            trend_s = r[col["Xu hướng ngắn"]].strip()
-            trend_m = r[col["Xu hướng trung"]].strip()
-            when_vn = _parse_vn_time(r[col["Ngày"]].strip())
-            mode    = r[col["Mode"]].strip().upper() if r[col["Mode"]] else "RELAX"
+            sym    = r[col["Coin"]].strip()
+            side   = r[col["Tín hiệu"]].strip().upper()      # LONG/SHORT
+            entry  = float(str(r[col["Entry"]]).replace(",", ""))
+            sl     = float(str(r[col["SL"]]).replace(",", ""))
+            tp     = float(str(r[col["TP"]]).replace(",", ""))
+            trend_s= r[col["Xu hướng ngắn"]].strip()
+            trend_m= r[col["Xu hướng trung"]].strip()
+            when_vn= parse_vn_time(r[col["Ngày"]].strip())
+            mode   = r[col["Mode"]].strip().upper() if r[col["Mode"]] else "RELAX"
+            
             if not sym or side not in ("LONG","SHORT") or when_vn is None:
                 continue
             out.append((sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode))
