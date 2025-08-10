@@ -112,26 +112,26 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 10,   # top 90%
-    "ADX_MIN_15M": 2,
-    "BBW_MIN": 0.005,
-    "RR_MIN": 1.0,
-    "NEWS_BLACKOUT_MIN": 30, # phút
-    "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
+    "VOLUME_PERCENTILE": 0,   # top 90%
+    "ADX_MIN_15M": 0,
+    "BBW_MIN": 0,
+    "RR_MIN": 0,
+    "NEWS_BLACKOUT_MIN": 0, # phút
+    "ATR_CLEARANCE_MIN": 0, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
-    "RSI_LONG_MIN": 50,
-    "RSI_SHORT_MAX": 45,    
-    "RSI_1H_LONG_MIN": 50,
-    "RSI_1H_SHORT_MAX": 50,
-    "MACD_DIFF_LONG_MIN": 0.02,
-    "MACD_DIFF_SHORT_MIN": 0.0001,
+    "RSI_LONG_MIN": 0,
+    "RSI_SHORT_MAX": 100,    # tăng là lỏng
+    "RSI_1H_LONG_MIN": 0,
+    "RSI_1H_SHORT_MAX": 100,    # tăng là lỏng
+    "MACD_DIFF_LONG_MIN": -999,
+    "MACD_DIFF_SHORT_MIN": -999,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 1.2,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
-    "SR_NEAR_PCT":   0.015, # 1.2% khoảng cách tuyệt đối (tuỳ)
+    "SR_NEAR_K_ATR": 999,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_PCT":   999, # 1.2% khoảng cách tuyệt đối (tuỳ)
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
