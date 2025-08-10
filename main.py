@@ -262,6 +262,51 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
     return "⭐️" * min(strength, 5)
 
 
+def _pivots(series: pd.Series, lookback=30, win=3):
+    """Tìm 2 pivot highs & 2 pivot lows gần nhất trong lookback nến (win = cửa sổ local-extrema)."""
+    s = series.tail(lookback).reset_index(drop=True)
+    n = len(s)
+    if n < win*2+3:
+        return None, None, None, None  # thiếu dữ liệu
+    # pivot high: s[i] là max trong [i-win, i+win]
+    ph_idx = []
+    pl_idx = []
+    for i in range(win, n-win):
+        seg = s[i-win:i+win+1]
+        if s[i] == seg.max(): ph_idx.append(i)
+        if s[i] == seg.min(): pl_idx.append(i)
+    # lấy 2 cái gần nhất
+    ph_idx = ph_idx[-2:] if len(ph_idx) >= 2 else (ph_idx if ph_idx else [])
+    pl_idx = pl_idx[-2:] if len(pl_idx) >= 2 else (pl_idx if pl_idx else [])
+    def _vals(idx_list):
+        if len(idx_list) >= 2:
+            return (idx_list[-2], s.iloc[idx_list[-2]]), (idx_list[-1], s.iloc[idx_list[-1]])
+        return (None, None), (None, None)
+    (i1h,v1h),(i2h,v2h) = _vals(ph_idx)
+    (i1l,v1l),(i2l,v2l) = _vals(pl_idx)
+    return (i1h, v1h, i2h, v2h, i1l, v1l, i2l, v2l)
+
+def is_bear_div(price: pd.Series, osc: pd.Series, lb=30, win=3) -> bool:
+    """Bearish divergence: price HH nhưng oscillator LH (veto LONG)."""
+    if price is None or osc is None or len(price) < lb+5 or len(osc) < lb+5:
+        return False
+    i1h, p1h, i2h, p2h, *_ = _pivots(price, lb, win)
+    _,  o1h, _,  o2h, *_ = _pivots(osc,   lb, win)
+    if None in (i1h, p1h, i2h, p2h, o1h, o2h):
+        return False
+    # i1h < i2h đảm bảo trật tự thời gian
+    return (i1h < i2h) and (p2h > p1h) and (o2h < o1h)
+
+def is_bull_div(price: pd.Series, osc: pd.Series, lb=30, win=3) -> bool:
+    """Bullish divergence: price LL nhưng oscillator HL (veto SHORT)."""
+    if price is None or osc is None or len(price) < lb+5 or len(osc) < lb+5:
+        return False
+    *_, i1l, p1l, i2l, p2l = _pivots(price, lb, win)
+    *_, o1l, o1v, o2l, o2v = _pivots(osc,   lb, win)
+    if None in (i1l, p1l, i2l, p2l, o1l, o1v, o2l, o2v):
+        return False
+    return (i1l < i2l) and (p2l < p1l) and (o2v > o1v)
+
 def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     try:
         timeframe_map = {
@@ -355,7 +400,8 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
     if missing > max_missing:
         return None
     return df.dropna(subset=required_cols)
-    
+
+# DETECT_SIGNAL
 def detect_signal(df_15m: pd.DataFrame,
                   df_1h: pd.DataFrame,
                   symbol: str,
@@ -532,6 +578,65 @@ def detect_signal(df_15m: pd.DataFrame,
     if side == "SHORT" and not near_res:  fail.append("SR: không near resistance")
     if fail: return _ret(None, None, None, None, False)
 
+    # ===== EXTRA PRO FILTERS (veto nếu không đạt) =====
+    try:
+        # 1) Divergence veto (dùng RSI nếu có, fallback MACD histogram)
+        osc = df["rsi"] if "rsi" in df.columns else (df["macd"] - df["macd_signal"] if "macd" in df.columns and "macd_signal" in df.columns else None)
+        if osc is not None:
+            if side == "LONG"  and is_bear_div(df["close"], osc, lb=30, win=3):
+                fail.append("DIVERGENCE (bear)");  return _ret(None, None, None, None, False)
+            if side == "SHORT" and is_bull_div(df["close"], osc, lb=30, win=3):
+                fail.append("DIVERGENCE (bull)");  return _ret(None, None, None, None, False)
+    
+        # 2) Wick quality (tránh râu ngược quá lớn)
+        last  = df.iloc[-1]
+        rng   = max(float(last["high"]) - float(last["low"]), 1e-9)
+        body  = abs(float(last["close"]) - float(last["open"]))
+        upper = float(last["high"]) - max(float(last["close"]), float(last["open"]))
+        lower = min(float(last["close"]), float(last["open"])) - float(last["low"])
+        if side == "LONG"  and upper >= 0.5 * rng:
+            fail.append("UPPER-WICK");  return _ret(None, None, None, None, False)
+        if side == "SHORT" and lower >= 0.5 * rng:
+            fail.append("LOWER-WICK");  return _ret(None, None, None, None, False)
+    
+        # 3) CLV (Close near extreme của nến tín hiệu)
+        clv = (float(last["close"]) - float(last["low"])) / rng  # 0..1
+        if side == "LONG"  and clv < 0.60:
+            fail.append("CLV<0.60");   return _ret(None, None, None, None, False)
+        if side == "SHORT" and clv > 0.40:
+            fail.append("CLV>0.40");   return _ret(None, None, None, None, False)
+    
+        # 4) Breakout có retest tối thiểu 1 nến trước đó
+        #    (dựa vào high_sr/low_sr đã tính sẵn; nếu thiếu thì bỏ qua step này)
+        brk_level = None
+        if side == "LONG":
+            brk_level = locals().get("high_sr", None)
+        else:
+            brk_level = locals().get("low_sr", None)
+    
+        if brk_level is not None and np.isfinite(brk_level):
+            pre = df.tail(4)[:-1]  # 3 nến trước
+            if side == "LONG":
+                ok_retest = any((float(r.low) <= brk_level <= float(r.close)) for _, r in pre.iterrows())
+            else:
+                ok_retest = any((float(r.close) <= brk_level <= float(r.high)) for _, r in pre.iterrows())
+            if not ok_retest:
+                fail.append("NO-RETEST");  return _ret(None, None, None, None, False)
+    
+        # 5) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
+        try:
+            atr_s = _atr(df, n=14)  # dùng hàm ATR của bạn; phải trả về Series
+        except Exception:
+            atr_s = None
+        if atr_s is not None and len(atr_s) >= 22 and pd.notna(atr_s.iloc[-1]):
+            atr_now = float(atr_s.iloc[-1])
+            base    = float(pd.Series(atr_s.iloc[-21:-1]).median())
+            if atr_now < 1.2 * base:
+                fail.append("ATR-NOT-EXPANDING");  return _ret(None, None, None, None, False)
+    except Exception as _e:
+        # An toàn: nếu filter phụ lỗi thì bỏ qua (không làm hỏng luồng chính)
+        logging.debug(f"[EXTRA-FILTER] skip due to error: {_e}")
+                      
     # ---------- Entry/SL/TP/RR ----------
     if side == "LONG":
         sl = float(df["low"].iloc[-10:-1].min())
