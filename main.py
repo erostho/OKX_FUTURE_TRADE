@@ -108,7 +108,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 65,   # top 35%
+    "VOLUME_PERCENTILE": 60,   # top 40%
     "ADX_MIN_15M": 18,
     "BBW_MIN": 0.010,
     "RR_MIN": 1.3,
@@ -359,7 +359,68 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
     except Exception as e:
         logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe_input}]: {e}")
         return None
-        
+
+def _ensure_ohlc(df):
+    need = {"open","high","low","close"}
+    if not need.issubset(set(df.columns)): 
+        raise ValueError("Thiếu cột OHLC")
+    return df.dropna()
+
+def _dmi_adx(df, n=14):
+    """Trả về Series: +DI, -DI, ADX (0..100). Nếu đã có cột adx/plus_di/minus_di thì dùng luôn."""
+    d = _ensure_ohlc(df).copy()
+    if {"adx","plus_di","minus_di"}.issubset(d.columns):
+        return d["plus_di"], d["minus_di"], d["adx"]
+
+    high, low, close = d["high"], d["low"], d["close"]
+    up_move   = high.diff()
+    down_move = -low.diff()
+
+    plus_dm  = np.where((up_move > down_move) & (up_move > 0),  up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    tr1 = (high - low)
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low  - close.shift()).abs()
+    tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
+    atr = tr.ewm(span=n, adjust=False).mean()
+    plus_di  = (pd.Series(plus_dm, index=d.index).ewm(span=n, adjust=False).mean()  / atr) * 100
+    minus_di = (pd.Series(minus_dm, index=d.index).ewm(span=n, adjust=False).mean() / atr) * 100
+    dx = ( (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan) ) * 100
+    adx = dx.ewm(span=n, adjust=False).mean()
+
+    return plus_di.fillna(0), minus_di.fillna(0), adx.fillna(0)
+
+def _ema(series, span):
+    return series.ewm(span=span, adjust=False).mean()
+
+def trend_ema_adx(df, ema_period=50, adx_th=20):
+    """
+    Tăng:  close > EMA và EMA dốc lên, DI+ > DI-, ADX > ngưỡng
+    Giảm:  close < EMA và EMA dốc xuống, DI- > DI+, ADX > ngưỡng
+    Sideway: còn lại / ADX yếu
+    """
+    d = _ensure_ohlc(df).copy()
+    ema = _ema(d["close"], ema_period)
+    plus_di, minus_di, adx = _dmi_adx(d, n=14)
+
+    close_now = float(d["close"].iloc[-1])
+    ema_now   = float(ema.iloc[-1])
+    ema_prev  = float(ema.iloc[-2]) if len(ema) > 1 else ema_now
+    adx_now   = float(adx.iloc[-1])
+    pdi_now   = float(plus_di.iloc[-1])
+    mdi_now   = float(minus_di.iloc[-1])
+
+    ema_up   = ema_now > ema_prev
+    ema_down = ema_now < ema_prev
+
+    if adx_now > adx_th and close_now > ema_now and ema_up and pdi_now > mdi_now:
+        return "Tăng"
+    if adx_now > adx_th and close_now < ema_now and ema_down and mdi_now > pdi_now:
+        return "Giảm"
+    return "Sideway"
+
 def calculate_adx(df, period=14):
     high = pd.to_numeric(df["high"], errors="coerce")
     low = pd.to_numeric(df["low"], errors="coerce")
@@ -1030,7 +1091,9 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "STRICT"])
+                    trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)   # Xu hướng ngắn (15m)
+                    trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)   # Xu hướng trung (1h)
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "STRICT"])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating, sig_score))
 
         # log tóm tắt 1 dòng/coin
@@ -1071,7 +1134,9 @@ def run_bot():
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     side_with_stars = f"{side} {stars(rating)}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "RELAX"])
+                    trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)   # Xu hướng ngắn (15m)
+                    trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)   # Xu hướng trung (1h)
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "RELAX"])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating, sig_score))
 
         if ok:
