@@ -572,6 +572,9 @@ def _clip01(x): return max(0.0, min(1.0, x))
 
 def score_signal(rr, adx, clv, dist_ema, volp):
     # Chuẩn hóa thô, bạn có thể tinh chỉnh:
+    atr_s  = _atr(df, n=14)
+    atr_now = float(atr_s.iloc[-1]) if atr_s is not None and len(atr_s) else None
+    atr_pct = (atr_now / max(entry, 1e-9)) if atr_now else 0.0
     s_rr   = _clip01((rr-1.0)/1.5)          # RR 1→2.5
     s_adx  = _clip01((adx-15)/20)           # ADX 15→35
     s_clv  = clv if 0<=clv<=1 else 0.5      # đã tính CLV 0..1
