@@ -887,10 +887,10 @@ def detect_signal(df_15m: pd.DataFrame,
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
     else:
-        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
