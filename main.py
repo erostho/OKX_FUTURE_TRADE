@@ -24,7 +24,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from pytz import timezone
 import pytz
 from datetime import datetime, timedelta
-
+from datetime import timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -1493,7 +1493,7 @@ def backtest_from_watchlist():
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
             # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
-            when_utc = when_vn.astimezone(pytz.utc)
+            when_utc = when_vn.astimezone(timezone.utc)
             ts_cut = int(when_utc.timestamp() * 1000)  # ms
 
             # 2) chuẩn hoá instId OKX
