@@ -25,7 +25,7 @@ from pytz import timezone
 import pytz
 from datetime import datetime, timedelta
 from datetime import timezone
-
+from datetime import datetime, timezone
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -373,46 +373,41 @@ def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 1000):
         r.raise_for_status()
         js = r.json()
         data = js.get("data", []) or []
-
-        # Parse: [ts, o, h, l, c, vol, ...]
+        
+        # Parse: [ts, o, h, l, c, vol]
         rows = []
         for it in data:
-            ts = it[0]                   # ms
+            ts = int(it[0]) if it and it[0] is not None else 0
             o, h, l, c = it[1], it[2], it[3], it[4]
             vol = it[5] if len(it) > 5 else None
             rows.append([ts, o, h, l, c, vol])
-
+        
         df = pd.DataFrame(rows, columns=["timestamp","open","high","low","close","volume"])
-        # nếu API trả index là epoch, đổi sang cột timestamp (ms)
-        if "timestamp" not in df.columns:
-            try:
-                ts = pd.to_numeric(df.index, errors="coerce")
-                if ts.notna().all():
-                    if ts.max() < 10**12:  # giây
-                        ts = ts * 1000.0
-                    df = df.copy()
-                    df["timestamp"] = ts
-            except Exception:
-                pass
-        # Ép kiểu CHUẨN
-        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")  # ms
+        
+        # Ép kiểu chuẩn
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")  # ms hoặc s
         for col in ("open","high","low","close","volume"):
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        # Loại bỏ dòng rỗng và sort cũ → mới
+        
+        # Nếu timestamp đang là GIÂY thì đổi sang MILLISECOND
+        if df["timestamp"].notna().any() and df["timestamp"].max() < 10**12:
+            df["timestamp"] = df["timestamp"] * 1000.0
+        
+        # Loại rỗng + sort
         df = df.dropna(subset=["timestamp","open","high","low","close"]).copy()
         df = df.sort_values("timestamp").reset_index(drop=True)
-
-        # Log dải thời gian để kiểm tra (chú ý: chỉ chia 1000 khi log)
+        
+        # (tùy) log phạm vi: chỉ dùng /1000 khi log, KHÔNG convert nếu NaN
         if len(df):
             t0 = int(df["timestamp"].iloc[0]); t1 = int(df["timestamp"].iloc[-1])
-            logging.debug(
-                f"[BT] RAW {inst_id}: [{datetime.utcfromtimestamp(t0/1000)} → {datetime.utcfromtimestamp(t1/1000)}] | rows={len(df)}"
-            )
+            from datetime import datetime, timezone
+            logging.debug(f"[BT] RAW {symbol}: "
+                          f"[{datetime.fromtimestamp(t0/1000, tz=timezone.utc)} -> "
+                          f"{datetime.fromtimestamp(t1/1000, tz=timezone.utc)}] | rows={len(df)}")
         else:
-            logging.debug(f"[BT] {inst_id}: dữ liệu trống.")
-
+            logging.debug(f"[BT] RAW {symbol}: dữ liệu trống.")
+        
         return df
 
     except Exception as e:
@@ -1483,7 +1478,16 @@ def write_backtest_row(row):
     """row = [Coin, Tín hiệu, Entry, SL, TP, Xu hướng ngắn, Xu hướng trung, Ngày, Mode, Kết quả]"""
     ws = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
     ws.append_row([_to_user_entered(x) for x in row], value_input_option="USER_ENTERED")
-    
+
+
+def ts_to_str(ms):
+    """ms -> 'dd/MM/YYYY HH:MM' (UTC); trả '—' nếu None/lỗi."""
+    try:
+        if ms is None or int(ms) <= 0:
+            return "—"
+        return datetime.fromtimestamp(int(ms)/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return "—"    
 def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
     """Quy tắc: nến nào chạm SL/TP trước -> LOSS/WIN; hết cửa sổ mà chưa chạm -> OPEN."""
     if df is None or len(df) == 0:
@@ -1502,26 +1506,26 @@ def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
         if side == "LONG":
             if l <= sl:
                 if DEBUG_BACKTEST and not hit_logged:
-                    logging.debug(f"[BT] {sym or ''} LONG -> LOSS at { _ts_to_str(ts) } "
+                    logging.debug(f"[BT] {sym or ''} LONG -> LOSS at {ts_to_str(ts)} "
                                   f"(low={l:.6g} <= SL={sl:.6g})")
                     hit_logged = True
                 return "LOSS"
             if h >= tp:
                 if DEBUG_BACKTEST and not hit_logged:
-                    logging.debug(f"[BT] {sym or ''} LONG -> WIN  at { _ts_to_str(ts) } "
+                    logging.debug(f"[BT] {sym or ''} LONG -> WIN at {ts_to_str(ts)} "
                                   f"(high={h:.6g} >= TP={tp:.6g})")
                     hit_logged = True
                 return "WIN"
         else:  # SHORT
             if h >= sl:
                 if DEBUG_BACKTEST and not hit_logged:
-                    logging.debug(f"[BT] {sym or ''} SHORT -> LOSS at { _ts_to_str(ts) } "
+                    logging.debug(f"[BT] {sym or ''} SHORT -> LOSS at {ts_to_str(ts)} "
                                   f"(high={h:.6g} >= SL={sl:.6g})")
                     hit_logged = True
                 return "LOSS"
             if l <= tp:
                 if DEBUG_BACKTEST and not hit_logged:
-                    logging.debug(f"[BT] {sym or ''} SHORT -> WIN  at { _ts_to_str(ts) } "
+                    logging.debug(f"[BT] {sym or ''} SHORT -> WIN at {ts_to_str(ts)} "
                                   f"(low={l:.6g} <= TP={tp:.6g})")
                     hit_logged = True
                 return "WIN"
