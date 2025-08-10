@@ -508,7 +508,25 @@ def score_signal(rr, adx, clv, dist_ema, volp):
     s_dist = _clip01(1 - min(dist_ema/ (2*atr_pct+1e-9), 1))  # càng gần EMA/VWAP càng tốt
     s_vol  = _clip01((volp-50)/40)          # percentile 50→90
     return 0.30*s_rr + 0.25*s_adx + 0.20*s_clv + 0.15*s_dist + 0.10*s_vol
-    
+
+# ==== DEBUG BACKTEST ====
+DEBUG_BACKTEST = True
+def _ts_to_str(ms_or_s):
+    """ms hoặc s -> chuỗi giờ VN cho dễ đọc log"""
+    try:
+        import datetime as _dt, pytz as _pytz
+        tz = _pytz.timezone("Asia/Ho_Chi_Minh")
+        # đoán đơn vị
+        if ms_or_s > 10**12:  # nano?
+            ms_or_s = ms_or_s/10**6
+        if ms_or_s > 10**10:  # mili
+            dt = _dt.datetime.utcfromtimestamp(ms_or_s/1000.0)
+        else:                 # giây
+            dt = _dt.datetime.utcfromtimestamp(ms_or_s)
+        return tz.fromutc(dt).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(ms_or_s)
+
 # DETECT_SIGNAL
 def detect_signal(df_15m: pd.DataFrame,
                   df_1h: pd.DataFrame,
@@ -1326,22 +1344,67 @@ def write_backtest_row(row):
     ws = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
     ws.append_row([_to_user_entered(x) for x in row], value_input_option="USER_ENTERED")
     
-def _first_touch_result(df, side, entry, sl, tp):
-    """
-    df: DataFrame OHLCV 15m sau thời điểm entry (có cột: open, high, low, close, timestamp)
-    Trả "WIN"/"LOSS"/"OPEN"
-    """
+def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
+    """Quy tắc: nến nào chạm SL/TP trước -> LOSS/WIN; hết cửa sổ mà chưa chạm -> OPEN."""
     if df is None or len(df) == 0:
+        if DEBUG_BACKTEST:
+            logging.debug(f"[BT] {sym or ''} {side} -> OPEN (no candles)")
         return "OPEN"
-    for _, row in df.iterrows():
-        h = float(row["high"]); l = float(row["low"])
+
+    hit_logged = False
+    for i, row in df.iterrows():
+        try:
+            h = float(row["high"]); l = float(row["low"])
+            ts = int(row["timestamp"]) if "timestamp" in row else None
+        except Exception:
+            continue
+
         if side == "LONG":
-            # chạm SL trước -> LOSS, chạm TP trước -> WIN
-            if l <= sl: return "LOSS"
-            if h >= tp: return "WIN"
+            if l <= sl:
+                if DEBUG_BACKTEST and not hit_logged:
+                    logging.debug(f"[BT] {sym or ''} LONG -> LOSS at { _ts_to_str(ts) } "
+                                  f"(low={l:.6g} <= SL={sl:.6g})")
+                    hit_logged = True
+                return "LOSS"
+            if h >= tp:
+                if DEBUG_BACKTEST and not hit_logged:
+                    logging.debug(f"[BT] {sym or ''} LONG -> WIN  at { _ts_to_str(ts) } "
+                                  f"(high={h:.6g} >= TP={tp:.6g})")
+                    hit_logged = True
+                return "WIN"
         else:  # SHORT
-            if h >= sl: return "LOSS"
-            if l <= tp: return "WIN"
+            if h >= sl:
+                if DEBUG_BACKTEST and not hit_logged:
+                    logging.debug(f"[BT] {sym or ''} SHORT -> LOSS at { _ts_to_str(ts) } "
+                                  f"(high={h:.6g} >= SL={sl:.6g})")
+                    hit_logged = True
+                return "LOSS"
+            if l <= tp:
+                if DEBUG_BACKTEST and not hit_logged:
+                    logging.debug(f"[BT] {sym or ''} SHORT -> WIN  at { _ts_to_str(ts) } "
+                                  f"(low={l:.6g} <= TP={tp:.6g})")
+                    hit_logged = True
+                return "WIN"
+
+    # Không chạm: log khoảng cách gần nhất để biết "vì sao OPEN"
+    if DEBUG_BACKTEST:
+        try:
+            import numpy as _np
+            highs = _np.array(df["high"], dtype=float)
+            lows  = _np.array(df["low"],  dtype=float)
+            if side == "LONG":
+                gap_sl = float(_np.min(_np.maximum(lows - sl, 0.0)))   # >=0
+                gap_tp = float(_np.min(_np.maximum(tp - highs, 0.0))) # >=0
+            else:
+                gap_sl = float(_np.min(_np.maximum(highs - sl, 0.0)))
+                gap_tp = float(_np.min(_np.maximum(lows - tp, 0.0)))
+            t0 = _ts_to_str(int(df["timestamp"].iloc[0])) if "timestamp" in df.columns else "N/A"
+            t1 = _ts_to_str(int(df["timestamp"].iloc[-1])) if "timestamp" in df.columns else "N/A"
+            logging.debug(f"[BT] {sym or ''} {side} -> OPEN (no touch) | "
+                          f"nearest gaps: SL={gap_sl:.6g}, TP={gap_tp:.6g} | "
+                          f"window={t0}→{t1}, candles={len(df)}")
+        except Exception:
+            logging.debug(f"[BT] {sym or ''} {side} -> OPEN (no touch; gap calc failed)")
     return "OPEN"
 
 def backtest_from_watchlist():
@@ -1398,8 +1461,36 @@ def backtest_from_watchlist():
                 # chỉ giữ tối đa max_after nến sau tín hiệu
                 if len(df_after) > max_after:
                     df_after = df_after.iloc[:max_after]
-
-                res = _first_touch_result(df_after, side, entry, sl, tp)
+                
+                # === DEBUG: in thông tin backtest cho mỗi dòng ===
+                if DEBUG_BACKTEST:
+                    try:
+                        n_all  = len(df)
+                    except NameError:
+                        n_all = -1
+                    n_after = len(df_after)
+                    ts_cut  = None
+                    if "timestamp" in df_after.columns and n_after > 0:
+                        ts_first = _ts_to_str(int(df_after["timestamp"].iloc[0]))
+                        ts_last  = _ts_to_str(int(df_after["timestamp"].iloc[-1]))
+                        # ts_cut ~ mốc lọc sau thời điểm tín hiệu
+                        try:
+                            ts_cut = int(when_utc.timestamp()*1000)
+                        except Exception:
+                            ts_cut = None
+                        logging.debug(
+                            f"[BT] {sym} {side} entry={entry:.6g} sl={sl:.6g} tp={tp:.6g} | "
+                            f"candles all={n_all} after={n_after} | cut={_ts_to_str(ts_cut)} | "
+                            f"range={ts_first} → {ts_last}"
+                        )
+                    else:
+                        logging.debug(
+                            f"[BT] {sym} {side} entry={entry:.6g} sl={sl:.6g} tp={tp:.6g} | "
+                            f"candles after={n_after} (no timestamp column)"
+                        )
+                
+                # gọi phán quyết
+                res = _first_touch_result(df_after, side, entry, sl, tp, sym=sym)
 
             row = [
                 sym, side, entry, sl, tp,
@@ -1418,7 +1509,6 @@ def backtest_from_watchlist():
 
 # ====== CẤU HÌNH ======
 RUN_BACKTEST = True   # bật để chạy, tắt nếu không cần
-
 if RUN_BACKTEST:
     logging.info("🚀 Bắt đầu backtest từ sheet THEO DÕI…")
     try:
