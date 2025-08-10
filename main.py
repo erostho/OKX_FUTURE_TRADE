@@ -27,10 +27,10 @@ from datetime import datetime, timedelta
 from datetime import timezone
 from datetime import datetime, timezone
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOG_NAME = "SIGNAL"
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
 logger = logging.getLogger(LOG_NAME)
 
 def log_pass(stage: str, symbol: str, **kv):
@@ -1480,14 +1480,7 @@ def write_backtest_row(row):
     ws.append_row([_to_user_entered(x) for x in row], value_input_option="USER_ENTERED")
 
 
-def ts_to_str(ms):
-    """ms -> 'dd/MM/YYYY HH:MM' (UTC); trả '—' nếu None/lỗi."""
-    try:
-        if ms is None or int(ms) <= 0:
-            return "—"
-        return datetime.fromtimestamp(int(ms)/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        return "—"    
+
 def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
     """Quy tắc: nến nào chạm SL/TP trước -> LOSS/WIN; hết cửa sổ mà chưa chạm -> OPEN."""
     if df is None or len(df) == 0:
@@ -1618,7 +1611,7 @@ def backtest_from_watchlist():
                 mode, res
             ]
             write_backtest_row(row)
-    
+            written += 1
         except Exception as e:
             logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
