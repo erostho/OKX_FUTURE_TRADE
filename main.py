@@ -561,9 +561,25 @@ def detect_signal(df_15m: pd.DataFrame,
     cond_1h_long_ok  = (ema_up_1h and rsi_1h > rsi1h_long_min) or (allow_1h_neu and ema_up_1h)
     cond_1h_short_ok = ((not ema_up_1h) and rsi_1h < rsi1h_short_max) or (allow_1h_neu and (not ema_up_1h))
     
-    # --- dùng trong detect_signal ---
-    require_multi = (STRICT_CFG if mode == "STRICT" else RELAX_CFG).get("REQ_EMA200_MULTI", False)
+    # Xác định mode & cờ multi‑timeframe từ chính cfg
+    mode = cfg.get("TAG", "RELAX")                # "STRICT" hoặc "RELAX"
+    require_multi = cfg.get("REQ_EMA200_MULTI", False)
     
+    if require_multi:
+        ok_1h = ok_4h = True
+        try:
+            ok_1h = _ema200_up(df_1h) if side == "LONG" else _ema200_down(df_1h)
+        except Exception:
+            pass
+        try:
+            ok_4h = _ema200_up(df_4h) if side == "LONG" else _ema200_down(df_4h)
+        except Exception:
+            pass
+    
+        if side == "LONG"  and not (ok_1h and ok_4h):
+            fail.append("REGIME: 1H/4H !UP");  return _ret(None,None,None,None,False)
+        if side == "SHORT" and     (ok_1h and ok_4h):
+            fail.append("REGIME: 1H/4H UP");   return _ret(None,None,None,None,False)
     if require_multi:
         ok_1h = ok_4h = True
         try:
