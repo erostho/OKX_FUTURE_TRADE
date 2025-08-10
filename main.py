@@ -662,13 +662,33 @@ def detect_signal(df_15m: pd.DataFrame,
     price  = float(latest["close"])
 
     # ---------- volume percentile ----------
-    vols = df["volume"].iloc[-20:]
-    if len(vols) < 10:
+    # -------- volume percentile (robust) --------
+    N = 20  # hoặc 30, tuỳ bạn
+    vols_raw = df["volume"].iloc[-N:] if "volume" in df.columns else None
+    if vols_raw is None or len(vols_raw) < 10:
         fail.append("DATA: thiếu volume 15m")
         return _ret(None, None, None, None, False)
-    v_now = float(vols.iloc[-1]); v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
-    if not (v_now >= v_thr):
-        fail.append(f"VOLUME < P{vol_p}")
+    
+    # ép kiểu số + lọc NaN/Inf
+    vols = pd.to_numeric(vols_raw, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    
+    # đủ dữ liệu để tính không?
+    if len(vols) < 10:
+        # không đủ tin cậy -> bỏ qua filter volume thay vì fail
+        logging.debug("[VOL] thiếu dữ liệu sạch, skip volume filter")
+    else:
+        v_now = float(pd.to_numeric(df["volume"].iloc[-1], errors="coerce"))
+        hist = vols.iloc[:-1] if len(vols) > 1 else pd.Series(dtype=float)
+    
+        if len(hist) >= 5:
+            v_thr = float(np.percentile(hist, vol_p))
+            if not np.isfinite(v_thr) or not np.isfinite(v_now):
+                logging.debug(f"[VOL] v_now/v_thr không hữu hạn, skip (v_now={v_now}, v_thr={v_thr})")
+            else:
+                if not (v_now >= v_thr):
+                    fail.append(f"VOLUME < P{vol_p}")
+        else:
+            logging.debug("[VOL] history < 5 mẫu, skip volume filter")
 
     # ---------- choppy filter: ADX + BBWidth ----------
     adx = float(df["adx"].iloc[-1]); bbw = float(df["bb_width"].iloc[-1])
