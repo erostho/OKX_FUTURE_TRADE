@@ -641,6 +641,64 @@ def detect_signal(df_15m: pd.DataFrame,
     except Exception as _e:
         # An toàn: nếu filter phụ lỗi thì bỏ qua (không làm hỏng luồng chính)
         logging.debug(f"[EXTRA-FILTER] skip due to error: {_e}")
+    
+    # ---------- Divergence veto (RSI/MACD) ----------
+    osc = df["rsi"] if "rsi" in df.columns else (df["macd"]-df["macd_signal"] if {"macd","macd_signal"}<=set(df.columns) else None)
+    if osc is not None:
+        if side=="LONG"  and is_bear_div(df["close"], osc, lb=30, win=3):
+            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False)
+        if side=="SHORT" and is_bull_div(df["close"], osc, lb=30, win=3):
+            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False)     
+    
+    # ---------- Wick ration (râu nến xấu) ----------
+    last=df.iloc[-1]; rng=max(float(last.high)-float(last.low),1e-9)
+    upper=float(last.high)-max(float(last.close),float(last.open))
+    lower=min(float(last.close),float(last.open))-float(last.low)
+    if side=="LONG"  and upper>=0.5*rng:  fail.append("UPPER-WICK");  return _ret(None,None,None,None,False)
+    if side=="SHORT" and lower>=0.5*rng:  fail.append("LOWER-WICK");  return _ret(None,None,None,None,False)
+
+    # ---------- CLV (Close gần cực trị nến) ----------
+    clv=(float(last.close)-float(last.low))/rng
+    if side=="LONG"  and clv<0.60: fail.append("CLV<0.60");  return _ret(None,None,None,None,False)
+    if side=="SHORT" and clv>0.40: fail.append("CLV>0.40");  return _ret(None,None,None,None,False)
+
+    # ---------- Breakout phải có retest nhẹ (>= 1 nến trước đó) ----------
+    brk_level = high_sr if side=="LONG" else low_sr  # dùng biến SR bạn đã có
+    pre=df.tail(4)[:-1]
+    if np.isfinite(brk_level):
+        if side=="LONG":
+            ok = any((float(r.low)<=brk_level<=float(r.close)) for _,r in pre.iterrows())
+        else:
+            ok = any((float(r.close)<=brk_level<=float(r.high)) for _,r in pre.iterrows())
+        if not ok: fail.append("NO-RETEST"); return _ret(None,None,None,None,False)
+    
+    # ---------- ATR expansion ( động lượng thật, không phải "thở") ----------
+    atr_s=_atr(df,14); 
+    if atr_s is not None and len(atr_s)>=22 and pd.notna(atr_s.iloc[-1]):
+        if float(atr_s.iloc[-1]) < 1.2*float(pd.Series(atr_s.iloc[-21:-1]).median()):
+            fail.append("ATR-NOT-EXPANDING"); return _ret(None,None,None,None,False)
+            
+    # ---------- Bar exhaustion (nến quá dài -> dễ hụt hơi) ----------
+    if float(last.high)-float(last.low) > 1.8*float(_atr(df,14).iloc[-1]):
+        fail.append("EXHAUSTION-BAR"); return _ret(None,None,None,None,False)
+
+    # ---------- Bar- since-break (tránh vào trễ, chỉ ghi nhận cú break đầu) ----------
+    pre=df.tail(10)[:-1]
+    if side=="LONG"  and any(float(r.close)>brk_level for _,r in pre.iterrows()):
+        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False)
+    if side=="SHORT" and any(float(r.close)<brk_level for _,r in pre.iterrows()):
+        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False)
+        
+    # ---------- Away from mean (không đu quá xa EMA/VWAP) ----------
+    ema20=df["ema20"].iloc[-1] if "ema20" in df.columns else None
+    vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
+    atr14=float(_atr(df,14).iloc[-1])
+    if side=="LONG":
+        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
+    else:
+        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
     if side == "LONG":
@@ -654,15 +712,15 @@ def detect_signal(df_15m: pd.DataFrame,
     rr    = abs(tp - entry)/risk
     if rr < rr_min:                        fail.append(f"RR {rr:.2f}<{rr_min}")
     if abs(entry - sl)/max(entry,1e-9) < SL_MIN_PCT: fail.append("SL quá sát <{SL_MIN_PCT*100:.1f}%")
-    # Check TP min
+    
+    # Check TP min theo mode
     tp_pct = abs(tp - entry) / max(entry, 1e-9)
     if mode == "RELAX" and tp_pct < TP_MIN_RELAX:  # 3% cho RELAX
         fail.append("TP < {TP_MIN_RELAX*100:.1f}% (RELAX)")
     if mode == "STRICT" and tp_pct < TP_MIN_STRICT: # 5% cho STRICT
-        fail.append("TP < {TP_MIN_STRICT*100:.1f}% (STRICT)")
-        
+        fail.append("TP < {TP_MIN_STRICT*100:.1f}% (STRICT)")   
     if fail: return _ret(None, None, None, None, False)
-
+                      
     # ---------- news blackout ----------
     try:
         if in_news_blackout(news_win):
