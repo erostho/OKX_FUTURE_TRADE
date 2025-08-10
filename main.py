@@ -1343,32 +1343,63 @@ def _first_touch_result(df, side, entry, sl, tp):
             if h >= sl: return "LOSS"
             if l <= tp: return "WIN"
     return "OPEN"
+
 def backtest_from_watchlist():
+    """Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
+    Quy ước:
+      - timeframe kiểm tra: 15m
+      - lấy tối đa ~700 nến sau thời điểm tín hiệu
+      - RESULT: WIN/LOSS/OPEN theo rule chạm SL/TP cái nào trước
+    """
     items = read_watchlist_from_sheet("THEO DÕI")
     if not items:
         logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
         return
 
     written = 0
+    tf = "15m"
+    max_after = 700  # số nến tối đa sau thời điểm tín hiệu
+
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
-            # thời điểm bắt đầu lấy nến: từ khi có tín hiệu
-            # chuyển về UTC (OKX trả UTC)
+            # thời điểm tín hiệu -> UTC (OKX trả UTC)
             when_utc = when_vn.astimezone(pytz.utc)
-            # lấy tối đa ~7 ngày sau tín hiệu => 7*24*4 = 672 nến 15m
-            inst_id = sym.upper().replace("/","-") + "-SWAP"
-            df = fetch_ohlcv_okx(inst_id, "15m", since=None, limit=900)   # dùng hàm sẵn có của bạn
+
+            # symbol OKX: BTC-USDT -> BTC-USDT-SWAP
+            inst_id = sym.upper().replace("/", "-")
+            if not inst_id.endswith("-SWAP"):
+                inst_id += "-SWAP"
+
+            # fetch không dùng 'since' (tránh lỗi). Lấy đủ rộng rồi tự lọc.
+            df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
             if df is None or len(df) == 0:
                 res = "OPEN"
             else:
+                # đảm bảo có cột timestamp (ms)
+                if "timestamp" not in df.columns:
+                    # nếu index là số ms hoặc s thì cố gắng chuyển
+                    try:
+                        ts = pd.to_numeric(df.index, errors="coerce")
+                        # nếu nhỏ -> giây, đổi sang ms
+                        if ts.notna().all() and ts.max() < 10**12:
+                            ts = ts * 1000.0
+                        df = df.copy()
+                        df["timestamp"] = ts
+                    except Exception:
+                        pass
+
                 # lọc các nến có timestamp >= when_utc
                 if "timestamp" in df.columns:
-                    df_after = df[df["timestamp"] >= when_utc.timestamp()*1000].copy()
+                    ts_cut = int(when_utc.timestamp() * 1000)
+                    df_after = df[df["timestamp"] >= ts_cut].copy()
                 else:
-                    # nếu không có, ước lượng bằng index
+                    # fallback: ước lượng bằng index (nếu thiếu timestamp)
                     df_after = df.copy()
-                # chỉ giữ tối đa 700 nến sau tín hiệu
-                df_after = df_after.iloc[:700]
+
+                # chỉ giữ tối đa max_after nến sau tín hiệu
+                if len(df_after) > max_after:
+                    df_after = df_after.iloc[:max_after]
+
                 res = _first_touch_result(df_after, side, entry, sl, tp)
 
             row = [
@@ -1379,6 +1410,7 @@ def backtest_from_watchlist():
             ]
             write_backtest_row(row)
             written += 1
+
         except Exception as e:
             logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
