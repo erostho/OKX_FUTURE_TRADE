@@ -73,6 +73,8 @@ except Exception as e:
 TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 12
+K_ATR_SL = 0.6   # tối thiểu SL = max(SL_MIN_PCT, 0.6*ATR/entry)
+K_ATR_TP = 1.2   # tối thiểu TP = max(TP_MIN_{RELAX|STRICT}, 1.2*ATR/entry)
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 # ===== CONFIG =====
 SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
