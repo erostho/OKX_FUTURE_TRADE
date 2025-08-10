@@ -1291,7 +1291,7 @@ def clean_old_rows():
                     new_rows.append(row)
             except:
                 new_rows.append(row)  # Nếu lỗi parse date thì giữ lại
-
+        time.sleep(1)
         # Ghi lại: headers + rows mới
         sheet.clear()
         sheet.update([headers] + new_rows)
@@ -1478,6 +1478,7 @@ def write_backtest_row(row):
     """row = [Coin, Tín hiệu, Entry, SL, TP, Xu hướng ngắn, Xu hướng trung, Ngày, Mode, Kết quả]"""
     ws = client.open_by_key(sheet_id).worksheet("BACKTEST_RESULT")
     ws.append_row([_to_user_entered(x) for x in row], value_input_option="USER_ENTERED")
+    time.sleep(1)
 
 
 
@@ -1612,6 +1613,7 @@ def backtest_from_watchlist():
             ]
             write_backtest_row(row)
             written += 1
+            time.sleep(1)
         except Exception as e:
             logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
