@@ -127,6 +127,8 @@ RELAX_CFG = {
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
+    "SR_NEAR_K_ATR": 1.2,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_PCT":   0.015, # 1.2% khoảng cách tuyệt đối (tuỳ)
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -322,43 +324,74 @@ def is_bull_div(price: pd.Series, osc: pd.Series, lb=30, win=3) -> bool:
         return False
     return (i1l < i2l) and (p2l < p1l) and (o2v > o1v)
 
-def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 100):
-    try:
-        timeframe_map = {
-            '1h': '1H', '4h': '4H', '1d': '1D',
-            '15m': '15m', '5m': '5m', '1m': '1m'
-        }
-        timeframe_input = timeframe
-        timeframe = timeframe_map.get(timeframe.lower(), timeframe)
-        logging.debug(f"🕒 Timeframe input: {timeframe_input} => OKX dùng: {timeframe}")
+def fetch_ohlcv_okx(symbol: str, timeframe: str = "15m", limit: int = 1000):
+    """
+    Trả DataFrame cột: timestamp(ms), open, high, low, close, volume
+    OKX trả data mới → cũ, timestamp là mili‑giây (string).
+    """
+    import requests, pandas as pd
+    from datetime import datetime
 
-        if timeframe not in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]:
+    try:
+        # Map alias timeframe về format OKX
+        timeframe_map = {
+            "1h": "1H", "4h": "4H", "1d": "1D",
+            "15m": "15m", "5m": "5m", "1m": "1m"
+        }
+        tf_in = timeframe
+        timeframe = timeframe_map.get(timeframe.lower(), timeframe)
+        logging.debug(f"🕒 Timeframe input: {tf_in} => OKX dùng: {timeframe}")
+
+        if timeframe not in ("1m","5m","15m","30m","1H","4H","1D"):
             logging.warning(f"⚠️ Timeframe không hợp lệ: {timeframe}")
             return None
 
-        url = f"https://www.okx.com/api/v5/market/candles?instId={symbol}&bar={timeframe}&limit={limit}"
-        logging.debug(f"📤 Gửi request nến OKX: instId={symbol}, bar={timeframe}, limit={limit}")
-        response = requests.get(url)
-        data = response.json()
+        # OKX instId: BTC-USDT → BTC-USDT-SWAP (nếu thiếu -SWAP)
+        inst_id = symbol.upper().replace("/", "-")
+        if not inst_id.endswith("-SWAP"):
+            inst_id += "-SWAP"
 
+        url = "https://www.okx.com/api/v5/market/candles"
+        params = {"instId": inst_id, "bar": timeframe, "limit": limit}
+        logging.debug(f"🌐 Gửi request nến OKX: instId={inst_id}, bar={timeframe}, limit={limit}")
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        js = r.json()
+        data = js.get("data", []) or []
 
-        if 'data' not in data or not data['data']:
-            logging.warning(f"⚠️ Không có dữ liệu OHLCV: instId={symbol}, bar={timeframe}")
-            return None
+        # Parse: [ts, o, h, l, c, vol, ...]
+        rows = []
+        for it in data:
+            ts = it[0]                   # ms
+            o, h, l, c = it[1], it[2], it[3], it[4]
+            vol = it[5] if len(it) > 5 else None
+            rows.append([ts, o, h, l, c, vol])
 
-        df = pd.DataFrame(data["data"])
-        df.columns = ["ts", "open", "high", "low", "close", "volume", "volCcy", "volCcyQuote", "confirm"]
-        df["ts"] = pd.to_datetime(df["ts"].astype(int), unit="ms")  # ✅ an toàn hơn
-        df = df.iloc[::-1].copy()
+        df = pd.DataFrame(rows, columns=["timestamp","open","high","low","close","volume"])
 
-        # ✅ Chuyển các cột số sang float để tránh lỗi toán học
-        for col in ['open', 'high', 'low', 'close', 'volume']:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Ép kiểu CHUẨN
+        df["timestamp"] = pd.to_numeric(df["timestamp"], errors="coerce")  # ms
+        for col in ("open","high","low","close","volume"):
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        # Loại bỏ dòng rỗng và sort cũ → mới
+        df = df.dropna(subset=["timestamp","open","high","low","close"]).copy()
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        # Log dải thời gian để kiểm tra (chú ý: chỉ chia 1000 khi log)
+        if len(df):
+            t0 = int(df["timestamp"].iloc[0]); t1 = int(df["timestamp"].iloc[-1])
+            logging.debug(
+                f"[BT] RAW {inst_id}: [{datetime.utcfromtimestamp(t0/1000)} → {datetime.utcfromtimestamp(t1/1000)}] | rows={len(df)}"
+            )
+        else:
+            logging.debug(f"[BT] {inst_id}: dữ liệu trống.")
 
         return df
 
     except Exception as e:
-        logging.error(f"❌ Lỗi khi fetch ohlcv OKX cho {symbol} [{timeframe_input}]: {e}")
+        logging.warning(f"[OKX] fetch_ohlcv_okx lỗi với {symbol}: {e}")
         return None
 
 def _ensure_ohlc(df):
@@ -757,15 +790,30 @@ def detect_signal(df_15m: pd.DataFrame,
             fail.append("CLV>0.40");   return _ret(None, None, None, None, False)
     
         # 4) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
-        try:
-            atr_s = _atr(df, n=14)  # dùng hàm ATR của bạn; phải trả về Series
-        except Exception:
-            atr_s = None
-        if atr_s is not None and len(atr_s) >= 22 and pd.notna(atr_s.iloc[-1]):
-            atr_now = float(atr_s.iloc[-1])
-            base    = float(pd.Series(atr_s.iloc[-21:-1]).median())
-            if atr_now < 1.2 * base:
-                fail.append("ATR-NOT-EXPANDING");  return _ret(None, None, None, None, False)
+        atr_s   = _atr(df, n=14)
+        atr_now = float(atr_s.iloc[-1]) if atr_s is not None and len(atr_s) else None
+        px      = float(last["close"])
+        
+        k_atr = cfg.get("SR_NEAR_K_ATR", 0.6)   # cũ là 0.6
+        pct   = cfg.get("SR_NEAR_PCT", 0.008)   # cũ ~ 0.8%
+        
+        tol_abs = 0.0
+        if atr_now:
+            tol_abs = max(tol_abs, k_atr * atr_now)
+        tol_abs = max(tol_abs, pct * px)
+        
+        if side == "LONG":
+            # cần gần KHÁNG CỰ (high_sr)
+            if "high_sr" in locals() and high_sr is not None:
+                if abs(px - float(high_sr)) > tol_abs:
+                    fail.append("SR: không near resistance")
+                    return _ret(None,None,None,None,False)
+        elif side == "SHORT":
+            # cần gần HỖ TRỢ (low_sr)
+            if "low_sr" in locals() and low_sr is not None:
+                if abs(px - float(low_sr)) > tol_abs:
+                    fail.append("SR: không near support")
+                    return _ret(None,None,None,None,False)
     except Exception as _e:
         # An toàn: nếu filter phụ lỗi thì bỏ qua (không làm hỏng luồng chính)
         logging.debug(f"[EXTRA-FILTER] skip due to error: {_e}")
