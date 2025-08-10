@@ -109,10 +109,10 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 30,   # top 70%
-    "ADX_MIN_15M": 15,
+    "VOLUME_PERCENTILE": 20,   # top 80%
+    "ADX_MIN_15M": 2,
     "BBW_MIN": 0.005,
-    "RR_MIN": 1.1,
+    "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
     "USE_VWAP": True,
@@ -278,7 +278,23 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
         strength += 1
     return "⭐️" * min(strength, 5)
 
-
+DEBUG_BACKTEST = True
+def _ts_to_str(ms_or_s):
+    """ms hoặc s -> chuỗi giờ VN cho dễ đọc log"""
+    try:
+        import datetime as _dt, pytz as _pytz
+        tz = _pytz.timezone("Asia/Ho_Chi_Minh")
+        # đoán đơn vị
+        if ms_or_s > 10**12:  # nano?
+            ms_or_s = ms_or_s/10**6
+        if ms_or_s > 10**10:  # mili
+            dt = _dt.datetime.utcfromtimestamp(ms_or_s/1000.0)
+        else:                 # giây
+            dt = _dt.datetime.utcfromtimestamp(ms_or_s)
+        return tz.fromutc(dt).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(ms_or_s)
+        
 def _pivots(series: pd.Series, lookback=30, win=3):
     """Tìm 2 pivot highs & 2 pivot lows gần nhất trong lookback nến (win = cửa sổ local-extrema)."""
     s = series.tail(lookback).reset_index(drop=True)
@@ -564,22 +580,6 @@ def score_signal(rr, adx, clv, dist_ema, volp):
     return 0.30*s_rr + 0.25*s_adx + 0.20*s_clv + 0.15*s_dist + 0.10*s_vol
 
 # ==== DEBUG BACKTEST ====
-DEBUG_BACKTEST = True
-def _ts_to_str(ms_or_s):
-    """ms hoặc s -> chuỗi giờ VN cho dễ đọc log"""
-    try:
-        import datetime as _dt, pytz as _pytz
-        tz = _pytz.timezone("Asia/Ho_Chi_Minh")
-        # đoán đơn vị
-        if ms_or_s > 10**12:  # nano?
-            ms_or_s = ms_or_s/10**6
-        if ms_or_s > 10**10:  # mili
-            dt = _dt.datetime.utcfromtimestamp(ms_or_s/1000.0)
-        else:                 # giây
-            dt = _dt.datetime.utcfromtimestamp(ms_or_s)
-        return tz.fromutc(dt).strftime("%d/%m/%Y %H:%M")
-    except Exception:
-        return str(ms_or_s)
 
 # DETECT_SIGNAL
 def detect_signal(df_15m: pd.DataFrame,
