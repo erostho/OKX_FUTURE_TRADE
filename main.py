@@ -26,6 +26,9 @@ import pytz
 from datetime import datetime, timedelta
 from datetime import timezone
 from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+
+DEBUG_BACKTEST = True
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -278,20 +281,17 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
         strength += 1
     return "⭐️" * min(strength, 5)
 
-DEBUG_BACKTEST = True
-def _ts_to_str(ms_or_s):
-    """ms hoặc s -> chuỗi giờ VN cho dễ đọc log"""
+
+def ts_to_str(ms_or_s):
     try:
-        import datetime as _dt, pytz as _pytz
-        tz = _pytz.timezone("Asia/Ho_Chi_Minh")
-        # đoán đơn vị
-        if ms_or_s > 10**12:  # nano?
-            ms_or_s = ms_or_s/10**6
+        tz = pytz.timezone("Asia/Ho_Chi_Minh")
+        if ms_or_s > 10**12:  # nano
+            ms_or_s = ms_or_s / 10**6
         if ms_or_s > 10**10:  # mili
-            dt = _dt.datetime.utcfromtimestamp(ms_or_s/1000.0)
-        else:                 # giây
-            dt = _dt.datetime.utcfromtimestamp(ms_or_s)
-        return tz.fromutc(dt).strftime("%d/%m/%Y %H:%M")
+            dt_obj = dt.datetime.utcfromtimestamp(ms_or_s/1000.0)
+        else:
+            dt_obj = dt.datetime.utcfromtimestamp(ms_or_s)
+        return tz.fromutc(dt_obj).strftime("%d/%m/%Y %H:%M")
     except Exception:
         return str(ms_or_s)
         
