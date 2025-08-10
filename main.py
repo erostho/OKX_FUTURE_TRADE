@@ -1345,7 +1345,8 @@ def _first_touch_result(df, side, entry, sl, tp):
     return "OPEN"
 
 def backtest_from_watchlist():
-    """Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
+    """
+    Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
     Quy ước:
       - timeframe kiểm tra: 15m
       - lấy tối đa ~700 nến sau thời điểm tín hiệu
@@ -1356,9 +1357,9 @@ def backtest_from_watchlist():
         logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
         return
 
-    written = 0
-    tf = "15m"
-    max_after = 700  # số nến tối đa sau thời điểm tín hiệu
+    written   = 0
+    tf        = "15m"
+    max_after = 700
 
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
@@ -1370,17 +1371,15 @@ def backtest_from_watchlist():
             if not inst_id.endswith("-SWAP"):
                 inst_id += "-SWAP"
 
-            # fetch không dùng 'since' (tránh lỗi). Lấy đủ rộng rồi tự lọc.
+            # lấy dữ liệu OHLCV (không dùng 'since' để tránh lỗi)
             df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
             if df is None or len(df) == 0:
                 res = "OPEN"
             else:
                 # đảm bảo có cột timestamp (ms)
                 if "timestamp" not in df.columns:
-                    # nếu index là số ms hoặc s thì cố gắng chuyển
                     try:
                         ts = pd.to_numeric(df.index, errors="coerce")
-                        # nếu nhỏ -> giây, đổi sang ms
                         if ts.notna().all() and ts.max() < 10**12:
                             ts = ts * 1000.0
                         df = df.copy()
@@ -1390,10 +1389,10 @@ def backtest_from_watchlist():
 
                 # lọc các nến có timestamp >= when_utc
                 if "timestamp" in df.columns:
-                    ts_cut = int(when_utc.timestamp() * 1000)
+                    ts_cut   = int(when_utc.timestamp() * 1000)
                     df_after = df[df["timestamp"] >= ts_cut].copy()
                 else:
-                    # fallback: ước lượng bằng index (nếu thiếu timestamp)
+                    # fallback: nếu thiếu timestamp thì dùng toàn bộ
                     df_after = df.copy()
 
                 # chỉ giữ tối đa max_after nến sau tín hiệu
