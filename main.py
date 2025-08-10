@@ -74,14 +74,19 @@ TP_MULTIPLIER = 1.5
 SL_MULTIPLIER = 1.0
 ADX_THRESHOLD = 12
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
+# ===== CONFIG =====
+SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
+TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
+TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
+
 STRICT_CFG = {
     "VOLUME_PERCENTILE": 80,   # top 20%
     "ADX_MIN_15M": 22,
     "BBW_MIN": 0.013,
-    "RR_MIN": 1.5,
+    "RR_MIN": 1.5, # RR tối thiểu
     "NEWS_BLACKOUT_MIN": 60,   # phút
     "ATR_CLEARANCE_MIN": 0.8,  # >= 0.8 ATR
     "USE_VWAP": True,
@@ -648,7 +653,14 @@ def detect_signal(df_15m: pd.DataFrame,
     risk  = max(abs(entry - sl), 1e-9)
     rr    = abs(tp - entry)/risk
     if rr < rr_min:                        fail.append(f"RR {rr:.2f}<{rr_min}")
-    if abs(entry - sl)/max(entry,1e-9) < 0.003: fail.append("SL quá sát <0.3%")
+    if abs(entry - sl)/max(entry,1e-9) < SL_MIN_PCT: fail.append("SL quá sát <{SL_MIN_PCT*100:.1f}%")
+    # Check TP min
+    tp_pct = abs(tp - entry) / max(entry, 1e-9)
+    if mode == "RELAX" and tp_pct < TP_MIN_RELAX:  # 3% cho RELAX
+        fail.append("TP < {TP_MIN_RELAX*100:.1f}% (RELAX)")
+    if mode == "STRICT" and tp_pct < TP_MIN_STRICT: # 5% cho STRICT
+        fail.append("TP < {TP_MIN_STRICT*100:.1f}% (STRICT)")
+        
     if fail: return _ret(None, None, None, None, False)
 
     # ---------- news blackout ----------
