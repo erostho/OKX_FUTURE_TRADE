@@ -1286,9 +1286,9 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
     for idx, r in enumerate(rows[1:], start=2):  # bắt đầu từ dòng 2 (1-based)
         try:
             raw_when = (r[col["Ngày"]] or "").strip()
-            when_vn  = parse_vn_time(raw_when)
+            when_vn  = _parse_vn_time(raw_when)
             sym      = (r[col["Coin"]] or "").strip()
-            side     = (r[col["Tín hiệu"]] or "").strip().upper()
+            side     = ((r[col["Tín hiệu"]] or "").strip().split()[0]).upper()   # lấy LONG/SHORT
             entry    = float(str(r[col["Entry"]]).replace(",", "")) if r[col["Entry"]] else None
             sl       = float(str(r[col["SL"]]).replace(",", ""))     if r[col["SL"]]    else None
             tp       = float(str(r[col["TP"]]).replace(",", ""))     if r[col["TP"]]    else None
