@@ -96,7 +96,7 @@ STRICT_CFG = {
     "ALLOW_1H_NEUTRAL": False,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 70,   # top 35%
+    "VOLUME_PERCENTILE": 65,   # top 35%
     "ADX_MIN_15M": 20,
     "BBW_MIN": 0.012,
     "RR_MIN": 1.4,
