@@ -79,6 +79,9 @@ SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
 TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
 TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
+SL_MIN_PCT = SL_MIN_PCT_BASE
+TP_MIN_RELAX = TP_MIN_RELAX_BASE
+TP_MIN_STRICT = TP_MIN_STRICT_BASE
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -1084,7 +1087,7 @@ def run_bot():
     except Exception as e:
         logging.error(f"[SHEET] ghi batch lỗi: {e}")
 
-    # ===== GỬI TELEGRAM 1 LẦN (chỉ khi >= 3 sao) =====
+    # ===== GỬI TELEGRAM 1 LẦN  =====
     try:
         TOPN = TOPN_PER_BATCH  # nhớ đã khai báo biến này ở phần CONFIG
     
