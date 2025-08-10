@@ -78,8 +78,7 @@ COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
 TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
-STRICT_CFG["REQUIRE_RETEST"] = True
-RELAX_CFG["REQUIRE_RETEST"]  = False  # hoặc True nếu bạn muốn vẫn yêu cầu
+
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -100,6 +99,7 @@ STRICT_CFG = {
     "MACD_DIFF_LONG_MIN": 0.05,
     "MACD_DIFF_SHORT_MIN": 0.001,
     "ALLOW_1H_NEUTRAL": False,
+    "REQUIRE_RETEST": True,
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 65,   # top 35%
@@ -118,6 +118,7 @@ RELAX_CFG = {
     "MACD_DIFF_LONG_MIN": 0.035,
     "MACD_DIFF_SHORT_MIN": 0.0006,
     "ALLOW_1H_NEUTRAL": True,
+    "REQUIRE_RETEST": False,
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
