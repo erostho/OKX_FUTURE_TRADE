@@ -78,7 +78,8 @@ COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
 TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
-
+STRICT_CFG["REQUIRE_RETEST"] = True
+RELAX_CFG["REQUIRE_RETEST"]  = False  # hoặc True nếu bạn muốn vẫn yêu cầu
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -611,24 +612,7 @@ def detect_signal(df_15m: pd.DataFrame,
         if side == "SHORT" and clv > 0.40:
             fail.append("CLV>0.40");   return _ret(None, None, None, None, False)
     
-        # 4) Breakout có retest tối thiểu 1 nến trước đó
-        #    (dựa vào high_sr/low_sr đã tính sẵn; nếu thiếu thì bỏ qua step này)
-        brk_level = None
-        if side == "LONG":
-            brk_level = locals().get("high_sr", None)
-        else:
-            brk_level = locals().get("low_sr", None)
-    
-        if brk_level is not None and np.isfinite(brk_level):
-            pre = df.tail(4)[:-1]  # 3 nến trước
-            if side == "LONG":
-                ok_retest = any((float(r.low) <= brk_level <= float(r.close)) for _, r in pre.iterrows())
-            else:
-                ok_retest = any((float(r.close) <= brk_level <= float(r.high)) for _, r in pre.iterrows())
-            if not ok_retest:
-                fail.append("NO-RETEST");  return _ret(None, None, None, None, False)
-    
-        # 5) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
+        # 4) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
         try:
             atr_s = _atr(df, n=14)  # dùng hàm ATR của bạn; phải trả về Series
         except Exception:
@@ -663,14 +647,17 @@ def detect_signal(df_15m: pd.DataFrame,
     if side=="SHORT" and clv>0.40: fail.append("CLV>0.40");  return _ret(None,None,None,None,False)
 
     # ---------- Breakout phải có retest nhẹ (>= 1 nến trước đó) ----------
-    brk_level = high_sr if side=="LONG" else low_sr  # dùng biến SR bạn đã có
-    pre=df.tail(4)[:-1]
-    if np.isfinite(brk_level):
-        if side=="LONG":
-            ok = any((float(r.low)<=brk_level<=float(r.close)) for _,r in pre.iterrows())
+    require_retest = cfg.get("REQUIRE_RETEST", True)
+    brk_level = high_sr if side == "LONG" else low_sr
+    pre = df.tail(4)[:-1]
+    if np.isfinite(brk_level) and require_retest:
+        if side == "LONG":
+            ok = any(float(r.low)  <= brk_level <= float(r.close) for _, r in pre.iterrows())
         else:
-            ok = any((float(r.close)<=brk_level<=float(r.high)) for _,r in pre.iterrows())
-        if not ok: fail.append("NO-RETEST"); return _ret(None,None,None,None,False)
+            ok = any(float(r.close) <= brk_level <= float(r.high) for _, r in pre.iterrows())
+        if not ok:
+            fail.append("NO-RETEST")
+            return _ret(None, None, None, None, False)
     
     # ---------- ATR expansion ( động lượng thật, không phải "thở") ----------
     atr_s=_atr(df,14); 
