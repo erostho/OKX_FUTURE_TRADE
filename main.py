@@ -109,7 +109,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 50,   # top 50%
+    "VOLUME_PERCENTILE": 40,   # top 60%
     "ADX_MIN_15M": 18,
     "BBW_MIN": 0.010,
     "RR_MIN": 1.3,
@@ -119,11 +119,11 @@ RELAX_CFG = {
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
     "RSI_LONG_MIN": 53,
-    "RSI_SHORT_MAX": 47,     # GIẢM là lỏng
+    "RSI_SHORT_MAX": 40,     # GIẢM là lỏng
     "RSI_1H_LONG_MIN": 50,
     "RSI_1H_SHORT_MAX": 50,
     "MACD_DIFF_LONG_MIN": 0.035,
-    "MACD_DIFF_SHORT_MIN": 0.0006,
+    "MACD_DIFF_SHORT_MIN": 0.0003,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
@@ -1265,6 +1265,54 @@ def _parse_vn_time(s: str):
             continue
     return None
 
+def _ensure_ts_col(df):
+    """Đảm bảo có cột timestamp (ms) và sort tăng dần."""
+    import pandas as pd, numpy as np
+    if df is None or len(df) == 0:
+        return df, None, None
+
+    cols = [c.lower() for c in df.columns]
+    df2 = df.copy()
+
+    # OKX thường trả 'ts' (ms). Nếu chưa có 'timestamp' thì tạo.
+    if "timestamp" not in cols:
+        if "ts" in df2.columns:
+            df2["timestamp"] = pd.to_numeric(df2["ts"], errors="coerce")
+        else:
+            # thử lấy từ index
+            try:
+                ts = pd.to_numeric(df2.index, errors="coerce")
+                if np.isfinite(ts).all():
+                    df2["timestamp"] = ts
+            except Exception:
+                pass
+
+    if "timestamp" not in [c.lower() for c in df2.columns]:
+        return df2, None, None
+
+    # sort theo thời gian tăng dần
+    df2 = df2.sort_values(by=[col for col in df2.columns if col.lower()=="timestamp"][0])
+    tmin = int(df2[[c for c in df2.columns if c.lower()=="timestamp"][0]].min())
+    tmax = int(df2[[c for c in df2.columns if c.lower()=="timestamp"][0]].max())
+    return df2, tmin, tmax
+
+
+def _log_frame_span(tag, inst_id, when_utc, tmin, tmax):
+    import datetime as dt, pytz
+    def _fmt(ms):
+        try:
+            return dt.datetime.fromtimestamp(ms/1000, tz=pytz.utc).strftime("%Y-%m-%d %H:%M:%S%z")
+        except Exception:
+            return str(ms)
+    if tmin is None:
+        logging.debug(f"[BT] {tag} {inst_id}: ❌ không có cột timestamp.")
+    else:
+        logging.debug(
+            f"[BT] {tag} {inst_id}: ts_entry={when_utc.strftime('%Y-%m-%d %H:%M:%S%z')} "
+            f"| span=[{_fmt(tmin)} .. {_fmt(tmax)}]"
+        )
+
+
 def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
     """
     Đọc sheet THEO DÕI -> list tuple:
@@ -1339,6 +1387,7 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
 
     logging.info(f"[BACKTEST] ✅ Parse xong: {parsed} dòng hợp lệ / {len(rows)-1} dữ liệu.")
     return out
+
 
 def write_backtest_row(row):
     """row = [Coin, Tín hiệu, Entry, SL, TP, Xu hướng ngắn, Xu hướng trung, Ngày, Mode, Kết quả]"""
@@ -1435,21 +1484,44 @@ def backtest_from_watchlist():
             if not inst_id.endswith("-SWAP"):
                 inst_id += "-SWAP"
 
-            # lấy dữ liệu OHLCV (không dùng 'since' để tránh lỗi)
+            # --- fetch OHLCV + chuẩn hoá + debug span thời gian ---
+            inst_id = sym.upper().replace("/", "-")
+            if not inst_id.endswith("-SWAP"):
+                inst_id += "-SWAP"
+            
+            # lấy dữ liệu (không dùng since để tránh lỗi)
             df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
+            
+            # nếu SWAP rỗng -> thử SPOT để kiểm tra sai instId
             if df is None or len(df) == 0:
+                inst_id_spot = sym.upper().replace("/", "-")
+                logging.debug(f"[BT] {sym}: SWAP rỗng -> thử SPOT {inst_id_spot}")
+                df = fetch_ohlcv_okx(inst_id_spot, tf, limit=1000)
+            
+            # chuẩn hoá cột timestamp + sort tăng dần và in khoảng thời gian dữ liệu
+            df, tmin, tmax = _ensure_ts_col(df)
+            _log_frame_span("RAW", inst_id, when_utc, tmin, tmax)
+            
+            if df is None or len(df) == 0:
+                logging.debug(f"[BT] {sym} -> OPEN (không có dữ liệu OHLC)")
                 res = "OPEN"
             else:
-                # đảm bảo có cột timestamp (ms)
-                if "timestamp" not in df.columns:
-                    try:
-                        ts = pd.to_numeric(df.index, errors="coerce")
-                        if ts.notna().all() and ts.max() < 10**12:
-                            ts = ts * 1000.0
-                        df = df.copy()
-                        df["timestamp"] = ts
-                    except Exception:
-                        pass
+                # --- lọc nến sau thời điểm tín hiệu ---
+                if "timestamp" in [c.lower() for c in df.columns]:
+                    ts_col = [c for c in df.columns if c.lower() == "timestamp"][0]
+                    ts_cut = int(when_utc.timestamp() * 1000)
+                    df_after = df[df[ts_col] >= ts_cut].copy()
+                    logging.debug(f"[BT] {sym}: after_cut={ts_cut} | rows_after={len(df_after)}")
+                    if len(df_after) == 0:
+                        logging.debug(f"[BT] {sym} -> OPEN (ts_entry > max_ts hoặc instId không khớp).")
+                        res = "OPEN"
+                    else:
+                        if len(df_after) > max_after:
+                            df_after = df_after.iloc[:max_after]
+                        res = _first_touch_result(df_after, side, entry, sl, tp)
+                else:
+                    logging.debug(f"[BT] {sym} -> OPEN (không tìm thấy cột timestamp sau chuẩn hoá).")
+                    res = "OPEN"
 
                 # lọc các nến có timestamp >= when_utc
                 if "timestamp" in df.columns:
