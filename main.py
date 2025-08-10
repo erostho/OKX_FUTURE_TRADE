@@ -78,7 +78,7 @@ COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
 TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
-
+TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -100,6 +100,7 @@ STRICT_CFG = {
     "MACD_DIFF_SHORT_MIN": 0.001,
     "ALLOW_1H_NEUTRAL": False,
     "REQUIRE_RETEST": True,
+    "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 65,   # top 35%
@@ -119,6 +120,7 @@ RELAX_CFG = {
     "MACD_DIFF_SHORT_MIN": 0.0006,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
+    "REQ_EMA200_MULTI": False,
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -408,6 +410,39 @@ def clean_missing_data(df, required_cols=["close", "high", "low", "volume"], max
         return None
     return df.dropna(subset=required_cols)
 
+# ==== EMA200 regime filter (1H/4H) ====
+def _get_ec():
+    return _ensure_cols if '_ensure_cols' in globals() else ensure_cols
+    
+def _ema200_up(df, span=200, slope_look=5):
+    d = _get_ec()(df.copy()).dropna()
+    if "ema200" not in d.columns:
+        d["ema200"] = d["close"].ewm(span=span, adjust=False).mean()
+    e_now  = float(d["ema200"].iloc[-1])
+    e_prev = float(d["ema200"].iloc[-slope_look])
+    px_now = float(d["close"].iloc[-1])
+    return (px_now > e_now) and (e_now >= e_prev)
+    
+def _ema200_down(df, span=200, slope_look=5):
+    d = _get_ec()(df.copy()).dropna()
+    if "ema200" not in d.columns:
+        d["ema200"] = d["close"].ewm(span=span, adjust=False).mean()
+    e_now  = float(d["ema200"].iloc[-1])
+    e_prev = float(d["ema200"].iloc[-slope_look])
+    px_now = float(d["close"].iloc[-1])
+    return (px_now < e_now) and (e_now <= e_prev)
+
+def _clip01(x): return max(0.0, min(1.0, x))
+
+def score_signal(rr, adx, clv, dist_ema, volp):
+    # Chuẩn hóa thô, bạn có thể tinh chỉnh:
+    s_rr   = _clip01((rr-1.0)/1.5)          # RR 1→2.5
+    s_adx  = _clip01((adx-15)/20)           # ADX 15→35
+    s_clv  = clv if 0<=clv<=1 else 0.5      # đã tính CLV 0..1
+    s_dist = _clip01(1 - min(dist_ema/ (2*atr_pct+1e-9), 1))  # càng gần EMA/VWAP càng tốt
+    s_vol  = _clip01((volp-50)/40)          # percentile 50→90
+    return 0.30*s_rr + 0.25*s_adx + 0.20*s_clv + 0.15*s_dist + 0.10*s_vol
+    
 # DETECT_SIGNAL
 def detect_signal(df_15m: pd.DataFrame,
                   df_1h: pd.DataFrame,
@@ -525,7 +560,30 @@ def detect_signal(df_15m: pd.DataFrame,
 
     cond_1h_long_ok  = (ema_up_1h and rsi_1h > rsi1h_long_min) or (allow_1h_neu and ema_up_1h)
     cond_1h_short_ok = ((not ema_up_1h) and rsi_1h < rsi1h_short_max) or (allow_1h_neu and (not ema_up_1h))
-
+    
+    # --- dùng trong detect_signal ---
+    require_multi = (STRICT_CFG if mode == "STRICT" else RELAX_CFG).get("REQ_EMA200_MULTI", False)
+    
+    if require_multi:
+        ok_1h = ok_4h = True
+        try:
+            ok_1h = _ema200_up(df_1h) if side == "LONG" else _ema200_down(df_1h)
+        except Exception:
+            pass
+        try:
+            ok_4h = _ema200_up(df_4h) if side == "LONG" else _ema200_down(df_4h)
+        except Exception:
+            pass
+    
+        if mode == "STRICT":
+            if not (ok_1h and ok_4h):
+                fail.append("REGIME: EMA200 1H/4H không đồng hướng")
+                return _ret(None, None, None, None, False)
+        else:  # RELAX
+            if not (ok_1h or ok_4h):
+                fail.append("REGIME: EMA200 thiếu xác nhận (RELAX)")
+                return _ret(None, None, None, None, False)
+            
     # ===== XÁC NHẬN HƯỚNG & ĐỒNG PHA (STRICT=3/3, RELAX>=2/3) =====
     side = None
     
@@ -659,12 +717,6 @@ def detect_signal(df_15m: pd.DataFrame,
         if not ok:
             fail.append("NO-RETEST")
             return _ret(None, None, None, None, False)
-    
-    # ---------- ATR expansion ( động lượng thật, không phải "thở") ----------
-    atr_s=_atr(df,14); 
-    if atr_s is not None and len(atr_s)>=22 and pd.notna(atr_s.iloc[-1]):
-        if float(atr_s.iloc[-1]) < 1.2*float(pd.Series(atr_s.iloc[-21:-1]).median()):
-            fail.append("ATR-NOT-EXPANDING"); return _ret(None,None,None,None,False)
             
     # ---------- Bar exhaustion (nến quá dài -> dễ hụt hơi) ----------
     if float(last.high)-float(last.low) > 1.8*float(_atr(df,14).iloc[-1]):
@@ -695,19 +747,35 @@ def detect_signal(df_15m: pd.DataFrame,
     else:
         sl = float(df["high"].iloc[-10:-1].max())
         tp = float(df["low"].iloc[-10:-1].min())
-    entry = px
-    risk  = max(abs(entry - sl), 1e-9)
-    rr    = abs(tp - entry)/risk
-    if rr < rr_min:                        fail.append(f"RR {rr:.2f}<{rr_min}")
-    if abs(entry - sl)/max(entry,1e-9) < SL_MIN_PCT: fail.append("SL quá sát <{SL_MIN_PCT*100:.1f}%")
     
-    # Check TP min theo mode
+    entry = px
+    # --- Check SL/TP/RR động theo ATR ---
+    atr_s  = _atr(df, n=14)
+    atr_now = float(atr_s.iloc[-1]) if atr_s is not None and len(atr_s) else None
+    atr_pct = (atr_now / max(entry, 1e-9)) if atr_now else 0.0
+    
+    sl_min_pct_base = SL_MIN_PCT_BASE
+    tp_min_pct_base = TP_MIN_STRICT_BASE if mode == "STRICT" else TP_MIN_RELAX_BASE
+    
+    sl_min_pct_dyn  = max(sl_min_pct_base, K_ATR_SL * atr_pct)
+    tp_min_pct_dyn  = max(tp_min_pct_base, K_ATR_TP * atr_pct)
+    
+    sl_pct = abs(entry - sl) / max(entry, 1e-9)
+    if sl_pct < sl_min_pct_dyn:
+        fail.append(f"SL<{sl_min_pct_dyn*100:.2f}%")
+        return _ret(None, None, None, None, False)
+    
     tp_pct = abs(tp - entry) / max(entry, 1e-9)
-    if mode == "RELAX" and tp_pct < TP_MIN_RELAX:  # 3% cho RELAX
-        fail.append("TP < {TP_MIN_RELAX*100:.1f}% (RELAX)")
-    if mode == "STRICT" and tp_pct < TP_MIN_STRICT: # 5% cho STRICT
-        fail.append("TP < {TP_MIN_STRICT*100:.1f}% (STRICT)")   
-    if fail: return _ret(None, None, None, None, False)
+    if tp_pct < tp_min_pct_dyn:
+        fail.append(f"TP<{tp_min_pct_dyn*100:.2f}%")
+        return _ret(None, None, None, None, False)
+    
+    rr_min = (STRICT_CFG if mode == "STRICT" else RELAX_CFG)["RR_MIN"]
+    risk = max(abs(entry - sl), 1e-9)
+    rr = abs(tp - entry) / risk
+    if rr < rr_min:
+        fail.append(f"RR {rr:.2f}<{rr_min}")
+        return _ret(None, None, None, None, False)
                       
     # ---------- news blackout ----------
     try:
@@ -766,6 +834,17 @@ def detect_signal(df_15m: pd.DataFrame,
     # ---------- PASS ----------
     if not silent:
         logging.info(f"✅ {symbol} VƯỢT QUA HẾT BỘ LỌC ({side})")
+        
+    # ---------- Tính score tín hiệu ----------
+    adx_val  = float(df["adx"].iloc[-1]) if "adx" in df.columns else 20.0
+    clv      = (float(last["close"])-float(last["low"])) / max(float(last["high"])-float(last["low"]),1e-9)
+    dist_ema = abs(float(last["close"]) - float(last.get("ema20", float(last["close"]))))
+    volp     = vol_p if 'vol_p' in locals() else 60
+    
+    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp)
+    
+    # Lưu thêm score vào tg_candidates
+    tg_candidates.append((mode, symbol, side, entry, sl, tp, rating, sig_score))                  
     return _ret(side, float(entry), float(sl), float(tp), True)
 
 def analyze_trend_multi(symbol):
@@ -910,7 +989,7 @@ def run_bot():
 
     # bộ nhớ tạm để GỘP kết quả
     sheet_rows = []          # mỗi phần tử = row prepend_to_sheet([...]) theo format gốc của bạn
-    tg_candidates = []       # (mode, symbol, side, entry, sl, tp, rating)
+    tg_candidates = []       # (mode, symbol, side, entry, sl, tp, rating, sig_score)
 
     # -------- STRICT pass --------
     reset_log_once_for_mode("STRICT", coin_list)
@@ -947,7 +1026,7 @@ def run_bot():
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side} {stars(rating)}"
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "STRICT"])
-                    tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating))
+                    tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating, sig_score))
 
         # log tóm tắt 1 dòng/coin
         if ok:
@@ -988,7 +1067,7 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     side_with_stars = f"{side} {stars(rating)}"
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, "—", "—", now_vn, "RELAX"])
-                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating))
+                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating, sig_score))
 
         if ok:
             log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ PASS", "info")
@@ -1007,28 +1086,38 @@ def run_bot():
 
     # ===== GỬI TELEGRAM 1 LẦN (chỉ khi >= 3 sao) =====
     try:
-        msgs = []
-        logging.debug(f"[TG] Tổng số tín hiệu nhận được: {len(tg_candidates)}")
+        TOPN = TOPN_PER_BATCH  # nhớ đã khai báo biến này ở phần CONFIG
     
-        for mode, sym, side, entry, sl, tp, rating in tg_candidates:
-            logging.debug(f"[TG] Kiểm tra: {sym} | {side} | Rating: {rating} | Entry: {entry} | SL: {sl} | TP: {tp}")
-            
-            if rating >= 3:  # >= 3 sao
-                msgs.append(f"[{mode}] | {sym} | {side}\nEntry: {entry}\nSL: {sl}\nTP: {tp}\n{stars(rating)} {rating}/5")
-            else:
-                logging.info(f"[TG] Bỏ qua {sym} do rating < 3 ({rating})")
+        if tg_candidates:
+            # Chuẩn hoá: nếu phần tử chưa có score (7 phần tử) thì gán score=0.0
+            cand = []
+            for t in tg_candidates:
+                if len(t) == 8:
+                    cand.append(t)  # (mode, sym, side, entry, sl, tp, rating, sig_score)
+                else:
+                    mode, sym, side, entry, sl, tp, rating = t
+                    cand.append((mode, sym, side, entry, sl, tp, rating, sig_score))
     
-        if msgs:
-            if 'send_telegram_message' in globals():
-                send_telegram_message("📌 TỔNG HỢP TÍN HIỆU MỚI (>=3⭐)\n\n" + "\n\n".join(msgs))
-                logging.info(f"[TG] Đã gửi {len(msgs)} tín hiệu về Telegram.")
-            else:
-                logging.error("[TG] Hàm send_telegram_message không tồn tại, không gửi được Telegram.")
+            # Sắp xếp theo score giảm dần và lấy Top‑N
+            cand.sort(key=lambda x: x[-1], reverse=True)
+            pick = cand[:TOPN]
+    
+            # Gộp message để gửi
+            msgs = []
+            for mode, sym, side, entry, sl, tp, rating, sc in pick:
+                msgs.append(
+                    f"[{mode}] | {sym} | {side}\n"
+                    f"Entry: {entry}\nSL: {sl}\nTP: {tp}\n"
+                    f"⭐ {rating}/5 | Score: {sc:.2f}"
+                )
+    
+            if msgs and 'send_telegram_message' in globals():
+                send_telegram_message("📌 TOP tín hiệu mạnh\n\n" + "\n\n".join(msgs))
+                logging.info(f"[TG] Đã gửi {len(msgs)}/{len(cand)} tín hiệu (Top‑N).")
         else:
-            logging.warning("[TG] Không có tín hiệu nào đạt điều kiện gửi Telegram.")
-    
+            logging.info("[TG] Không có tín hiệu nào để gửi.")
     except Exception as e:
-        logging.error(f"[TG] Gửi tổng hợp lỗi: {e}")
+        logging.error(f"[TG] Gửi Top‑N lỗi: {e}")
     
 def clean_old_rows():
     try:
