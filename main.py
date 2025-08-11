@@ -622,7 +622,7 @@ def detect_signal(df_15m: pd.DataFrame,
 
     fail = []  # gom lý do rớt
 
-    def _ret(side, entry, sl, tp, ok):
+    def _ret(side, entry, sl, tp, ok, sig_score):
         if return_reason:
             return side, entry, sl, tp, ok, (", ".join(fail) if fail else "PASS"), sig_score
         return side, entry, sl, tp, ok, sig_score
