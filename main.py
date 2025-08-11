@@ -1641,79 +1641,63 @@ def backtest_from_watchlist():
     written = 0
 
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
-        # 1) thời điểm tín hiệu: VN -> UTC (OKX trả UTC)
-        dt_vn = None
         try:
-            if isinstance(when_vn, dt.datetime):
-                # nếu datetime nhưng chưa có tz, gán VN
-                if when_vn.tzinfo is None:
-                    dt_vn = when_vn.replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
+            # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
+            when_utc = when_utc.replace(tzinfo=pytz.utc)
+            when_vn = when_utc.astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))
+            ts_cut   = int(when_utc.timestamp() * 1000)   # ms
+    
+            # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
+            inst_id = sym.upper().replace("/", "-")
+            if not inst_id.endswith("-SWAP"):
+                inst_id += "-SWAP"
+    
+            # 3) lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
+            tf = "15m"
+            df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
+    
+            if df is None or len(df) == 0:
+                logging.debug(f"[BT] {sym} -> OPEN (no candles)")
+                res = "OPEN"
+            else:
+                # đảm bảo có cột timestamp (ms)
+                if "timestamp" not in df.columns:
+                    try:
+                        ts = pd.to_numeric(df.index, errors="coerce")
+                        if ts.notna().all():
+                            if ts.max() < 10**12:  # giây -> đổi sang ms
+                                ts = ts * 1000.0
+                            df = df.copy()
+                            df["timestamp"] = ts
+                    except Exception:
+                        pass
+    
+                # lọc các nến từ lúc có tín hiệu trở đi
+                if "timestamp" in df.columns:
+                    df_after = df[df["timestamp"] >= ts_cut].copy()
                 else:
-                    dt_vn = when_vn.astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))
-            else:
-                # when_vn là string -> parse theo các format đã hỗ trợ
-                dt_vn = _parse_vn_time(str(when_vn))  # bạn đã có _parse_vn_time ở dưới
-        except Exception:
-            dt_vn = None
-        
-        if not dt_vn:
-            logging.warning(f"[BACKTEST] Bỏ {sym}: when_vn không hợp lệ: {when_vn}")
-            continue
-        
-        when_utc = dt_vn.astimezone(pytz.utc)
-        ts_cut   = int(when_utc.timestamp() * 1000)   # ms
-         
-        # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
-        inst_id = sym.upper().replace("/", "-")
-        if not inst_id.endswith("-SWAP"):
-            inst_id += "-SWAP"
+                    # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
+                    df_after = df.copy()
     
-        # 3) lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
-        tf = "15m"
-        df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
+                # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
+                if len(df_after) > 700:
+                    df_after = df_after.iloc[:700]
     
-        if df is None or len(df) == 0:
-            logging.debug(f"[BT] {sym} -> OPEN (no candles)")
-            res = "OPEN"
-        else:
-            # đảm bảo có cột timestamp (ms)
-            if "timestamp" not in df.columns:
-                try:
-                    ts = pd.to_numeric(df.index, errors="coerce")
-                    if ts.notna().all():
-                        if ts.max() < 10**12:  # giây -> đổi sang ms
-                            ts = ts * 1000.0
-                        df = df.copy()
-                        df["timestamp"] = ts
-                except Exception:
-                    pass
+                res = _first_touch_result(df_after, side, entry, sl, tp)
     
-            # lọc các nến từ lúc có tín hiệu trở đi
-            if "timestamp" in df.columns:
-                df_after = df[df["timestamp"] >= ts_cut].copy()
-            else:
-                # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
-                df_after = df.copy()
-    
-            # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
-            if len(df_after) > 700:
-                df_after = df_after.iloc[:700]
-    
-            res = _first_touch_result(df_after, side, entry, sl, tp)
-    
-        row = [
-            sym, side, entry, sl, tp,
-            trend_s, trend_m,
-            when_vn.strftime("%d/%m/%Y %H:%M"),
-            mode, res
-        ]
-        write_backtest_row(row)
-        written += 1
-        time.sleep(1)
-    except Exception as e:
-        logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
+            row = [
+                sym, side, entry, sl, tp,
+                trend_s, trend_m,
+                when_vn.strftime("%d/%m/%Y %H:%M"),
+                mode, res
+            ]
+            write_backtest_row(row)
+            written += 1
+            time.sleep(1)
+        except Exception as e:
+            logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
-logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
+    logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
 
 
 # ====== CẤU HÌNH ======
