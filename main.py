@@ -81,8 +81,8 @@ K_ATR_SL = 0.6   # tối thiểu SL = max(SL_MIN_PCT, 0.6*ATR/entry)
 K_ATR_TP = 1.2   # tối thiểu TP = max(TP_MIN_{RELAX|STRICT}, 1.2*ATR/entry)
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 # ===== CONFIG =====
-SL_MIN_PCT   = 0    # SL tối thiểu 0.7%
-TP_MIN_RELAX = 0    # TP tối thiểu 3% (RELAX)
+SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
+TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
 TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
 SL_MIN_PCT_BASE = SL_MIN_PCT
@@ -122,16 +122,16 @@ RELAX_CFG = {
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
     "RSI_LONG_MIN": 0,
-    "RSI_SHORT_MAX": 100,    # TĂNG là lỏng
+    "RSI_SHORT_MAX": 100,    # tăng là lỏng
     "RSI_1H_LONG_MIN": 0,
-    "RSI_1H_SHORT_MAX": 999,    # TĂNG là lỏng
+    "RSI_1H_SHORT_MAX": 100,    # tăng là lỏng
     "MACD_DIFF_LONG_MIN": -999,
     "MACD_DIFF_SHORT_MIN": -999,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
     "SR_NEAR_K_ATR": 999,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
-    "SR_NEAR_PCT":   9995, # 1.2% khoảng cách tuyệt đối (tuỳ)
+    "SR_NEAR_PCT":   999, # 1.2% khoảng cách tuyệt đối (tuỳ)
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -570,7 +570,7 @@ def _ema200_down(df, span=200, slope_look=5):
 
 def _clip01(x): return max(0.0, min(1.0, x))
 
-def score_signal(rr, adx, clv, dist_ema, volp, atr_pct):
+def score_signal(rr, adx, clv, dist_ema, volp):
     # Chuẩn hóa thô, bạn có thể tinh chỉnh:
     s_rr   = _clip01((rr-1.0)/1.5)          # RR 1→2.5
     s_adx  = _clip01((adx-15)/20)           # ADX 15→35
@@ -595,9 +595,6 @@ def detect_signal(df_15m: pd.DataFrame,
       nếu return_reason=True: (side, entry, sl, tp, ok, reason_str)
     """
     cfg = cfg or STRICT_CFG
-    price  = float(df_15m["close"].iloc[-1])
-    atr14  = float(_atr(df_15m, 14).iloc[-1])          # bạn đã dùng _atr ở nơi khác
-    atr_pct = atr14 / max(price, 1e-9)                 # ví dụ: 0.012 = 1.2%
     # ---- tham số từ preset (có default để không vỡ) ----
     vol_p        = cfg.get("VOLUME_PERCENTILE", 70)
     adx_min      = cfg.get("ADX_MIN_15M", 20)
@@ -626,7 +623,6 @@ def detect_signal(df_15m: pd.DataFrame,
             return side, entry, sl, tp, ok, (", ".join(fail) if fail else "PASS")
         return side, entry, sl, tp, ok
 
-    # ---------- dữ liệu & chỉ báo cơ bản ----------
     # ---------- dữ liệu & chỉ báo cơ bản ----------
     if df_15m is None or len(df_15m) < 60:
         fail.append("DATA: thiếu 15m")
@@ -662,32 +658,14 @@ def detect_signal(df_15m: pd.DataFrame,
     latest = df.iloc[-1]
     price  = float(latest["close"])
 
-    # -------- volume percentile (robust) --------
-    N = 20  # hoặc 30, tuỳ bạn
-    vols_raw = df["volume"].iloc[-N:] if "volume" in df.columns else None
-    if vols_raw is None or len(vols_raw) < 10:
+    # ---------- volume percentile ----------
+    vols = df["volume"].iloc[-20:]
+    if len(vols) < 10:
         fail.append("DATA: thiếu volume 15m")
         return _ret(None, None, None, None, False)
-    # ép kiểu số + lọc NaN/Inf
-    vols = pd.to_numeric(vols_raw, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-    # đủ dữ liệu để tính không?
-    if len(vols) < 10:
-        # không đủ tin cậy -> bỏ qua filter volume thay vì fail
-        logging.debug("[VOL] thiếu dữ liệu sạch, skip volume filter")
-    else:
-        v_now = float(vols.iloc[-1])   # thay vì df["volume"].iloc[-1]
-        hist = vols.iloc[:-1] if len(vols) > 1 else pd.Series(dtype=float)    
-        if len(hist) >= 5:
-            v_thr = float(np.percentile(hist, vol_p))
-            if not np.isfinite(v_thr) or not np.isfinite(v_now):
-                logging.debug(f"[VOL] v_now/v_thr không hữu hạn, skip (v_now={v_now}, v_thr={v_thr})")
-            else:
-                logging.debug(f"[VOL] N={len(vols)}, v_now={v_now}, P{vol_p}={v_thr}")
-                if not (v_now >= v_thr):
-                    fail.append(f"VOLUME < P{vol_p}")
-        else:
-            logging.debug("[VOL] history < 5 mẫu, skip volume filter (N={len(vols)})")
-
+    v_now = float(vols.iloc[-1]); v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
+    if not (v_now >= v_thr):
+        fail.append(f"VOLUME < P{vol_p}")
 
     # ---------- choppy filter: ADX + BBWidth ----------
     adx = float(df["adx"].iloc[-1]); bbw = float(df["bb_width"].iloc[-1])
@@ -909,10 +887,10 @@ def detect_signal(df_15m: pd.DataFrame,
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
     else:
-        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
@@ -1016,8 +994,7 @@ def detect_signal(df_15m: pd.DataFrame,
     dist_ema = abs(float(last["close"]) - float(last.get("ema20", float(last["close"]))))
     volp     = vol_p if 'vol_p' in locals() else 60
     
-
-    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
+    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp)
     
     # Lưu thêm score vào tg_candidates
     tg_candidates.append((mode, symbol, side, entry, sl, tp, rating, sig_score))                  
