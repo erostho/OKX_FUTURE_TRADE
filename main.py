@@ -29,6 +29,8 @@ from datetime import datetime, timezone
 from datetime import datetime, timezone, timedelta
 from contextlib import contextmanager
 import sys, io, logging
+
+
 DEBUG_BACKTEST = True
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -1006,7 +1008,7 @@ def detect_signal(df_15m: pd.DataFrame,
     sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
     
     # Lưu thêm score vào tg_candidates               
-    return _ret(side, float(entry), float(sl), float(tp), True)
+    return _ret(side, float(entry), float(sl), float(tp), True, reason, sig_score)
 
 def analyze_trend_multi(symbol):
     tf_map = {
@@ -1234,26 +1236,54 @@ def run_bot():
             if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
                 df_15m = calculate_indicators(df_15m).dropna()
                 df_1h  = calculate_indicators(df_1h ).dropna()
-                side, entry, sl, tp, ok, reason = detect_signal(
+                side, entry, sl, tp, ok, reason, sig_score = detect_signal(
                     df_15m, df_1h, symbol,
                     cfg=RELAX_CFG, silent=True, context="LIVE-RELAX",
                     return_reason=True
                 )
-                if ok:
-                    # rating: dùng hàm gốc nếu có, else RELAX=2 sao
-                    if 'calculate_signal_rating' in globals():
+                if ok:                    
+                    # ---- trends (phục vụ rating) ----
+                    try:
+                        trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)
+                    except Exception:
+                        trend_s = "?"
+                    try:
+                        trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)
+                    except Exception:
+                        trend_m = "?"
+                    
+                    # ---- rating ----
+                    rating = 3
+                    try:
+                        # volume_ok nếu có v_now/v_thr; nếu không có thì coi như True để không crash
                         try:
-                            rating = int(calculate_signal_rating(side, "Tăng" if side=="LONG" else "Giảm",
-                                                                 "Tăng" if side=="LONG" else "Giảm", True))
+                            volume_ok = (v_now >= v_thr)
                         except Exception:
-                            rating = 2
-                    else:
-                        rating = 2
-
+                            volume_ok = True
+                    
+                        if 'calculate_signal_rating' in globals():
+                            rating = int(calculate_signal_rating(side, trend_s, trend_m, volume_ok))
+                        else:
+                            # fallback đơn giản
+                            if side == "LONG"  and trend_s.startswith("T") and trend_m.startswith("T"):
+                                rating = 5 if volume_ok else 4
+                            elif side == "SHORT" and trend_s.startswith("G") and trend_m.startswith("G"):
+                                rating = 5 if volume_ok else 4
+                            elif trend_s[:1] == trend_m[:1] and trend_s[:1] in ("T", "G"):
+                                rating = 4
+                            else:
+                                rating = 3
+                    except Exception:
+                        rating = 3
+                    
+                    # ---- bảo vệ sig_score ----
+                    if sig_score is None:
+                        sig_score = 0.0
+                    
+                    # ---- ghi ra sheet & lưu candidate ----
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                    side_with_stars = f"{side} {stars(rating)}"
-                    trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)   # Xu hướng ngắn (15m)
-                    trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)   # Xu hướng trung (1h)
+                    side_with_stars = f"{side}{' ⭐'*max(1, min(rating, 5))}"
+                    
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "RELAX"])
                     tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating, sig_score))
 
@@ -1512,6 +1542,14 @@ def write_backtest_row(row):
     time.sleep(1)
 
 
+def ts_to_str(ms):
+    """ms -> 'dd/MM/YYYY HH:MM' (UTC); trả '—' nếu None/lỗi."""
+    try:
+        if ms is None or int(ms) <= 0:
+            return "—"
+        return datetime.fromtimestamp(int(ms)/1000, tz=timezone.utc).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return "—"
 
 def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
     """Quy tắc: nến nào chạm SL/TP trước -> LOSS/WIN; hết cửa sổ mà chưa chạm -> OPEN."""
