@@ -665,6 +665,7 @@ def detect_signal(df_15m: pd.DataFrame,
         fail.append("DATA: thiếu volume 15m")
         return _ret(None, None, None, None, False)
     v_now = float(vols.iloc[-1]); v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
+    logging.info(f"[DEBUG] Volume hiện tại = {v_now}, Ngưỡng P{vol_p} = {v_thr}")                  
     if not (v_now >= v_thr):
         fail.append(f"VOLUME < P{vol_p}")
 
