@@ -1005,8 +1005,7 @@ def detect_signal(df_15m: pd.DataFrame,
     
     sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
     
-    # Lưu thêm score vào tg_candidates
-    tg_candidates.append((mode, symbol, side, entry, sl, tp, rating, sig_score))                  
+    # Lưu thêm score vào tg_candidates               
     return _ret(side, float(entry), float(sl), float(tp), True)
 
 def analyze_trend_multi(symbol):
@@ -1208,7 +1207,6 @@ def run_bot():
                                 rating = 4
                     except Exception:
                         rating = 3
-
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side}{'⭐'*max(1, min(rating, 5))}"
