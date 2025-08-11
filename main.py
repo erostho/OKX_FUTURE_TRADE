@@ -48,7 +48,7 @@ def log_drop(stage: str, symbol: str, reason: str, **kv):
     logger.info(f"DROP|{stage}|{symbol}|{reason} {extras}")
 
 def drop_return():
-    return None, None, None, None, False
+    return None, None, None, None, False, None
 
 
 # ========== CẤU HÌNH ==========
