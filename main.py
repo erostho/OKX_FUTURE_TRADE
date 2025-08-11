@@ -1168,7 +1168,7 @@ def run_bot():
             if isinstance(df_15m, pd.DataFrame) and isinstance(df_1h, pd.DataFrame):
                 df_15m = calculate_indicators(df_15m).dropna()
                 df_1h  = calculate_indicators(df_1h ).dropna()
-                side, entry, sl, tp, ok, reason = detect_signal(
+                side, entry, sl, tp, ok, reason, sig_score = detect_signal(
                     df_15m, df_1h, symbol,
                     cfg=STRICT_CFG, silent=True, context="LIVE-STRICT",
                     return_reason=True
