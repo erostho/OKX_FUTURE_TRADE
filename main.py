@@ -624,13 +624,13 @@ def detect_signal(df_15m: pd.DataFrame,
 
     def _ret(side, entry, sl, tp, ok):
         if return_reason:
-            return side, entry, sl, tp, ok, (", ".join(fail) if fail else "PASS")
-        return side, entry, sl, tp, ok
+            return side, entry, sl, tp, ok, (", ".join(fail) if fail else "PASS"), sig_score
+        return side, entry, sl, tp, ok, sig_score
 
     # ---------- dữ liệu & chỉ báo cơ bản ----------
     if df_15m is None or len(df_15m) < 60:
         fail.append("DATA: thiếu 15m")
-        return _ret(None, None, None, None, False)
+        return _ret(None, None, None, None, False, None)
     df = df_15m.copy()
 
     # đảm bảo các cột cần thiết (không phá code cũ)
@@ -721,11 +721,11 @@ def detect_signal(df_15m: pd.DataFrame,
         if mode == "STRICT":
             if not (ok_1h and ok_4h):
                 fail.append("REGIME: EMA200 1H/4H không đồng hướng")
-                return _ret(None, None, None, None, False)
+                return _ret(None, None, None, None, False, None)
         else:  # RELAX
             if not (ok_1h or ok_4h):
                 fail.append("REGIME: EMA200 thiếu xác nhận (RELAX)")
-                return _ret(None, None, None, None, False)
+                return _ret(None, None, None, None, False, None)
             
     # ===== XÁC NHẬN HƯỚNG & ĐỒNG PHA (STRICT=3/3, RELAX>=2/3) =====
     side = None
@@ -770,7 +770,7 @@ def detect_signal(df_15m: pd.DataFrame,
     
     # nếu đã có lỗi ở trên, trả sớm
     if fail:
-        return _ret(None, None, None, None, False)
+        return _ret(None, None, None, None, False, None)
 
 
     # ---------- ép vị trí near S/R theo hướng ----------
@@ -784,7 +784,7 @@ def detect_signal(df_15m: pd.DataFrame,
     near_res = abs(px - high_sr)/max(high_sr,1e-9) <= sr_near_pct
     if side == "LONG" and not near_sup:   fail.append("SR: không near support")
     if side == "SHORT" and not near_res:  fail.append("SR: không near resistance")
-    if fail: return _ret(None, None, None, None, False)
+    if fail: return _ret(None, None, None, None, False, None)
 
     # ===== EXTRA PRO FILTERS (veto nếu không đạt) =====
     try:
@@ -792,9 +792,9 @@ def detect_signal(df_15m: pd.DataFrame,
         osc = df["rsi"] if "rsi" in df.columns else (df["macd"] - df["macd_signal"] if "macd" in df.columns and "macd_signal" in df.columns else None)
         if osc is not None:
             if side == "LONG"  and is_bear_div(df["close"], osc, lb=30, win=3):
-                fail.append("DIVERGENCE (bear)");  return _ret(None, None, None, None, False)
+                fail.append("DIVERGENCE (bear)");  return _ret(None, None, None, None, False, None)
             if side == "SHORT" and is_bull_div(df["close"], osc, lb=30, win=3):
-                fail.append("DIVERGENCE (bull)");  return _ret(None, None, None, None, False)
+                fail.append("DIVERGENCE (bull)");  return _ret(None, None, None, None, False, None)
     
         # 2) Wick quality (tránh râu ngược quá lớn)
         last  = df.iloc[-1]
@@ -803,16 +803,16 @@ def detect_signal(df_15m: pd.DataFrame,
         upper = float(last["high"]) - max(float(last["close"]), float(last["open"]))
         lower = min(float(last["close"]), float(last["open"])) - float(last["low"])
         if side == "LONG"  and upper >= WICK_RATIO_LIMIT * rng:
-            fail.append("UPPER-WICK");  return _ret(None, None, None, None, False)
+            fail.append("UPPER-WICK");  return _ret(None, None, None, None, False, None)
         if side == "SHORT" and lower >= WICK_RATIO_LIMIT * rng:
-            fail.append("LOWER-WICK");  return _ret(None, None, None, None, False)
+            fail.append("LOWER-WICK");  return _ret(None, None, None, None, False, None)
     
         # 3) CLV (Close near extreme của nến tín hiệu)
         clv = (float(last["close"]) - float(last["low"])) / rng  # 0..1
         if side == "LONG"  and clv < 0.60:
-            fail.append("CLV<0.60");   return _ret(None, None, None, None, False)
+            fail.append("CLV<0.60");   return _ret(None, None, None, None, False, None)
         if side == "SHORT" and clv > 0.40:
-            fail.append("CLV>0.40");   return _ret(None, None, None, None, False)
+            fail.append("CLV>0.40");   return _ret(None, None, None, None, False, None)
     
         # 4) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
         atr_s   = _atr(df, n=14)
@@ -832,13 +832,13 @@ def detect_signal(df_15m: pd.DataFrame,
             if "high_sr" in locals() and high_sr is not None:
                 if abs(px - float(high_sr)) > tol_abs:
                     fail.append("SR: không near resistance")
-                    return _ret(None,None,None,None,False)
+                    return _ret(None,None,None,None,False, None)
         elif side == "SHORT":
             # cần gần HỖ TRỢ (low_sr)
             if "low_sr" in locals() and low_sr is not None:
                 if abs(px - float(low_sr)) > tol_abs:
                     fail.append("SR: không near support")
-                    return _ret(None,None,None,None,False)
+                    return _ret(None,None,None,None,False, None)
     except Exception as _e:
         # An toàn: nếu filter phụ lỗi thì bỏ qua (không làm hỏng luồng chính)
         logging.debug(f"[EXTRA-FILTER] skip due to error: {_e}")
@@ -847,21 +847,21 @@ def detect_signal(df_15m: pd.DataFrame,
     osc = df["rsi"] if "rsi" in df.columns else (df["macd"]-df["macd_signal"] if {"macd","macd_signal"}<=set(df.columns) else None)
     if osc is not None:
         if side=="LONG"  and is_bear_div(df["close"], osc, lb=30, win=3):
-            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False)
+            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False, None)
         if side=="SHORT" and is_bull_div(df["close"], osc, lb=30, win=3):
-            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False)     
+            fail.append("DIVERGENCE"); return _ret(None,None,None,None,False, None)     
     
     # ---------- Wick ration (râu nến xấu) ----------
     last=df.iloc[-1]; rng=max(float(last.high)-float(last.low),1e-9)
     upper=float(last.high)-max(float(last.close),float(last.open))
     lower=min(float(last.close),float(last.open))-float(last.low)
-    if side=="LONG"  and upper>=0.5*rng:  fail.append("UPPER-WICK");  return _ret(None,None,None,None,False)
-    if side=="SHORT" and lower>=0.5*rng:  fail.append("LOWER-WICK");  return _ret(None,None,None,None,False)
+    if side=="LONG"  and upper>=0.5*rng:  fail.append("UPPER-WICK");  return _ret(None,None,None,None,False, None)
+    if side=="SHORT" and lower>=0.5*rng:  fail.append("LOWER-WICK");  return _ret(None,None,None,None,False, None)
 
     # ---------- CLV (Close gần cực trị nến) ----------
     clv=(float(last.close)-float(last.low))/rng
-    if side=="LONG"  and clv<0.60: fail.append("CLV<0.60");  return _ret(None,None,None,None,False)
-    if side=="SHORT" and clv>0.40: fail.append("CLV>0.40");  return _ret(None,None,None,None,False)
+    if side=="LONG"  and clv<0.60: fail.append("CLV<0.60");  return _ret(None,None,None,None,False, None)
+    if side=="SHORT" and clv>0.40: fail.append("CLV>0.40");  return _ret(None,None,None,None,False, None)
 
     # ---------- Breakout phải có retest nhẹ (>= 1 nến trước đó) ----------
     require_retest = cfg.get("REQUIRE_RETEST", True)
@@ -878,25 +878,25 @@ def detect_signal(df_15m: pd.DataFrame,
             
     # ---------- Bar exhaustion (nến quá dài -> dễ hụt hơi) ----------
     if float(last.high)-float(last.low) > 1.8*float(_atr(df,14).iloc[-1]):
-        fail.append("EXHAUSTION-BAR"); return _ret(None,None,None,None,False)
+        fail.append("EXHAUSTION-BAR"); return _ret(None,None,None,None,False, None)
 
     # ---------- Bar- since-break (tránh vào trễ, chỉ ghi nhận cú break đầu) ----------
     pre=df.tail(10)[:-1]
     if side=="LONG"  and any(float(r.close)>brk_level for _,r in pre.iterrows()):
-        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False)
+        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False, None)
     if side=="SHORT" and any(float(r.close)<brk_level for _,r in pre.iterrows()):
-        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False)
+        fail.append("LATE-BREAK"); return _ret(None,None,None,None,False, None)
         
     # ---------- Away from mean (không đu quá xa EMA/VWAP) ----------
     ema20=df["ema20"].iloc[-1] if "ema20" in df.columns else None
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
-        if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False, None)
+        if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False, None)
     else:
-        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
-        if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False, None)
+        if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False, None)
                       
     # ---------- Entry/SL/TP/RR ----------
     if side == "LONG":
@@ -921,19 +921,19 @@ def detect_signal(df_15m: pd.DataFrame,
     sl_pct = abs(entry - sl) / max(entry, 1e-9)
     if sl_pct < sl_min_pct_dyn:
         fail.append(f"SL<{sl_min_pct_dyn*100:.2f}%")
-        return _ret(None, None, None, None, False)
+        return _ret(None, None, None, None, False, None)
     
     tp_pct = abs(tp - entry) / max(entry, 1e-9)
     if tp_pct < tp_min_pct_dyn:
         fail.append(f"TP<{tp_min_pct_dyn*100:.2f}%")
-        return _ret(None, None, None, None, False)
+        return _ret(None, None, None, None, False, None)
     
     rr_min = (STRICT_CFG if mode == "STRICT" else RELAX_CFG)["RR_MIN"]
     risk = max(abs(entry - sl), 1e-9)
     rr = abs(tp - entry) / risk
     if rr < rr_min:
         fail.append(f"RR {rr:.2f}<{rr_min}")
-        return _ret(None, None, None, None, False)
+        return _ret(None, None, None, None, False, None)
                       
     # ---------- news blackout ----------
     try:
@@ -941,7 +941,7 @@ def detect_signal(df_15m: pd.DataFrame,
             fail.append("NEWS blackout")
     except Exception:
         pass
-    if fail: return _ret(None, None, None, None, False)
+    if fail: return _ret(None, None, None, None, False, None)
 
     # ---------- anchored VWAP blocker ----------
     if use_vwap and len(df) > 55:
@@ -958,7 +958,7 @@ def detect_signal(df_15m: pd.DataFrame,
                 fail.append("VWAP chặn")
         except Exception:
             pass
-    if fail: return _ret(None, None, None, None, False)
+    if fail: return _ret(None, None, None, None, False, None)
 
     # ---------- ATR clearance (cản gần) ----------
     try:
@@ -967,7 +967,7 @@ def detect_signal(df_15m: pd.DataFrame,
             fail.append(f"ATR clearance {clr_ratio:.2f}<{atr_need}")
     except Exception:
         pass
-    if fail: return _ret(None, None, None, None, False)
+    if fail: return _ret(None, None, None, None, False, None)
 
     # ---------- Đồng pha BTC ----------
     try:
@@ -987,7 +987,7 @@ def detect_signal(df_15m: pd.DataFrame,
             if side == "SHORT" and chg >  0.01: fail.append("BTC +1%/45m")
     except Exception:
         pass
-    if fail: return _ret(None, None, None, None, False)
+    if fail: return _ret(None, None, None, None, False, None)
 
     # ---------- PASS ----------
     if not silent:
