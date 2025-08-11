@@ -627,6 +627,7 @@ def detect_signal(df_15m: pd.DataFrame,
         return side, entry, sl, tp, ok
 
     # ---------- dữ liệu & chỉ báo cơ bản ----------
+    # ---------- dữ liệu & chỉ báo cơ bản ----------
     if df_15m is None or len(df_15m) < 60:
         fail.append("DATA: thiếu 15m")
         return _ret(None, None, None, None, False)
