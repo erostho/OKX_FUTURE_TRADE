@@ -1641,12 +1641,28 @@ def backtest_from_watchlist():
     written = 0
 
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
+        # 1) thời điểm tín hiệu: VN -> UTC (OKX trả UTC)
+        dt_vn = None
         try:
-            # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
-            when_utc = when_utc.replace(tzinfo=pytz.utc)
-            when_vn = when_utc.astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))
-            ts_cut   = int(when_utc.timestamp() * 1000)   # ms
-    
+            if isinstance(when_vn, dt.datetime):
+                # nếu datetime nhưng chưa có tz, gán VN
+                if when_vn.tzinfo is None:
+                    dt_vn = when_vn.replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
+                else:
+                    dt_vn = when_vn.astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))
+            else:
+                # when_vn là string -> parse theo các format đã hỗ trợ
+                dt_vn = _parse_vn_time(str(when_vn))  # bạn đã có _parse_vn_time ở dưới
+        except Exception:
+            dt_vn = None
+        
+        if not dt_vn:
+            logging.warning(f"[BACKTEST] Bỏ {sym}: when_vn không hợp lệ: {when_vn}")
+            continue
+        
+        when_utc = dt_vn.astimezone(pytz.utc)
+        ts_cut   = int(when_utc.timestamp() * 1000)   # ms
+         
             # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
             inst_id = sym.upper().replace("/", "-")
             if not inst_id.endswith("-SWAP"):
