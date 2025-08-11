@@ -571,12 +571,12 @@ def _ema200_down(df, span=200, slope_look=5):
 
 def _clip01(x): return max(0.0, min(1.0, x))
 
-def score_signal(rr, adx, clv, dist_ema, volp):
+def score_signal(rr, adx, clv, dist_ema, volp, atr_pct):
     # Chuẩn hóa thô, bạn có thể tinh chỉnh:
     s_rr   = _clip01((rr-1.0)/1.5)          # RR 1→2.5
     s_adx  = _clip01((adx-15)/20)           # ADX 15→35
     s_clv  = clv if 0<=clv<=1 else 0.5      # đã tính CLV 0..1
-    s_dist = _clip01(1 - min(dist_ema/ (2*atr_pct+1e-9), 1))  # càng gần EMA/VWAP càng tốt
+    s_dist = _clip01(1 - min(dist_ema / (2*atr_pct + 1e-9), 1))  # càng gần EMA/VWAP càng tốt
     s_vol  = _clip01((volp-50)/40)          # percentile 50→90
     return 0.30*s_rr + 0.25*s_adx + 0.20*s_clv + 0.15*s_dist + 0.10*s_vol
 
@@ -988,14 +988,20 @@ def detect_signal(df_15m: pd.DataFrame,
     # ---------- PASS ----------
     if not silent:
         logging.info(f"✅ {symbol} VƯỢT QUA HẾT BỘ LỌC ({side})")
-        
+    # --- ATR% trên giá hiện tại (dùng để chuẩn hoá khoảng cách EMA/VWAP) ---
+    price  = float(df_15m["close"].iloc[-1])
+    atr14  = float(_atr(df_15m, 14).iloc[-1])          # bạn đã có _atr(df, n) ở chỗ khác
+    atr_pct = atr14 / max(price, 1e-9)                 # ví dụ: 0.012 = 1.2%
+    # an toàn: nếu NaN/inf thì gán mặc định
+    if not (0 < atr_pct < 1e3):
+        atr_pct = 0.01    
     # ---------- Tính score tín hiệu ----------
     adx_val  = float(df["adx"].iloc[-1]) if "adx" in df.columns else 20.0
     clv      = (float(last["close"])-float(last["low"])) / max(float(last["high"])-float(last["low"]),1e-9)
     dist_ema = abs(float(last["close"]) - float(last.get("ema20", float(last["close"]))))
     volp     = vol_p if 'vol_p' in locals() else 60
     
-    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp)
+    sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
     
     # Lưu thêm score vào tg_candidates
     tg_candidates.append((mode, symbol, side, entry, sl, tp, rating, sig_score))                  
