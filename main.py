@@ -1012,7 +1012,7 @@ def detect_signal(df_15m: pd.DataFrame,
     sig_score = score_signal(rr, adx_val, clv, dist_ema, volp, atr_pct)
     
     # Lưu thêm score vào tg_candidates               
-    return _ret(side, float(entry), float(sl), float(tp), True, reason, sig_score)
+    return _ret(side, float(entry), float(sl), float(tp), True)
 
 def analyze_trend_multi(symbol):
     tf_map = {
