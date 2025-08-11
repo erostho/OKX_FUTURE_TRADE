@@ -1172,23 +1172,47 @@ def run_bot():
                     cfg=STRICT_CFG, silent=True, context="LIVE-STRICT",
                     return_reason=True
                 )
+  
                 if ok:
                     strict_hits.add(symbol)
-                    # rating: dùng hàm gốc nếu có, else mặc định STRICT=3 sao
-                    if 'calculate_signal_rating' in globals():
-                        try:
-                            rating = int(calculate_signal_rating(side, "Tăng" if side=="LONG" else "Giảm",
-                                                                 "Tăng" if side=="LONG" else "Giảm", True))
-                        except Exception:
+                
+                    # ---- trends (dùng cho rating) ----
+                    try:
+                        trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)   # 'Tăng' / 'Giảm' / 'Trung lập'
+                    except Exception:
+                        trend_s = "?"
+                
+                    try:
+                        trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)
+                    except Exception:
+                        trend_m = "?"
+                
+                    # ---- volume_ok lấy từ filter volume ở trên ----
+                    volume_ok = True
+                    try:
+                        volume_ok = (v_now >= v_thr)
+                    except NameError:
+                        volume_ok = True
+                
+                    # ---- rating ----
+                    try:
+                        if 'calculate_signal_rating' in globals():
+                            rating = int(calculate_signal_rating(side, trend_s, trend_m, volume_ok))
+                        else:
                             rating = 3
-                    else:
+                            if side == "LONG" and trend_s.startswith("Tăng") and trend_m.startswith("Tăng"):
+                                rating = 5 if volume_ok else 4
+                            elif side == "SHORT" and trend_s.startswith("Giảm") and trend_m.startswith("Giảm"):
+                                rating = 5 if volume_ok else 4
+                            elif (trend_s[:1] == trend_m[:1]) and trend_s[:1] in ("T", "G"):
+                                rating = 4
+                    except Exception:
                         rating = 3
 
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
-                    side_with_stars = f"{side} {stars(rating)}"
-                    trend_s = trend_ema_adx(df_15m, ema_period=50, adx_th=20)   # Xu hướng ngắn (15m)
-                    trend_m = trend_ema_adx(df_1h, ema_period=100, adx_th=20)   # Xu hướng trung (1h)
+                    side_with_stars = f"{side}{'⭐'*max(1, min(rating, 5))}"
+                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "STRICT" or "RELAX"])
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "STRICT"])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating, sig_score))
 
