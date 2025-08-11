@@ -797,9 +797,9 @@ def detect_signal(df_15m: pd.DataFrame,
         body  = abs(float(last["close"]) - float(last["open"]))
         upper = float(last["high"]) - max(float(last["close"]), float(last["open"]))
         lower = min(float(last["close"]), float(last["open"])) - float(last["low"])
-        if side == "LONG"  and upper >= 0.5 * rng:
+        if side == "LONG"  and upper >= 0.8 * rng:
             fail.append("UPPER-WICK");  return _ret(None, None, None, None, False)
-        if side == "SHORT" and lower >= 0.5 * rng:
+        if side == "SHORT" and lower >= 0.8 * rng:
             fail.append("LOWER-WICK");  return _ret(None, None, None, None, False)
     
         # 3) CLV (Close near extreme của nến tín hiệu)
