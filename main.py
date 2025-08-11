@@ -33,10 +33,10 @@ import sys, io, logging
 
 DEBUG_BACKTEST = True
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOG_NAME = "SIGNAL"
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
 logger = logging.getLogger(LOG_NAME)
 
 def log_pass(stage: str, symbol: str, **kv):
@@ -85,7 +85,7 @@ K_ATR_TP = 1.2   # tối thiểu TP = max(TP_MIN_{RELAX|STRICT}, 1.2*ATR/entry)
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 # ===== CONFIG =====
 SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
-TP_MIN_RELAX = 0     # TP tối thiểu 3% (RELAX)
+TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
 TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
 SL_MIN_PCT_BASE = SL_MIN_PCT
@@ -116,26 +116,26 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 0,   # top 90%
-    "ADX_MIN_15M": 0,
-    "BBW_MIN": 0,
-    "RR_MIN": 0,
+    "VOLUME_PERCENTILE": 60,   # top 40%
+    "ADX_MIN_15M": 12,
+    "BBW_MIN": 0.05,
+    "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
-    "ATR_CLEARANCE_MIN": 0, # >= 0.7ART
+    "ATR_CLEARANCE_MIN": 0.6, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
-    "RSI_LONG_MIN": 0,
-    "RSI_SHORT_MAX": 100,    # tăng là lỏng
-    "RSI_1H_LONG_MIN": 0,
-    "RSI_1H_SHORT_MAX": 100,    # tăng là lỏng
-    "MACD_DIFF_LONG_MIN": -999,
-    "MACD_DIFF_SHORT_MIN": -999,
+    "RSI_LONG_MIN": 45,
+    "RSI_SHORT_MAX": 55,    # tăng là lỏng
+    "RSI_1H_LONG_MIN": 45,
+    "RSI_1H_SHORT_MAX": 55,    # tăng là lỏng
+    "MACD_DIFF_LONG_MIN": 0.0003,
+    "MACD_DIFF_SHORT_MIN": -0.0003,
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 999,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
-    "SR_NEAR_PCT":   999, # 1.2% khoảng cách tuyệt đối (tuỳ)
+    "SR_NEAR_K_ATR": 0.8,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_PCT":   1.2, # 1.2% khoảng cách tuyệt đối (tuỳ)
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -902,10 +902,10 @@ def detect_signal(df_15m: pd.DataFrame,
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
     else:
-        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
