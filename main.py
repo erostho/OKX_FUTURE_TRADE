@@ -1663,57 +1663,57 @@ def backtest_from_watchlist():
         when_utc = dt_vn.astimezone(pytz.utc)
         ts_cut   = int(when_utc.timestamp() * 1000)   # ms
          
-            # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
-            inst_id = sym.upper().replace("/", "-")
-            if not inst_id.endswith("-SWAP"):
-                inst_id += "-SWAP"
+        # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
+        inst_id = sym.upper().replace("/", "-")
+        if not inst_id.endswith("-SWAP"):
+            inst_id += "-SWAP"
     
-            # 3) lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
-            tf = "15m"
-            df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
+        # 3) lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
+        tf = "15m"
+        df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
     
-            if df is None or len(df) == 0:
-                logging.debug(f"[BT] {sym} -> OPEN (no candles)")
-                res = "OPEN"
+        if df is None or len(df) == 0:
+            logging.debug(f"[BT] {sym} -> OPEN (no candles)")
+            res = "OPEN"
+        else:
+            # đảm bảo có cột timestamp (ms)
+            if "timestamp" not in df.columns:
+                try:
+                    ts = pd.to_numeric(df.index, errors="coerce")
+                    if ts.notna().all():
+                        if ts.max() < 10**12:  # giây -> đổi sang ms
+                            ts = ts * 1000.0
+                        df = df.copy()
+                        df["timestamp"] = ts
+                except Exception:
+                    pass
+    
+            # lọc các nến từ lúc có tín hiệu trở đi
+            if "timestamp" in df.columns:
+                df_after = df[df["timestamp"] >= ts_cut].copy()
             else:
-                # đảm bảo có cột timestamp (ms)
-                if "timestamp" not in df.columns:
-                    try:
-                        ts = pd.to_numeric(df.index, errors="coerce")
-                        if ts.notna().all():
-                            if ts.max() < 10**12:  # giây -> đổi sang ms
-                                ts = ts * 1000.0
-                            df = df.copy()
-                            df["timestamp"] = ts
-                    except Exception:
-                        pass
+                # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
+                df_after = df.copy()
     
-                # lọc các nến từ lúc có tín hiệu trở đi
-                if "timestamp" in df.columns:
-                    df_after = df[df["timestamp"] >= ts_cut].copy()
-                else:
-                    # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
-                    df_after = df.copy()
+            # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
+            if len(df_after) > 700:
+                df_after = df_after.iloc[:700]
     
-                # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
-                if len(df_after) > 700:
-                    df_after = df_after.iloc[:700]
+            res = _first_touch_result(df_after, side, entry, sl, tp)
     
-                res = _first_touch_result(df_after, side, entry, sl, tp)
-    
-            row = [
-                sym, side, entry, sl, tp,
-                trend_s, trend_m,
-                when_vn.strftime("%d/%m/%Y %H:%M"),
-                mode, res
-            ]
-            write_backtest_row(row)
-            written += 1
-            time.sleep(1)
-        except Exception as e:
-            logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
+        row = [
+            sym, side, entry, sl, tp,
+            trend_s, trend_m,
+            when_vn.strftime("%d/%m/%Y %H:%M"),
+            mode, res
+        ]
+        write_backtest_row(row)
+        written += 1
+        time.sleep(1)
+    except Exception as e:
+        logging.warning(f"[BACKTEST] Lỗi với {sym}: {e}")
 
-    logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
+logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
 
 
 # ====== CẤU HÌNH ======
