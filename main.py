@@ -27,7 +27,8 @@ from datetime import datetime, timedelta
 from datetime import timezone
 from datetime import datetime, timezone
 from datetime import datetime, timezone, timedelta
-
+from contextlib import contextmanager
+import sys, io, logging
 DEBUG_BACKTEST = True
 logger = logging.getLogger()
 logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
@@ -136,8 +137,7 @@ RELAX_CFG = {
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
-from contextlib import contextmanager
-import sys, io, logging
+
 _logged_once = {}
 def log_once(mode, symbol, msg, level="info"):
     key = (mode, symbol)
@@ -596,6 +596,7 @@ def detect_signal(df_15m: pd.DataFrame,
       nếu return_reason=True: (side, entry, sl, tp, ok, reason_str)
     """
     cfg = cfg or STRICT_CFG
+    tg_candidates = []
     # ---- tham số từ preset (có default để không vỡ) ----
     vol_p        = cfg.get("VOLUME_PERCENTILE", 70)
     adx_min      = cfg.get("ADX_MIN_15M", 20)
