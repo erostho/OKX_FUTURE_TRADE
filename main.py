@@ -88,6 +88,7 @@ TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
 SL_MIN_PCT_BASE = SL_MIN_PCT
 TP_MIN_RELAX_BASE = TP_MIN_RELAX
 TP_MIN_STRICT_BASE = TP_MIN_STRICT
+WICK_RATIO_LIMIT = 0.7  # Ngưỡng % chiều dài nến râu, TB 0.5
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -797,9 +798,9 @@ def detect_signal(df_15m: pd.DataFrame,
         body  = abs(float(last["close"]) - float(last["open"]))
         upper = float(last["high"]) - max(float(last["close"]), float(last["open"]))
         lower = min(float(last["close"]), float(last["open"])) - float(last["low"])
-        if side == "LONG"  and upper >= 0.8 * rng:
+        if side == "LONG"  and upper >= WICK_RATIO_LIMIT * rng:
             fail.append("UPPER-WICK");  return _ret(None, None, None, None, False)
-        if side == "SHORT" and lower >= 0.8 * rng:
+        if side == "SHORT" and lower >= WICK_RATIO_LIMIT * rng:
             fail.append("LOWER-WICK");  return _ret(None, None, None, None, False)
     
         # 3) CLV (Close near extreme của nến tín hiệu)
@@ -887,10 +888,10 @@ def detect_signal(df_15m: pd.DataFrame,
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
     else:
-        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>2.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
