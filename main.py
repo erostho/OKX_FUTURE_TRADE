@@ -671,10 +671,16 @@ def detect_signal(df_15m: pd.DataFrame,
     if len(vols) < 10:
         fail.append("DATA: thiếu volume 15m")
         return _ret(None, None, None, None, False)
-    v_now = float(vols.iloc[-1]); v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
-    logging.info(f"[DEBUG] Volume hiện tại = {v_now}, Ngưỡng P{vol_p} = {v_thr}")                  
+    
+    v_now = float(vols.iloc[-1])
+    v_thr = float(np.percentile(vols.iloc[:-1], vol_p))
+    
+    # LOG chi tiết ở mức INFO
+    logging.info(f"[VOL] {symbol}: v_now={v_now:.0f}, v_thr(P{vol_p})={v_thr:.0f}")
+    
     if not (v_now >= v_thr):
-        fail.append(f"VOLUME < P{vol_p}")
+        # đưa số vào reason để hiện ngay ở log INFO của bạn
+        fail.append(f"VOLUME < P{vol_p} (v_now={v_now:.0f} < {v_thr:.0f})")
 
     # ---------- choppy filter: ADX + BBWidth ----------
     adx = float(df["adx"].iloc[-1]); bbw = float(df["bb_width"].iloc[-1])
@@ -1637,7 +1643,8 @@ def backtest_from_watchlist():
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
         try:
             # 1) thời điểm tín hiệu (VN) -> UTC (OKX trả UTC)
-            when_utc = when_vn.astimezone(pytz.utc)
+            when_utc = when_utc.replace(tzinfo=pytz.utc)
+            when_vn = when_utc.astimezone(pytz.timezone("Asia/Ho_Chi_Minh"))
             ts_cut   = int(when_utc.timestamp() * 1000)   # ms
     
             # 2) chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
