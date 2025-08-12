@@ -288,6 +288,28 @@ def rate_signal_strength(entry, sl, tp, short_trend, mid_trend):
         strength += 1
     return "⭐️" * min(strength, 5)
 
+def _bt_row_key(coin: str, side: str, when_vn: str, mode: str) -> str:
+    # Khóa duy nhất cho 1 tín hiệu backtest
+    return f"{coin.strip()}|{side.strip()}|{when_vn.strip()}|{mode.strip()}"
+
+def load_existing_backtest_keys() -> set:
+    """
+    Đọc sheet BACKTEST_RESULT và trả về set các key đã tồn tại
+    Cột: 0=Coin, 1=Side, 7=Ngày(VN), 8=Mode
+    """
+    try:
+        rows = read_sheet_values("BACKTEST_RESULT") or []   # dùng hàm đọc sheet sẵn có của bạn
+    except Exception:
+        rows = []
+    keys = set()
+    for r in rows[1:]:  # bỏ header
+        if len(r) >= 9:
+            coin  = str(r[0])
+            side  = str(r[1])
+            when_ = str(r[7])
+            mode  = str(r[8])
+            keys.add(_bt_row_key(coin, side, when_, mode))
+    return keys
 
 def ts_to_str(ms_or_s):
     try:
@@ -1642,13 +1664,26 @@ def backtest_from_watchlist():
     if not items:
         logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
         return
-
+    # Đọc sheet BACKTEST_RESULT để lấy khóa đã có
+    existing_keys = set()
+    rows_bt = read_backtest_sheet("BACKTEST_RESULT")  # hàm đọc sheet kết quả backtest
+    for r in rows_bt:
+        try:
+            key = f"{r[0]}|{r[1]}|{float(r[2]):.8f}|{r[7]}"
+            existing_keys.add(key)
+        except:
+            continue
+    
+    seen_in_run = set()
     tf = "15m"
     max_after = 700
     written = 0
 
     for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
-
+    key = f"{sym}|{side}|{float(entry):.8f}|{when_vn}"
+    if key in existing_keys or key in seen_in_run:
+        logging.debug(f"[BACKTEST] Bỏ {key} (trùng).")
+        continue
         dt_vn = None
         # 1) Thời điểm tín hiệu VN -> UTC (OKX trả UTC)
         try:
@@ -1704,6 +1739,7 @@ def backtest_from_watchlist():
             mode, res
         ]
         write_backtest_row(row)
+        seen_in_run.add(key)
         written += 1
         time.sleep(1)
     #
