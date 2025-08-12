@@ -1669,7 +1669,8 @@ def backtest_from_watchlist():
     rows_bt = read_watchlist_from_sheet("BACKTEST_RESULT")  # hàm đọc sheet kết quả backtest
     for r in rows_bt:
         try:
-            key = f"{r[0]}|{r[1]}|{float(r[2]):.8f}|{r[7]}"
+            side = str(r[1]).split()[0].upper()  # bỏ ⭐
+            key = f"{r[0].upper()}|{side}|{float(r[2]):.8f}|{float(r[3]):.8f}|{float(r[4]):.8f}|{str(r[7]).strip()}|{r[8].upper()}"
             existing_keys.add(key)
         except:
             continue
