@@ -1700,7 +1700,7 @@ def backtest_from_watchlist():
         written += 1
         time.sleep(1)
     #
-logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
+    logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
 
 
 # ====== CẤU HÌNH ======
