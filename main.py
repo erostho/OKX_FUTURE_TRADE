@@ -1660,6 +1660,15 @@ def backtest_from_watchlist():
     - chỉ kiểm tra nến có timestamp >= thời điểm tín hiệu
     - kết quả: WIN/LOSS/OPEN theo rule chạm SL/TP cái nào trước
     """
+    def make_key(row):
+        sym = row[0].strip().upper()
+        side = str(row[1]).split()[0].upper()  # bỏ ⭐
+        entry = f"{float(row[2]):.8f}"
+        sl = f"{float(row[3]):.8f}"
+        tp = f"{float(row[4]):.8f}"
+        date_str = str(row[7]).strip()
+        mode = row[8].strip().upper() if len(row) > 8 else ""
+        return f"{sym}|{side}|{entry}|{sl}|{tp}|{date_str}|{mode}"
     items = read_watchlist_from_sheet("THEO DÕI")
     if not items:
         logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
@@ -1676,6 +1685,13 @@ def backtest_from_watchlist():
             continue
     
     seen_in_run = set()
+    for r in items:  # items = read_watchlist_from_sheet("THEO DÕI")
+        if len(r) < 8:
+            continue
+        if make_key(r) in existing_keys:
+            continue
+        # ... code backtest ...
+    
     tf = "15m"
     max_after = 700
     written = 0
