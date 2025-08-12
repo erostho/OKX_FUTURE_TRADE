@@ -1666,7 +1666,7 @@ def backtest_from_watchlist():
         return
     # Đọc sheet BACKTEST_RESULT để lấy khóa đã có
     existing_keys = set()
-    rows_bt = read_backtest_sheet("BACKTEST_RESULT")  # hàm đọc sheet kết quả backtest
+    rows_bt = read_watchlist_from_sheet("BACKTEST_RESULT")  # hàm đọc sheet kết quả backtest
     for r in rows_bt:
         try:
             key = f"{r[0]}|{r[1]}|{float(r[2]):.8f}|{r[7]}"
