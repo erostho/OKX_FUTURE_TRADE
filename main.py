@@ -92,6 +92,7 @@ SL_MIN_PCT_BASE = SL_MIN_PCT
 TP_MIN_RELAX_BASE = TP_MIN_RELAX
 TP_MIN_STRICT_BASE = TP_MIN_STRICT
 WICK_RATIO_LIMIT = 0.7  # Ngưỡng % chiều dài nến râu, TB 0.5
+
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
 
@@ -136,6 +137,9 @@ RELAX_CFG = {
     "REQ_EMA200_MULTI": False,
     "SR_NEAR_K_ATR": 0.8,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
     "SR_NEAR_PCT":   1.2, # 1.2% khoảng cách tuyệt đối (tuỳ)
+    "EARLY_ALERT": True,            # bật báo sớm
+    "EARLY_USE_CURRENT_BAR": True,  # dùng nến đang chạy (khỏi chờ đóng)
+    "EARLY_RATING_PENALTY": 1       # trừ 1 sao nếu là tín hiệu sớm
 }
 
 # log 1 dòng/coin/mode + tắt log tạm thời
@@ -663,9 +667,11 @@ def detect_signal(df_15m: pd.DataFrame,
         return dfx
 
     df = _ensure_cols(df).dropna()
-    latest = df.iloc[-1]
+    early   = bool(cfg.get("EARLY_ALERT", False))
+    use_cur = bool(cfg.get("EARLY_USE_CURRENT_BAR", False))
+    last_idx = -1 if (early and use_cur) else -2   # -1: nến đang chạy, -2: nến đã đóng
+    latest = df.iloc[last_idx]
     price  = float(latest["close"])
-
     # ---------- volume percentile ----------
     vols = df["volume"].iloc[-20:]
     if len(vols) < 10:
@@ -691,7 +697,7 @@ def detect_signal(df_15m: pd.DataFrame,
 
     # ngoại lệ ADX (RELAX): bắt buộc body >= k*ATR
     if adx < adx_min and allow_adx_ex:
-        last = df.iloc[-1]
+        last = df.iloc[last_idx]
         body = abs(last["close"] - last["open"])
         atr  = float(_atr(df).iloc[-1])
         if not (atr > 0 and body >= body_atr_k * atr):
@@ -807,7 +813,7 @@ def detect_signal(df_15m: pd.DataFrame,
                 fail.append("DIVERGENCE (bull)");  return _ret(None, None, None, None, False)
     
         # 2) Wick quality (tránh râu ngược quá lớn)
-        last  = df.iloc[-1]
+        last = df.iloc[last_idx]
         rng   = max(float(last["high"]) - float(last["low"]), 1e-9)
         body  = abs(float(last["close"]) - float(last["open"]))
         upper = float(last["high"]) - max(float(last["close"]), float(last["open"]))
@@ -1183,7 +1189,7 @@ def run_bot():
                     cfg=STRICT_CFG, silent=True, context="LIVE-STRICT",
                     return_reason=True
                 )
-  
+          
                 if ok:
                     strict_hits.add(symbol)
                 
@@ -1251,6 +1257,16 @@ def run_bot():
                     cfg=RELAX_CFG, silent=True, context="LIVE-RELAX",
                     return_reason=True
                 )
+            early_tag = " EARLY" if "[EARLY]" in str(reason) else ""
+            # build sao như cũ
+            side_with_stars = f"{side}{' ' + '⭐'*max(1, min(int(rating), 5))}{early_tag}"
+            
+            # Ghi Google Sheet
+            sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "RELAX"])
+            
+            # Gửi Telegram (lg/tg_candidates)
+            tg_candidates.append(("RELAX", symbol, f"{side}{early_tag}", entry, sl, tp, rating, sig_score))
+            
                 if ok:                    
                     # ---- trends (phục vụ rating) ----
                     try:
