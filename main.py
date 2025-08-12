@@ -1257,15 +1257,6 @@ def run_bot():
                     cfg=RELAX_CFG, silent=True, context="LIVE-RELAX",
                     return_reason=True
                 )
-            early_tag = " EARLY" if "[EARLY]" in str(reason) else ""
-            # build sao như cũ
-            side_with_stars = f"{side}{' ' + '⭐'*max(1, min(int(rating), 5))}{early_tag}"
-            
-            # Ghi Google Sheet
-            sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "RELAX"])
-            
-            # Gửi Telegram (lg/tg_candidates)
-            tg_candidates.append(("RELAX", symbol, f"{side}{early_tag}", entry, sl, tp, rating, sig_score))
             
                 if ok:                    
                     # ---- trends (phục vụ rating) ----
@@ -1308,10 +1299,10 @@ def run_bot():
                     
                     # ---- ghi ra sheet & lưu candidate ----
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
-                    side_with_stars = f"{side}{' ⭐'*max(1, min(rating, 5))}"
-                    
+                    early_tag = " EARLY" if "[EARLY]" in str(reason) else ""
+                    side_with_stars = f"{side}{early_tag} : ⭐{max(1, min(int(rating), 5))}"
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "RELAX"])
-                    tg_candidates.append(("RELAX", symbol, side, entry, sl, tp, rating, sig_score))
+                    tg_candidates.append(("RELAX", symbol, f"{side}{early_tag}", entry, sl, tp, rating, sig_score))
 
         if ok:
             log_once("RELAX", symbol, f"[RELAX] {symbol}: ✅ PASS", "info")
