@@ -1096,14 +1096,20 @@ def _to_user_entered(x):
         return s if s else "0"
     return str(x)
 
-def _parse_vn_time(s):
-    # hỗ trợ cả "dd/mm/YYYY HH:MM" và ISO
+
+def parse_vn_time(s: str):
+    """Parse time string; trả về datetime có tz (VN nếu thiếu)."""
+    if not s:
+        return None
     for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
         try:
-            return dt.datetime.strptime(s, fmt)
+            d = dt.datetime.strptime(s, fmt)
+            # nếu chuỗi không có timezone -> gán VN
+            if d.tzinfo is None:
+                d = pytz.timezone("Asia/Ho_Chi_Minh").localize(d)
+            return d
         except Exception:
             continue
-    # nếu không parse được, trả None -> sẽ giữ lại (an toàn)
     return None
 
 def prepend_with_retention(ws, new_rows, keep_days=3):
@@ -1424,14 +1430,6 @@ def _to_user_entered(x):
         return s if s else "0"
     return str(x)
 
-def _parse_vn_time(s: str):
-    # hỗ trợ "dd/MM/YYYY HH:MM"
-    for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return dt.datetime.strptime(s, fmt).replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
-        except Exception:
-            continue
-    return None
     
 def _okx_inst_id(sym: str) -> str:
     s = sym.upper().replace("/", "-")
