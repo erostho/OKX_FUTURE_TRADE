@@ -1769,6 +1769,7 @@ def backtest_from_watchlist():
                         pass
 
                 # cắt phần sau tín hiệu
+                logging.debug(f"[BACKTEST] {sym}: ts_cut={ts_cut}, tổng nến={len(df)}, min_ts={df['timestamp'].min()}, max_ts={df['timestamp'].max()}")
                 df_after = df[df["timestamp"] >= ts_cut] if "timestamp" in df.columns else df.copy()
                 if df_after is None or len(df_after) == 0:
                     logging.warning(f"[BACKTEST] Bỏ {sym}: không có nến sau {when_vn} (ts_cut={ts_cut})")
