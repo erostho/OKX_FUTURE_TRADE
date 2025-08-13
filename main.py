@@ -1399,7 +1399,7 @@ def clean_old_rows():
     try:
         data = sheet.get_all_values()
         headers = data[0]
-        rows = data[1:]
+        rows = data
         today = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
 
         new_rows = []
