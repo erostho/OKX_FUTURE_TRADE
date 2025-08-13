@@ -1700,7 +1700,7 @@ def backtest_from_watchlist():
     try:
         rows_bt = read_watchlist_from_sheet("BACKTEST_RESULT")  # dùng chung reader cho đồng nhất
         if rows_bt and len(rows_bt) > 1:
-            for r in rows_bt[1:]:
+            for r in rows_bt[0:]:
                 try:
                     k = _make_key(r)
                     existing_keys.add(k)
@@ -1784,9 +1784,9 @@ def backtest_from_watchlist():
                 when_vn.strftime("%d/%m/%Y %H:%M"),
                 mode, res
             ]
-            #write_backtest_row(row_out)      # ghi 1 dòng
+            write_backtest_row(row_out)      # ghi 1 dòng
             seen_in_run.add(key)
-            #written += 1
+            written += 1
             time.sleep(1)
 
         except Exception as e:
