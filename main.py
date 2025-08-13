@@ -84,14 +84,14 @@ K_ATR_SL = 0.6   # tối thiểu SL = max(SL_MIN_PCT, 0.6*ATR/entry)
 K_ATR_TP = 1.2   # tối thiểu TP = max(TP_MIN_{RELAX|STRICT}, 1.2*ATR/entry)
 COINS_LIMIT = 300  # Số coin phân tích mỗi lượt
 # ===== CONFIG =====
-SL_MIN_PCT   = 0.007    # SL tối thiểu 0.7%
-TP_MIN_RELAX = 0.03     # TP tối thiểu 3% (RELAX)
+SL_MIN_PCT   = 0.006    # SL tối thiểu 0.6%
+TP_MIN_RELAX = 0.02     # TP tối thiểu 2% (RELAX)
 TP_MIN_STRICT= 0.05     # TP tối thiểu 5% (STRICT)
 TOPN_PER_BATCH = 10   # tuỳ bạn, 5/10/15...
 SL_MIN_PCT_BASE = SL_MIN_PCT
 TP_MIN_RELAX_BASE = TP_MIN_RELAX
 TP_MIN_STRICT_BASE = TP_MIN_STRICT
-WICK_RATIO_LIMIT = 0.7  # Ngưỡng % chiều dài nến râu, TB 0.5
+WICK_RATIO_LIMIT = 0.8  # Ngưỡng % chiều dài nến râu, TB 0.5
 
 # ========================== NÂNG CẤP CHUYÊN SÂU ==========================
 # ====== PRESET & HELPERS ======
@@ -117,7 +117,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 50,   # top 50%
+    "VOLUME_PERCENTILE": 40,   # top 60%
     "ADX_MIN_15M": 12,
     "BBW_MIN": 0.05,
     "RR_MIN": 1.0,
