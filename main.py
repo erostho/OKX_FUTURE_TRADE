@@ -1536,7 +1536,7 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
     for idx, r in enumerate(rows[1:], start=2):  # bắt đầu từ dòng 2 (1-based)
         try:
             raw_when = (r[col["Ngày"]] or "").strip()
-            when_vn  = _parse_vn_time(raw_when)
+            when_vn  = parse_vn_time(raw_when)
             sym      = (r[col["Coin"]] or "").strip()
             side     = ((r[col["Tín hiệu"]] or "").strip().split()[0]).upper()   # lấy LONG/SHORT
             entry    = float(str(r[col["Entry"]]).replace(",", "")) if r[col["Entry"]] else None
@@ -1722,7 +1722,7 @@ def backtest_from_watchlist():
             mode = str(r[8]).strip().upper() if len(r) > 8 else "RELAX"
 
             # thời điểm tín hiệu (VN) -> dt
-            when_vn = _parse_vn_time(date_str)  # bạn đã có hàm này
+            when_vn = parse_vn_time(date_str)  # bạn đã có hàm này
             if not when_vn:
                 logging.warning(f"[BACKTEST] Bỏ {sym}: when_vn không hợp lệ: {date_str}")
                 continue
