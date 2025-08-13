@@ -1399,7 +1399,7 @@ def clean_old_rows():
     try:
         data = sheet.get_all_values()
         headers = data[0]
-        rows = data
+        rows = data[1:]
         today = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).date()
 
         new_rows = []
@@ -1546,7 +1546,7 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
 
     out = []
     parsed = 0
-    for idx, r in enumerate(rows[1:], start=2):  # bắt đầu từ dòng 2 (1-based)
+    for idx, r in enumerate(data, start=2):  # bắt đầu từ dòng 2 (1-based)
         try:
             raw_when = (r[col["Ngày"]] or "").strip()
             when_vn  = parse_vn_time(raw_when)
