@@ -1772,8 +1772,8 @@ def backtest_from_watchlist():
                 # cắt phần sau tín hiệu
                 df_after = df[df["timestamp"] >= ts_cut] if "timestamp" in df.columns else df.copy()
                 if df_after is None or len(df_after) == 0:
-                logging.warning(f"[BACKTEST] Bỏ {sym}: không có nến sau {when_vn} (ts_cut={ts_cut})")
-                continue
+                    logging.warning(f"[BACKTEST] Bỏ {sym}: không có nến sau {when_vn} (ts_cut={ts_cut})")
+                    continue
                 if len(df_after) > max_after:
                     df_after = df_after.iloc[:max_after]
                 res = _first_touch_result(df_after, side, entry, sl, tp)  # bạn đã có hàm này
