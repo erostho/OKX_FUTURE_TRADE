@@ -1742,13 +1742,17 @@ def backtest_from_watchlist():
 
             # đổi VN -> UTC ms (OKX cần UTC)
             when_utc = when_vn.astimezone(pytz.utc)
-            ts_cut = int(when_utc.timestamp() * 1000)
-
+            bar_sec  = 15 * 60
+            ts_floor = int((when_utc.timestamp() // bar_sec) * bar_sec)
+            ts_cut   = ts_floor * 1000  # ms
+            
             # chuẩn hoá inst_id OKX
             inst_id = _okx_inst_id(sym)  # bạn đã có hàm này (upper + thêm '-SWAP' nếu thiếu)
 
             # lấy OHLCV 15m sau thời điểm tín hiệu (không truyền 'since' để tránh thiếu nến)
-            df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
+            since_ms = ts_cut - (2 * 15 * 60 * 1000)  # lùi 30 phút
+            df = fetch_ohlcv_okx(inst_id, "15m", limit=1000, since=since_ms)            
+
             if df is None or len(df) == 0:
                 logging.debug(f"[BT] {sym} -> OPEN (no candles)")
                 res = "OPEN"
@@ -1767,9 +1771,11 @@ def backtest_from_watchlist():
 
                 # cắt phần sau tín hiệu
                 df_after = df[df["timestamp"] >= ts_cut] if "timestamp" in df.columns else df.copy()
+                if df_after is None or len(df_after) == 0:
+                logging.warning(f"[BACKTEST] Bỏ {sym}: không có nến sau {when_vn} (ts_cut={ts_cut})")
+                continue
                 if len(df_after) > max_after:
                     df_after = df_after.iloc[:max_after]
-
                 res = _first_touch_result(df_after, side, entry, sl, tp)  # bạn đã có hàm này
 
             row_out = [
