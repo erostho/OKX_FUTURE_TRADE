@@ -1546,7 +1546,7 @@ def read_watchlist_from_sheet(sheet_name="THEO DÕI"):
 
     out = []
     parsed = 0
-    for idx, r in enumerate(data, start=2):  # bắt đầu từ dòng 2 (1-based)
+    for idx, r in enumerate(rows[0:], start=2):  # bắt đầu từ dòng 2 (1-based)
         try:
             raw_when = (r[col["Ngày"]] or "").strip()
             when_vn  = parse_vn_time(raw_when)
