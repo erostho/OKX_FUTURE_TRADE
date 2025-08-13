@@ -1784,9 +1784,9 @@ def backtest_from_watchlist():
                 when_vn.strftime("%d/%m/%Y %H:%M"),
                 mode, res
             ]
-            write_backtest_row(row_out)      # ghi 1 dòng
+            #write_backtest_row(row_out)      # ghi 1 dòng
             seen_in_run.add(key)
-            written += 1
+            #written += 1
             time.sleep(1)
 
         except Exception as e:
