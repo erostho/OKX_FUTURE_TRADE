@@ -1653,7 +1653,7 @@ def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
             logging.debug(f"[BT] {sym or ''} {side} -> OPEN (no touch; gap calc failed)")
     return "OPEN"
 
-def backtest_from_watchlist():
+
 def backtest_from_watchlist():
     """
     Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
