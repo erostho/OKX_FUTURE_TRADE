@@ -1097,13 +1097,32 @@ def _to_user_entered(x):
     return str(x)
 
 
-def parse_vn_time(s: str):
-    # hỗ trợ "dd/MM/YYYY HH:MM"
-    for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
+VN_TZ = pytz.timezone("Asia/Ho_Chi_Minh")
+def parse_vn_time(s):
+    """Trả về datetime có tz; hỗ trợ nhiều format từ Google Sheets."""
+    if s is None or s == "":
+        return None
+    # Nếu đã là datetime
+    if isinstance(s, dt.datetime):
+        return s if s.tzinfo else VN_TZ.localize(s)
+
+    s = str(s).strip().replace("Z", "+00:00")  # ISO 'Z' -> +00:00
+
+    formats = [
+        "%d/%m/%Y %H:%M",          # 11/08/2025 16:10
+        "%Y-%m-%d %H:%M:%S%z",     # 2025-08-11 16:10:00+07:00  <-- QUAN TRỌNG
+        "%Y-%m-%dT%H:%M:%S%z",     # 2025-08-11T16:10:00+07:00
+        "%Y-%m-%d %H:%M:%S",       # 2025-08-11 16:10:00 (naive)
+        "%Y-%m-%dT%H:%M:%S",       # 2025-08-11T16:10:00 (naive)
+        "%Y-%m-%d %H:%M",          # 2025-08-11 16:10
+        "%Y-%m-%dT%H:%M",          # 2025-08-11T16:10
+    ]
+    for fmt in formats:
         try:
-            return dt.datetime.strptime(s, fmt).replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
+            d = dt.datetime.strptime(s, fmt)
+            return d if d.tzinfo else VN_TZ.localize(d)
         except Exception:
-            continue
+            pass
     return None
 
 def prepend_with_retention(ws, new_rows, keep_days=3):
