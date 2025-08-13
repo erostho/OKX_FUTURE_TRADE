@@ -1749,9 +1749,8 @@ def backtest_from_watchlist():
             # chuẩn hoá inst_id OKX
             inst_id = _okx_inst_id(sym)  # bạn đã có hàm này (upper + thêm '-SWAP' nếu thiếu)
 
-            # lấy OHLCV 15m sau thời điểm tín hiệu (không truyền 'since' để tránh thiếu nến)
-            since_ms = ts_cut - (2 * 15 * 60 * 1000)  # lùi 30 phút
-            df = fetch_ohlcv_okx(inst_id, "15m", limit=1000, since=since_ms)            
+            # lấy OHLCV 15m sau thời điểm tín hiệu 
+            df = fetch_ohlcv_okx(inst_id, "15m", limit=1000)            
 
             if df is None or len(df) == 0:
                 logging.debug(f"[BT] {sym} -> OPEN (no candles)")
