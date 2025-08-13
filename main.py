@@ -1098,16 +1098,10 @@ def _to_user_entered(x):
 
 
 def parse_vn_time(s: str):
-    """Parse time string; trả về datetime có tz (VN nếu thiếu)."""
-    if not s:
-        return None
+    # hỗ trợ "dd/MM/YYYY HH:MM"
     for fmt in ("%d/%m/%Y %H:%M", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%d %H:%M:%S"):
         try:
-            d = dt.datetime.strptime(s, fmt)
-            # nếu chuỗi không có timezone -> gán VN
-            if d.tzinfo is None:
-                d = pytz.timezone("Asia/Ho_Chi_Minh").localize(d)
-            return d
+            return dt.datetime.strptime(s, fmt).replace(tzinfo=pytz.timezone("Asia/Ho_Chi_Minh"))
         except Exception:
             continue
     return None
