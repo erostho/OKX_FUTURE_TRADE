@@ -33,10 +33,10 @@ import sys, io, logging
 
 DEBUG_BACKTEST = True
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)  # luôn bật DEBUG/INFO
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
+logger.setLevel(logging.INFO)  # luôn bật DEBUG/INFO
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 LOG_NAME = "SIGNAL"
-logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s")
 logger = logging.getLogger(LOG_NAME)
 
 def log_pass(stage: str, symbol: str, **kv):
