@@ -302,7 +302,7 @@ def load_existing_backtest_keys() -> set:
     except Exception:
         rows = []
     keys = set()
-    for r in rows[1:]:  # bỏ header
+    for r in rows[0:]:  # bỏ header
         if len(r) >= 9:
             coin  = str(r[0])
             side  = str(r[1])
