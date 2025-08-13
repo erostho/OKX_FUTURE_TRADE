@@ -1690,7 +1690,7 @@ def backtest_from_watchlist():
         logging.info("[BACKTEST] THEO DÕI rỗng (không có dòng dữ liệu dưới header).")
         return
     header = items[0]
-    rows   = items[1:]  # bỏ header
+    rows   = items[0]  # bỏ header
 
     logging.debug(f"[BACKTEST] Header: {header}")
     logging.info(f"[BACKTEST] 👍 Parse xong: {len(rows)} dòng hợp lệ / {len(items)-1} dữ liệu.")
