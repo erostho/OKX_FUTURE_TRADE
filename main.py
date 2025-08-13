@@ -117,7 +117,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 60,   # top 40%
+    "VOLUME_PERCENTILE": 50,   # top 50%
     "ADX_MIN_15M": 12,
     "BBW_MIN": 0.05,
     "RR_MIN": 1.0,
@@ -1654,72 +1654,90 @@ def _first_touch_result(df, side, entry, sl, tp, sym=None, when_ts=None):
     return "OPEN"
 
 def backtest_from_watchlist():
+def backtest_from_watchlist():
     """
     Đọc sheet THEO DÕI và ghi kết quả về BACKTEST_RESULT.
     - timeframe: 15m
     - chỉ kiểm tra nến có timestamp >= thời điểm tín hiệu
     - kết quả: WIN/LOSS/OPEN theo rule chạm SL/TP cái nào trước
     """
-    def make_key(row):
-        sym = row[0].strip().upper()
-        side = str(row[1]).split()[0].upper()  # bỏ ⭐
-        entry = f"{float(row[2]):.8f}"
-        sl = f"{float(row[3]):.8f}"
-        tp = f"{float(row[4]):.8f}"
+
+    # --- util nhỏ: key duy nhất cho 1 tín hiệu ---
+    def _make_key(row):
+        sym      = str(row[0]).strip().upper()
+        side     = str(row[1]).split()[0].upper()      # bỏ phần ⭐
+        entry    = f"{float(row[2]):.8f}"
+        sl       = f"{float(row[3]):.8f}"
+        tp       = f"{float(row[4]):.8f}"
         date_str = str(row[7]).strip()
-        mode = row[8].strip().upper() if len(row) > 8 else ""
+        mode     = str(row[8]).strip().upper() if len(row) > 8 else ""
         return f"{sym}|{side}|{entry}|{sl}|{tp}|{date_str}|{mode}"
-    items = read_watchlist_from_sheet("THEO DÕI")
-    if not items:
-        logging.info("[BACKTEST] Không có dữ liệu THEO DÕI để kiểm tra.")
+
+    # --- đọc THEO DÕI ---
+    items = read_watchlist_from_sheet("THEO DÕI")  # trả về list[list]
+    if not items or len(items) <= 1:
+        logging.info("[BACKTEST] THEO DÕI rỗng (không có dòng dữ liệu dưới header).")
         return
-    # Đọc sheet BACKTEST_RESULT để lấy khóa đã có
+    header = items[0]
+    rows   = items[1:]  # bỏ header
+
+    logging.debug(f"[BACKTEST] Header: {header}")
+    logging.info(f"[BACKTEST] 👍 Parse xong: {len(rows)} dòng hợp lệ / {len(items)-1} dữ liệu.")
+
+    # --- lấy các key đã có ở BACKTEST_RESULT ---
     existing_keys = set()
-    rows_bt = read_watchlist_from_sheet("BACKTEST_RESULT")  # hàm đọc sheet kết quả backtest
-    for r in rows_bt:
-        try:
-            side = str(r[1]).split()[0].upper()  # bỏ ⭐
-            key = f"{r[0].upper()}|{side}|{float(r[2]):.8f}|{float(r[3]):.8f}|{float(r[4]):.8f}|{str(r[7]).strip()}|{r[8].upper()}"
-            existing_keys.add(key)
-        except:
-            continue
-    
+    try:
+        rows_bt = read_watchlist_from_sheet("BACKTEST_RESULT")  # dùng chung reader cho đồng nhất
+        if rows_bt and len(rows_bt) > 1:
+            for r in rows_bt[1:]:
+                try:
+                    k = _make_key(r)
+                    existing_keys.add(k)
+                except Exception:
+                    continue
+        logging.info(f"[BACKTEST] Số key đang có (BACKTEST_RESULT): {len(existing_keys)}")
+    except Exception as e:
+        logging.warning(f"[BACKTEST] Không đọc được BACKTEST_RESULT: {e}")
+
+    # --- chạy backtest cho các dòng CHƯA có key ---
     seen_in_run = set()
-    for r in items:  # items = read_watchlist_from_sheet("THEO DÕI")
-        if len(r) < 8:
-            continue
-        if make_key(r) in existing_keys:
-            continue
-        # ... code backtest ...
-    
     tf = "15m"
     max_after = 700
     written = 0
 
-    for sym, side, entry, sl, tp, trend_s, trend_m, when_vn, mode in items:
-        key = f"{sym}|{side}|{float(entry):.8f}|{when_vn}"
-        if key in existing_keys or key in seen_in_run:
-            logging.debug(f"[BACKTEST] Bỏ {key} (trùng).")
-            continue
-            dt_vn = None
-            # 1) Thời điểm tín hiệu VN -> UTC (OKX trả UTC)
-            try:
-                # Đổi from VN (Asia/Ho_Chi_Minh) sang UTC
-                when_utc = when_vn.astimezone(pytz.utc)
-                ts_cut = int(when_utc.timestamp() * 1000)  # ms
-            except Exception as e:
-                logging.warning(f"[BACKTEST] Bỏ {sym}: when_vn không hợp lệ: {when_vn} | Lỗi: {e}")
+    for r in rows:
+        try:
+            if len(r) < 8:
                 continue
-            
-            # 2) Chuẩn hoá instId OKX (thêm -SWAP nếu thiếu)
-            inst_id = sym.upper().replace("/", "-")
-            if not inst_id.endswith("-SWAP"):
-                inst_id += "-SWAP"
-            
-            # 3) Lấy OHLCV 15m (limit=1000), KHÔNG truyền 'since'
-            tf = "15m"
+
+            key = _make_key(r)
+            if key in existing_keys or key in seen_in_run:
+                # đã có rồi -> bỏ qua
+                continue
+
+            sym  = str(r[0]).strip().upper()
+            side = str(r[1]).split()[0].upper()
+            entry = float(r[2]); sl = float(r[3]); tp = float(r[4])
+            trend_s = str(r[5]).strip()
+            trend_m = str(r[6]).strip()
+            date_str = str(r[7]).strip()
+            mode = str(r[8]).strip().upper() if len(r) > 8 else "RELAX"
+
+            # thời điểm tín hiệu (VN) -> dt
+            when_vn = _parse_vn_time(date_str)  # bạn đã có hàm này
+            if not when_vn:
+                logging.warning(f"[BACKTEST] Bỏ {sym}: when_vn không hợp lệ: {date_str}")
+                continue
+
+            # đổi VN -> UTC ms (OKX cần UTC)
+            when_utc = when_vn.astimezone(pytz.utc)
+            ts_cut = int(when_utc.timestamp() * 1000)
+
+            # chuẩn hoá inst_id OKX
+            inst_id = _okx_inst_id(sym)  # bạn đã có hàm này (upper + thêm '-SWAP' nếu thiếu)
+
+            # lấy OHLCV 15m sau thời điểm tín hiệu (không truyền 'since' để tránh thiếu nến)
             df = fetch_ohlcv_okx(inst_id, tf, limit=1000)
-        
             if df is None or len(df) == 0:
                 logging.debug(f"[BT] {sym} -> OPEN (no candles)")
                 res = "OPEN"
@@ -1729,37 +1747,34 @@ def backtest_from_watchlist():
                     try:
                         ts = pd.to_numeric(df.index, errors="coerce")
                         if ts.notna().all():
-                            if ts.max() < 10**12:  # giây -> đổi sang ms
+                            if ts.max() < 10**12:   # giây -> đổi sang ms
                                 ts = ts * 1000.0
                             df = df.copy()
                             df["timestamp"] = ts
                     except Exception:
                         pass
-        
-                # lọc các nến từ lúc có tín hiệu trở đi
-                if "timestamp" in df.columns:
-                    df_after = df[df["timestamp"] >= ts_cut].copy()
-                else:
-                    # fallback rất hiếm khi cần – không có timestamp thì đành giữ nguyên
-                    df_after = df.copy()
-        
-                # giới hạn tối đa ~700 nến sau tín hiệu (đỡ tốn log/ghi sheet)
-                if len(df_after) > 700:
-                    df_after = df_after.iloc[:700]
-        
-                res = _first_touch_result(df_after, side, entry, sl, tp)
-        
-            row = [
+
+                # cắt phần sau tín hiệu
+                df_after = df[df["timestamp"] >= ts_cut] if "timestamp" in df.columns else df.copy()
+                if len(df_after) > max_after:
+                    df_after = df_after.iloc[:max_after]
+
+                res = _first_touch_result(df_after, side, entry, sl, tp)  # bạn đã có hàm này
+
+            row_out = [
                 sym, side, entry, sl, tp,
                 trend_s, trend_m,
                 when_vn.strftime("%d/%m/%Y %H:%M"),
                 mode, res
             ]
-            write_backtest_row(row)
+            write_backtest_row(row_out)      # ghi 1 dòng
             seen_in_run.add(key)
             written += 1
             time.sleep(1)
-    #
+
+        except Exception as e:
+            logging.warning(f"[BACKTEST] Lỗi với {r}: {e}")
+
     logging.info(f"[BACKTEST] Ghi {written} dòng vào sheet BACKTEST_RESULT xong.")
 
 
