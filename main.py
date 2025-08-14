@@ -117,7 +117,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 40,   # top 60%
+    "VOLUME_PERCENTILE": 30,   # top 70%
     "ADX_MIN_15M": 12,
     "BBW_MIN": 0.048,
     "RR_MIN": 1.0,
@@ -135,7 +135,7 @@ RELAX_CFG = {
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 0.8,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_K_ATR": 1.0,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
     "SR_NEAR_PCT":   1.2, # 1.2% khoảng cách tuyệt đối (tuỳ)
     "EARLY_ALERT": True,            # bật báo sớm
     "EARLY_USE_CURRENT_BAR": True,  # dùng nến đang chạy (khỏi chờ đóng)
