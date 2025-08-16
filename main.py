@@ -117,8 +117,8 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 30,   # top 70%
-    "ADX_MIN_15M": 12,
+    "VOLUME_PERCENTILE": 40,   # top 60%
+    "ADX_MIN_15M": 18,
     "BBW_MIN": 0.048,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
@@ -135,7 +135,7 @@ RELAX_CFG = {
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 1.0,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_K_ATR": 0.8,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
     "SR_NEAR_PCT":   1.2, # 1.2% khoảng cách tuyệt đối (tuỳ)
     "EARLY_ALERT": True,            # bật báo sớm
     "EARLY_USE_CURRENT_BAR": True,  # dùng nến đang chạy (khỏi chờ đóng)
@@ -653,6 +653,12 @@ def detect_signal(df_15m: pd.DataFrame,
     def _ret(side, entry, sl, tp, ok):
         if return_reason:
             reason = ", ".join(fail) if fail else "PASS"
+            # Add EARLY tag for RELAX mode using current bar so downstream can show badge
+            try:
+                if cfg.get("TAG", "RELAX") == "RELAX" and cfg.get("EARLY_ALERT", False) and cfg.get("EARLY_USE_CURRENT_BAR", False):
+                    reason = "[EARLY] " + str(reason)
+            except Exception:
+                pass
             return side, entry, sl, tp, ok, reason, sig_score
         else:
             return side, entry, sl, tp, ok
@@ -1269,7 +1275,6 @@ def run_bot():
                     now_vn = dt.datetime.now(pytz.timezone("Asia/Ho_Chi_Minh")).strftime("%d/%m/%Y %H:%M")
                     # giữ ĐÚNG format prepend_to_sheet gốc của bạn:
                     side_with_stars = f"{side}{'⭐'*max(1, min(rating, 5))}"
-                    sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "STRICT" or "RELAX"])
                     sheet_rows.append([symbol, side_with_stars, entry, sl, tp, trend_s, trend_m, now_vn, "STRICT"])
                     tg_candidates.append(("STRICT", symbol, side, entry, sl, tp, rating, sig_score))
 
@@ -1381,10 +1386,13 @@ def run_bot():
             # Gộp message để gửi
             msgs = []
             for mode, sym, side, entry, sl, tp, rating, sc in pick:
+                # Build message with size advice by mode
+                size_advice = "Early 0.5× (scout)" if mode == "RELAX" else "ADD-ON/Full 1.0×"
                 msgs.append(
                     f"[{mode}] | {sym} | {side}\n"
                     f"Entry: {entry}\nSL: {sl}\nTP: {tp}\n"
-                    f"⭐ {rating}/5 | Score: {sc:.2f}"
+                    f"⭐ {rating}/5 | Score: {sc:.2f}\n"
+                    f"Khuyến nghị: {size_advice}"
                 )
     
             if msgs and 'send_telegram_message' in globals():
