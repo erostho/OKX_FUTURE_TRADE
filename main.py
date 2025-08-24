@@ -702,6 +702,11 @@ def detect_signal(df_15m: pd.DataFrame,
     idx_use = -1 if (early and use_cur) else -2
     dfx = df_1h.copy()
     dfx = _ensure_cols(dfx).dropna()
+    side = None
+    entry = sl = tp = None
+    oke = False
+    reason = ""
+    sig_score = 0.0
     # lấy giá trị chỉ báo ở đúng nến dùng
     rsi6  = float(dfx["rsi6"].iloc[idx_use])   if "rsi6"  in dfx.columns  else None
     rsi12 = float(dfx["rsi12"].iloc[idx_use])  if "rsi12" in dfx.columns  else None
@@ -753,6 +758,10 @@ def detect_signal(df_15m: pd.DataFrame,
         return (len(reasons) == 0, "PASS" if not reasons else ", ".join(reasons))
     
     # ví dụ dùng:
+    # must have side before filtering
+    if not side:
+        return side, entry, sl, tp, False, "[SKIP] side not decided", sig_score
+
     ok, reason = pass_filters(side)
     # nếu bạn cần gắn tag EARLY để hiển thị:
     if early and use_cur:
