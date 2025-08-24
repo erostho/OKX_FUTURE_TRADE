@@ -700,7 +700,8 @@ def detect_signal(df_15m: pd.DataFrame,
     # --- EARLY: lấy giá trị nến nào & nới tiêu chí ---
     # vị trí nến dùng để lọc ( -1: nến đang chạy, -2: nến đã đóng )
     idx_use = -1 if (early and use_cur) else -2
-    
+    dfx = df_1h.copy()
+    dfx = _ensure_cols(dfx).dropna()
     # lấy giá trị chỉ báo ở đúng nến dùng
     rsi6  = float(dfx["rsi6"].iloc[idx_use])   if "rsi6"  in dfx.columns  else None
     rsi12 = float(dfx["rsi12"].iloc[idx_use])  if "rsi12" in dfx.columns  else None
