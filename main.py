@@ -649,6 +649,13 @@ def detect_signal(df_15m: pd.DataFrame,
     sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.04)  # 4%
 
     # --- EARLY: nới tiêu chí nhẹ khi dùng nến đang chạy ---
+    # --- EARLY defaults (works for STRICT/RELAX) ---
+    early   = bool(cfg.get("EARLY_ALERT", False))
+    use_cur = bool(cfg.get("EARLY_USE_CURRENT_BAR", False))
+    # Tắt early cho STRICT (chỉ dùng cho RELAX)
+    if cfg.get("TAG", "").upper() == "STRICT" or str(context).upper().startswith("LIVE-STRICT"):
+        early, use_cur = False, False
+    # ----------------------------------------------
     if early and use_cur:
         ease = float(cfg.get("EARLY_RELAX_PCT", 0.10))
         rsi_long_min   = rsi_long_min * (1.0 - ease)
