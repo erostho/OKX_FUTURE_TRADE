@@ -722,11 +722,16 @@ def detect_signal(df_15m: pd.DataFrame,
                 d1x = d1.copy()
                 if "timestamp" in d1x.columns:
                     bar_ms = int(d1x["timestamp"].iloc[-1])
-                    bar_dt_utc = datetime.utcfromtimestamp(bar_ms/1000.0).replace(tzinfo=timezone.utc)
+                    bar_dt_utc = datetime.fromtimestamp(bar_ms/1000.0, tz=timezone.utc)
                 else:
                     idx = d1x.index[-1]
-                    bar_dt_utc = idx.to_pydatetime().replace(tzinfo=timezone.utc) if hasattr(idx, "to_pydatetime") else datetime.utcnow().replace(tzinfo=timezone.utc)
-                age_min = int((datetime.utcnow().replace(tzinfo=timezone.utc) - bar_dt_utc).total_seconds()//60)
+                    bar_dt_utc = (
+                        idx.to_pydatetime().astimezone(timezone.utc)
+                        if hasattr(idx, "to_pydatetime")
+                        else datetime.now(timezone.utc)
+                    )
+                now_utc = datetime.now(timezone.utc)
+                age_min = int((now_utc - bar_dt_utc).total_seconds() // 60)
                 need_age = int(cfg.get("EARLY_MIN_AGE_MIN", 10))
                 if age_min < need_age:
                     fail.append(f"EARLY: bar_age {age_min}m < {need_age}m")
