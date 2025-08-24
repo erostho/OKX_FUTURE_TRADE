@@ -697,6 +697,81 @@ def detect_signal(df_15m: pd.DataFrame,
     df = _ensure_cols(df).dropna()
     early   = bool(cfg.get("EARLY_ALERT", False))
     use_cur = bool(cfg.get("EARLY_USE_CURRENT_BAR", False))
+    # --- EARLY: lấy giá trị nến nào & nới tiêu chí ---
+    # vị trí nến dùng để lọc ( -1: nến đang chạy, -2: nến đã đóng )
+    idx_use = -1 if (early and use_cur) else -2
+    
+    # lấy giá trị chỉ báo ở đúng nến dùng
+    rsi6  = float(dfx["rsi6"].iloc[idx_use])   if "rsi6"  in dfx.columns  else None
+    rsi12 = float(dfx["rsi12"].iloc[idx_use])  if "rsi12" in dfx.columns  else None
+    rsi24 = float(dfx["rsi24"].iloc[idx_use])  if "rsi24" in dfx.columns  else None
+    macd  = float(dfx["macd"].iloc[idx_use])   if "macd"  in dfx.columns  else None
+    clv   = float(dfx["clv"].iloc[idx_use])    if "clv"   in dfx.columns  else None
+    adx   = float(dfx["adx"].iloc[idx_use])    if "adx"   in dfx.columns  else 25.0
+    
+    # ngưỡng gốc (đã có trong cfg của bạn)
+    RSI_LONG_MIN   = cfg.get("RSI_1H_LONG_MIN", 50)
+    RSI_SHORT_MAX  = cfg.get("RSI_1H_SHORT_MAX", 50)
+    MACD_LONG_MIN  = cfg.get("MACD_DIFF_LONG_MIN", 0.05)
+    MACD_SHORT_MIN = cfg.get("MACD_DIFF_SHORT_MIN", 0.01)
+    CLV_MIN        = cfg.get("CLV_MIN", 0.60)
+    ADX_MIN        = cfg.get("ADX_MIN", 18)
+    
+    # nới tiêu chí khi EARLY + dùng nến hiện tại
+    if early and use_cur:
+        # giảm yêu cầu RSI/MACD/CLV ~10% và hạ ADX 2 điểm
+        RSI_LONG_MIN   = max(0, RSI_LONG_MIN - 3)           # vd 50 -> 47
+        RSI_SHORT_MAX  = min(100, RSI_SHORT_MAX + 3)        # vd 50 -> 53
+        MACD_LONG_MIN  = MACD_LONG_MIN * 0.9                # vd 0.05 -> 0.045
+        MACD_SHORT_MIN = MACD_SHORT_MIN * 0.9               # vd 0.01 -> 0.009
+        CLV_MIN        = CLV_MIN * 0.9                      # vd 0.60 -> 0.54
+        ADX_MIN        = max(0, ADX_MIN - 2)
+    
+    # quyết định chiều theo side hiện tại
+    def pass_filters(side: str) -> (bool, str):
+        reasons = []
+        if side == "LONG":
+            if rsi12 is not None and rsi12 < RSI_LONG_MIN:
+                reasons.append(f"RSI12<{RSI_LONG_MIN}")
+            if macd is not None and macd < MACD_LONG_MIN:
+                reasons.append(f"MACD<{MACD_LONG_MIN:.3f}")
+            if clv is not None and clv < CLV_MIN:
+                reasons.append(f"CLV<{CLV_MIN:.2f}")
+            if adx is not None and adx < ADX_MIN:
+                reasons.append(f"ADX<{ADX_MIN}")
+        else:  # SHORT
+            if rsi12 is not None and rsi12 > RSI_SHORT_MAX:
+                reasons.append(f"RSI12>{RSI_SHORT_MAX}")
+            if macd is not None and macd > -MACD_SHORT_MIN:  # macd âm đủ mạnh
+                reasons.append(f"MACD>-{MACD_SHORT_MIN:.3f}")
+            if clv is not None and clv > (1 - CLV_MIN):
+                reasons.append(f"CLV>{1-CLV_MIN:.2f}")
+            if adx is not None and adx < ADX_MIN:
+                reasons.append(f"ADX<{ADX_MIN}")
+    
+        return (len(reasons) == 0, "PASS" if not reasons else ", ".join(reasons))
+    
+    # ví dụ dùng:
+    ok, reason = pass_filters(side)
+    # nếu bạn cần gắn tag EARLY để hiển thị:
+    if early and use_cur:
+        reason = "[EARLY] " + reason
+    # nến dùng để ra quyết định
+    bar_idx = -1 if (early and use_cur) else -2
+    cur  = df.iloc[bar_idx]
+    prev = df.iloc[bar_idx-1]
+    
+    # chống báo quá sớm khi nến vừa mở (ví dụ TF 1h: đòi ít nhất 20')
+    min_age_min = int(cfg.get("EARLY_MIN_AGE_MIN", 20))
+    if early and use_cur:
+        # df nên có cột 'ts' (ms) hoặc DatetimeIndex; đổi ra phút đã trôi qua trong nến
+        last_ts = int(cur.get("timestamp", getattr(cur, "ts", 0)))  # ms
+        bar_sec = 60 * 60  # TF 1h (nếu TF khác, đổi theo)
+        now_sec = int(time.time())
+        bar_start = (last_ts // 1000 // bar_sec) * bar_sec
+        age_min = (now_sec - bar_start) // 60
+        if age_min < min_age_min:
+            return _ret(side=None, entry=None, sl=None, tp=None, ok=False)  # đợi thêm
     last_idx = -1 if (early and use_cur) else -2   # -1: nến đang chạy, -2: nến đã đóng
     latest = df.iloc[last_idx]
     price  = float(latest["close"])
