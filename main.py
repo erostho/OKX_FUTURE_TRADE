@@ -648,6 +648,14 @@ def detect_signal(df_15m: pd.DataFrame,
     body_atr_k     = cfg.get("BREAKOUT_BODY_ATR", 0.6)
     sr_near_pct    = cfg.get("SR_NEAR_PCT", 0.04)  # 4%
 
+    # --- EARLY: nới tiêu chí nhẹ khi dùng nến đang chạy ---
+    if early and use_cur:
+        ease = float(cfg.get("EARLY_RELAX_PCT", 0.10))
+        rsi_long_min   = rsi_long_min * (1.0 - ease)
+        rsi_short_max  = rsi_short_max * (1.0 + ease)
+        macd_long_min  = macd_long_min * (1.0 - ease)
+        macd_short_min = macd_short_min * (1.0 - ease)
+
     fail = []  # gom lý do rớt
 
     def _ret(side, entry, sl, tp, ok):
@@ -697,93 +705,28 @@ def detect_signal(df_15m: pd.DataFrame,
     df = _ensure_cols(df).dropna()
     early   = bool(cfg.get("EARLY_ALERT", False))
     use_cur = bool(cfg.get("EARLY_USE_CURRENT_BAR", False))
-    # --- EARLY: lấy giá trị nến nào & nới tiêu chí ---
-    # vị trí nến dùng để lọc ( -1: nến đang chạy, -2: nến đã đóng )
-    idx_use = -1 if (early and use_cur) else -2
-    dfx = df_1h.copy()
-    dfx = _ensure_cols(dfx).dropna()
-    side = None
-    entry = sl = tp = None
-    oke = False
-    reason = ""
-    sig_score = 0.0
-    # lấy giá trị chỉ báo ở đúng nến dùng
-    rsi6  = float(dfx["rsi6"].iloc[idx_use])   if "rsi6"  in dfx.columns  else None
-    rsi12 = float(dfx["rsi12"].iloc[idx_use])  if "rsi12" in dfx.columns  else None
-    rsi24 = float(dfx["rsi24"].iloc[idx_use])  if "rsi24" in dfx.columns  else None
-    macd  = float(dfx["macd"].iloc[idx_use])   if "macd"  in dfx.columns  else None
-    clv   = float(dfx["clv"].iloc[idx_use])    if "clv"   in dfx.columns  else None
-    adx   = float(dfx["adx"].iloc[idx_use])    if "adx"   in dfx.columns  else 25.0
-    
-    # ngưỡng gốc (đã có trong cfg của bạn)
-    RSI_LONG_MIN   = cfg.get("RSI_1H_LONG_MIN", 50)
-    RSI_SHORT_MAX  = cfg.get("RSI_1H_SHORT_MAX", 50)
-    MACD_LONG_MIN  = cfg.get("MACD_DIFF_LONG_MIN", 0.05)
-    MACD_SHORT_MIN = cfg.get("MACD_DIFF_SHORT_MIN", 0.01)
-    CLV_MIN        = cfg.get("CLV_MIN", 0.60)
-    ADX_MIN        = cfg.get("ADX_MIN", 18)
-    
-    # nới tiêu chí khi EARLY + dùng nến hiện tại
-    if early and use_cur:
-        # giảm yêu cầu RSI/MACD/CLV ~10% và hạ ADX 2 điểm
-        RSI_LONG_MIN   = max(0, RSI_LONG_MIN - 3)           # vd 50 -> 47
-        RSI_SHORT_MAX  = min(100, RSI_SHORT_MAX + 3)        # vd 50 -> 53
-        MACD_LONG_MIN  = MACD_LONG_MIN * 0.9                # vd 0.05 -> 0.045
-        MACD_SHORT_MIN = MACD_SHORT_MIN * 0.9               # vd 0.01 -> 0.009
-        CLV_MIN        = CLV_MIN * 0.9                      # vd 0.60 -> 0.54
-        ADX_MIN        = max(0, ADX_MIN - 2)
-    
-    # quyết định chiều theo side hiện tại
-    def pass_filters(side: str) -> (bool, str):
-        reasons = []
-        if side == "LONG":
-            if rsi12 is not None and rsi12 < RSI_LONG_MIN:
-                reasons.append(f"RSI12<{RSI_LONG_MIN}")
-            if macd is not None and macd < MACD_LONG_MIN:
-                reasons.append(f"MACD<{MACD_LONG_MIN:.3f}")
-            if clv is not None and clv < CLV_MIN:
-                reasons.append(f"CLV<{CLV_MIN:.2f}")
-            if adx is not None and adx < ADX_MIN:
-                reasons.append(f"ADX<{ADX_MIN}")
-        else:  # SHORT
-            if rsi12 is not None and rsi12 > RSI_SHORT_MAX:
-                reasons.append(f"RSI12>{RSI_SHORT_MAX}")
-            if macd is not None and macd > -MACD_SHORT_MIN:  # macd âm đủ mạnh
-                reasons.append(f"MACD>-{MACD_SHORT_MIN:.3f}")
-            if clv is not None and clv > (1 - CLV_MIN):
-                reasons.append(f"CLV>{1-CLV_MIN:.2f}")
-            if adx is not None and adx < ADX_MIN:
-                reasons.append(f"ADX<{ADX_MIN}")
-    
-        return (len(reasons) == 0, "PASS" if not reasons else ", ".join(reasons))
-    
-    # ví dụ dùng:
-    # must have side before filtering
-    if not side:
-        return side, entry, sl, tp, False, "[SKIP] side not decided", sig_score
-
-    ok, reason = pass_filters(side)
-    # nếu bạn cần gắn tag EARLY để hiển thị:
-    if early and use_cur:
-        reason = "[EARLY] " + reason
-    # nến dùng để ra quyết định
-    bar_idx = -1 if (early and use_cur) else -2
-    cur  = df.iloc[bar_idx]
-    prev = df.iloc[bar_idx-1]
-    
-    # chống báo quá sớm khi nến vừa mở (ví dụ TF 1h: đòi ít nhất 20')
-    min_age_min = int(cfg.get("EARLY_MIN_AGE_MIN", 20))
-    if early and use_cur:
-        # df nên có cột 'ts' (ms) hoặc DatetimeIndex; đổi ra phút đã trôi qua trong nến
-        last_ts = int(cur.get("timestamp", getattr(cur, "ts", 0)))  # ms
-        bar_sec = 60 * 60  # TF 1h (nếu TF khác, đổi theo)
-        now_sec = int(time.time())
-        bar_start = (last_ts // 1000 // bar_sec) * bar_sec
-        age_min = (now_sec - bar_start) // 60
-        if age_min < min_age_min:
-            return _ret(side=None, entry=None, sl=None, tp=None, ok=False)  # đợi thêm
     last_idx = -1 if (early and use_cur) else -2   # -1: nến đang chạy, -2: nến đã đóng
     latest = df.iloc[last_idx]
+    # --- EARLY: yêu cầu nến 1h đang chạy đạt tuổi tối thiểu (để bớt nhiễu) ---
+    if early and use_cur:
+        try:
+            d1 = df_1h if df_1h is not None else None
+            if d1 is not None and len(d1) > 2:
+                d1x = d1.copy()
+                if "timestamp" in d1x.columns:
+                    bar_ms = int(d1x["timestamp"].iloc[-1])
+                    bar_dt_utc = datetime.utcfromtimestamp(bar_ms/1000.0).replace(tzinfo=timezone.utc)
+                else:
+                    idx = d1x.index[-1]
+                    bar_dt_utc = idx.to_pydatetime().replace(tzinfo=timezone.utc) if hasattr(idx, "to_pydatetime") else datetime.utcnow().replace(tzinfo=timezone.utc)
+                age_min = int((datetime.utcnow().replace(tzinfo=timezone.utc) - bar_dt_utc).total_seconds()//60)
+                need_age = int(cfg.get("EARLY_MIN_AGE_MIN", 10))
+                if age_min < need_age:
+                    fail.append(f"EARLY: bar_age {age_min}m < {need_age}m")
+                    return _ret(None, None, None, None, False)
+        except Exception as _e:
+            logging.debug(f"[EARLY age check skip] {symbol}: {_e}")
+
     price  = float(latest["close"])
     # ---------- volume percentile ----------
     vols = df["volume"].iloc[-20:]
@@ -890,12 +833,14 @@ def detect_signal(df_15m: pd.DataFrame,
         side = "LONG"
     elif short_vote >= need_align and adx >= adx_min:
         side = "SHORT"
+    
     else:
-        # báo lý do rớt chi tiết
+        # báo lý do rớt chi tiết + lý do "side not decided"
         best = max(long_vote, short_vote)
-        fail.append(f"ALIGN {best}/3 (y/c {need_align}/3)")
+        fail.append(f"SIDE NOT DECIDED | votes L/S={long_vote}/{short_vote} need={need_align}/3 | rsi12={rsi_15:.2f} macdDiff={macd_diff:.4f} ema20/50/100={latest['ema20']:.4f}/{latest['ema50']:.4f}/{latest.get('ema100',np.nan):.4f}")
         if adx < adx_min:
             fail.append(f"ADX {adx:.1f} < {adx_min}")
+        return _ret(None, None, None, None, False)
     
     # nếu đã có lỗi ở trên, trả sớm
     if fail:
