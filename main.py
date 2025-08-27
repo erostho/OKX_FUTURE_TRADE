@@ -896,9 +896,9 @@ def detect_signal(df_15m: pd.DataFrame,
     
         # 3) CLV (Close near extreme của nến tín hiệu)
         clv = (float(last["close"]) - float(last["low"])) / rng  # 0..1
-        if side == "LONG"  and clv < 0.60:
+        if side == "LONG"  and clv < 0.50:
             fail.append("CLV<0.60");   return _ret(None, None, None, None, False)
-        if side == "SHORT" and clv > 0.40:
+        if side == "SHORT" and clv > 0.50:
             fail.append("CLV>0.40");   return _ret(None, None, None, None, False)
     
         # 4) ATR expansion (ATR hiện tại > median ATR 20 nến trước * 1.2)
@@ -979,10 +979,10 @@ def detect_signal(df_15m: pd.DataFrame,
     vwap =df["vwap"].iloc[-1]  if "vwap"  in df.columns else None
     atr14=float(_atr(df,14).iloc[-1])
     if side=="LONG":
-        if ema20 and (float(last.close)-float(ema20))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(last.close)-float(ema20))>1.5*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(last.close)-float(vwap)) >1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
     else:
-        if ema20 and (float(ema20)-float(last.close))>1.0*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
+        if ema20 and (float(ema20)-float(last.close))>1.5*atr14: fail.append("AWAY-EMA20"); return _ret(None,None,None,None,False)
         if vwap  and (float(vwap) -float(last.close))>1.2*atr14: fail.append("AWAY-VWAP");  return _ret(None,None,None,None,False)
                       
     # ---------- Entry/SL/TP/RR ----------
