@@ -117,7 +117,7 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 30,   # top 70%
+    "VOLUME_PERCENTILE": 25,   # top 75%
     "ADX_MIN_15M": 18,
     "BBW_MIN": 0.040,
     "EARLY_MIN_AGE_MIN": 8,
