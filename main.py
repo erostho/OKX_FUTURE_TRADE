@@ -119,8 +119,8 @@ STRICT_CFG = {
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 25,   # top 75%
     "ADX_MIN_15M": 18,
-    "BBW_MIN": 0.030,
-    "EARLY_MIN_AGE_MIN": 4,
+    "BBW_MIN": 0.025,
+    "EARLY_MIN_AGE_MIN": 5,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
     "ATR_CLEARANCE_MIN": 0.6, # >= 0.7ART
