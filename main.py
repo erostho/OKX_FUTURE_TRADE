@@ -120,7 +120,7 @@ RELAX_CFG = {
     "VOLUME_PERCENTILE": 30,   # top 70%
     "ADX_MIN_15M": 18,
     "BBW_MIN": 0.040,
-    "EARLY_MIN_AGE_MIN": 8
+    "EARLY_MIN_AGE_MIN": 8,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
     "ATR_CLEARANCE_MIN": 0.6, # >= 0.7ART
