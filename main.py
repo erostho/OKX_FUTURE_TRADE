@@ -97,7 +97,7 @@ WICK_RATIO_LIMIT = 0.8  # Ngưỡng % chiều dài nến râu, TB 0.5
 # ====== PRESET & HELPERS ======
 
 STRICT_CFG = {
-    "VOLUME_PERCENTILE": 80,   # top 20%
+    "VOLUME_PERCENTILE": 70,   # top 30%
     "ADX_MIN_15M": 22,
     "BBW_MIN": 0.013,
     "RR_MIN": 1.5, # RR tối thiểu
