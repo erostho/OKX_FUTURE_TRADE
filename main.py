@@ -119,7 +119,7 @@ STRICT_CFG = {
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 25,   # top 75%
     "ADX_MIN_15M": 18,
-    "BBW_MIN": 0.040,
+    "BBW_MIN": 0.030,
     "EARLY_MIN_AGE_MIN": 8,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
@@ -136,7 +136,7 @@ RELAX_CFG = {
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 0.8,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_K_ATR": 1.0,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
     "SR_NEAR_PCT":   1.2, # 1.2% khoảng cách tuyệt đối (tuỳ)
     "EARLY_ALERT": True,            # bật báo sớm
     "EARLY_USE_CURRENT_BAR": True,  # dùng nến đang chạy (khỏi chờ đóng)
