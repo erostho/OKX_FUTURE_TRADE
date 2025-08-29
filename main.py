@@ -117,13 +117,13 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 25,   # top 75%
+    "VOLUME_PERCENTILE": 30,   # top 70%
     "ADX_MIN_15M": 18,
     "BBW_MIN": 0.025,
-    "EARLY_MIN_AGE_MIN": 5,
+    "EARLY_MIN_AGE_MIN": 8,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
-    "ATR_CLEARANCE_MIN": 0.6, # >= 0.7ART
+    "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
