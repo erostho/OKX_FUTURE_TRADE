@@ -117,10 +117,10 @@ STRICT_CFG = {
     "REQ_EMA200_MULTI": True,
 }
 RELAX_CFG = {
-    "VOLUME_PERCENTILE": 30,   # top 70%
+    "VOLUME_PERCENTILE": 50,   # top 50%
     "ADX_MIN_15M": 18,
-    "BBW_MIN": 0.025,
-    "EARLY_MIN_AGE_MIN": 8,
+    "BBW_MIN": 0.03,
+    "EARLY_MIN_AGE_MIN": 9,
     "RR_MIN": 1.0,
     "NEWS_BLACKOUT_MIN": 0, # phút
     "ATR_CLEARANCE_MIN": 0.7, # >= 0.7ART
@@ -128,9 +128,9 @@ RELAX_CFG = {
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
     "TAG": "RELAX",
     "RSI_LONG_MIN": 45,
-    "RSI_SHORT_MAX": 55,    # tăng là lỏng
+    "RSI_SHORT_MAX": 50,    # tăng là lỏng
     "RSI_1H_LONG_MIN": 45,
-    "RSI_1H_SHORT_MAX": 55,    # tăng là lỏng
+    "RSI_1H_SHORT_MAX": 50,    # tăng là lỏng
     "MACD_DIFF_LONG_MIN": 0.0003,
     "MACD_DIFF_SHORT_MIN": -0.0003,
     "ALLOW_1H_NEUTRAL": True,
