@@ -101,7 +101,7 @@ STRICT_CFG = {
     "ADX_MIN_15M": 22,
     "BBW_MIN": 0.013,
     "RR_MIN": 1.5, # RR tối thiểu
-    "NEWS_BLACKOUT_MIN": 20,   # phút
+    "NEWS_BLACKOUT_MIN": 30,   # phút
     "ATR_CLEARANCE_MIN": 0.8,  # >= 0.8 ATR
     "USE_VWAP": True,
     "RELAX_EXCEPT": False,
@@ -118,11 +118,11 @@ STRICT_CFG = {
 }
 RELAX_CFG = {
     "VOLUME_PERCENTILE": 60,   # top 50%
-    "ADX_MIN_15M": 20,
+    "ADX_MIN_15M": 22,
     "BBW_MIN": 0.04,
-    "EARLY_MIN_AGE_MIN": 14,
+    "EARLY_MIN_AGE_MIN": 15,
     "RR_MIN": 1.3,
-    "NEWS_BLACKOUT_MIN": 3, # phút
+    "NEWS_BLACKOUT_MIN": 30, # phút
     "ATR_CLEARANCE_MIN": 0.8, # >= 0.7ART
     "USE_VWAP": True,
     "RELAX_EXCEPT": True,      # cho phép ngoại lệ khi breakout + volume
@@ -136,8 +136,8 @@ RELAX_CFG = {
     "ALLOW_1H_NEUTRAL": True,
     "REQUIRE_RETEST": False,
     "REQ_EMA200_MULTI": False,
-    "SR_NEAR_K_ATR": 1.0,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
-    "SR_NEAR_PCT":   1.0, # 1.2% khoảng cách tuyệt đối (tuỳ)
+    "SR_NEAR_K_ATR": 1.2,   # hệ số * ATR cho độ gần (từ 0.6 → 1.0 hoặc 1.2 để thoáng)
+    "SR_NEAR_PCT":   1.3, # 1.2% khoảng cách tuyệt đối (tuỳ)
     "EARLY_ALERT": True,            # bật báo sớm
     "EARLY_USE_CURRENT_BAR": True,  # dùng nến đang chạy (khỏi chờ đóng)
     "EARLY_RATING_PENALTY": 1       # trừ 1 sao nếu là tín hiệu sớm
@@ -733,7 +733,7 @@ def detect_signal(df_15m: pd.DataFrame,
                     )
                 now_utc = datetime.now(timezone.utc)
                 age_min = int((now_utc - bar_dt_utc).total_seconds() // 60)
-                need_age = int(cfg.get("EARLY_MIN_AGE_MIN", 10))
+                need_age = int(cfg.get("EARLY_MIN_AGE_MIN", 12))
                 if age_min < need_age:
                     fail.append(f"EARLY: bar_age {age_min}m < {need_age}m")
                     return _ret(None, None, None, None, False)
