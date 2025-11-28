@@ -19,7 +19,7 @@ from google.oauth2 import service_account
 OKX_BASE_URL = "https://www.okx.com"
 
 # Trading config
-FUT_LEVERAGE = 5              # x5 isolated
+FUT_LEVERAGE = 6              # x5 isolated
 NOTIONAL_PER_TRADE = 25.0     # 25 USDT position size (ký quỹ ~5$ với x5)
 MAX_TRADES_PER_RUN = 5        # tối đa 5 lệnh / 1 lần cron
 
@@ -429,13 +429,13 @@ def plan_trades_from_signals(df, existing_keys):
             continue
 
         entry = row.last_price
-        # 2% TP, 1% SL
+        # 5% TP, 2% SL
         if row.direction == "LONG":
-            tp = entry * 1.02
-            sl = entry * 0.99
+            tp = entry * 1.05
+            sl = entry * 0.98
         else:
-            tp = entry * 0.98
-            sl = entry * 1.01
+            tp = entry * 0.95
+            sl = entry * 1.02
 
         planned.append(
             {
