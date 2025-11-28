@@ -439,7 +439,7 @@ def plan_trades_from_signals(df, existing_keys):
     for row in top_df.itertuples():
          entry = row.last_price
         # 5% TP, 2% SL
-        if row.direction == "LONG":
+        if row.direction == "LONG"
             tp = entry * 1.05
             sl = entry * 0.98
         else:
