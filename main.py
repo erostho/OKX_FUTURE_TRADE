@@ -1,75 +1,85 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Bot Binance Futures:
-1) Lọc PUMP / DUMP (5 logic).
-2) Ghi tín hiệu vào Google Sheet (Coin / Tín hiệu / Entry / SL / TP / Ngày).
-3) Chỉ trade các dòng mới vừa ghi (mỗi lệnh 10 USDT, x5).
-4) Đặt TP/SL dạng closePosition + reduceOnly (không mở lệnh ngược).
-5) Gửi Telegram: coin // long/short // Entry/TP/SL.
 
-Thiết kế để chạy bằng cron (ví dụ: mỗi 30 phút) trên Render.
+"""
+OKX PUMP/DUMP BOT (SPOT)
+
+- Quét SPOT trên OKX (instType=SPOT) tìm coin PUMP/DUMP.
+- 5 logic cho điểm: biến động 24h, 1h, volume spike, breakout, RSI.
+- Xuất Google Sheet định dạng:
+    Coin | Tín hiệu | Entry | SL | TP | Ngày
+- Dữ liệu sheet auto xoá > 24h.
+- Chỉ trade các lệnh mới tạo trong lần cron hiện tại.
+- Trade SPOT trên OKX:
+    + LONG  -> BUY market ~10 USDT
+    + SHORT -> SELL market ~10 USDT (nếu có đủ coin)
+- TP/SL hiện tại:
+    + Tính & ghi vào Sheet + Telegram (logic tham chiếu),
+    + Chưa đặt TP/SL tự động trên OKX (có thể nâng cấp sau bằng order-algo).
+- Hỗ trợ chạy DEMO (simulated) bằng header x-simulated-trading.
+
+Khuyến nghị:
+- Test với OKX Demo (OKX_SIMULATED_TRADING=1) trước,
+  sau đó chuyển sang real nếu bạn đã hiểu rõ hành vi.
 """
 
 import os
 import math
+import time
+import hmac
+import base64
+import json
 from datetime import datetime, timedelta, timezone
 
 import requests
 import pandas as pd
 import numpy as np
 
-from binance.client import Client
-from binance.enums import SIDE_BUY, SIDE_SELL
-
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ============================================================
-# CONFIG (CHỈNH LẠI TRƯỚC KHI CHẠY)
+# CONFIG
 # ============================================================
 
-# Binance API (Futures REAL)
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "YOUR_BINANCE_API_KEY")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "YOUR_BINANCE_API_SECRET")
+OKX_API_KEY = os.getenv("OKX_API_KEY", "")
+OKX_API_SECRET = os.getenv("OKX_API_SECRET", "")
+OKX_API_PASSPHRASE = os.getenv("OKX_API_PASSPHRASE", "")
+OKX_SIMULATED_TRADING = os.getenv("OKX_SIMULATED_TRADING", "1")  # "1" demo, "0" real
+
+OKX_BASE_URL = "https://www.okx.com"
 
 # Google Sheets
-GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID", "YOUR_SHEET_ID")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Signals")
+GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID")
+GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "OKX_BOT")
 
 # Telegram
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Tham số logic lọc & trade
+# Scan settings
 QUOTE = "USDT"
 INTERVAL = "15m"
 KLINE_LIMIT = 100
 
-TOP_N_FOR_TA = 40          # số coin top biến động đem đi phân tích
-MIN_SCORE_FOR_TRADE = 3    # điểm tối thiểu để vào lệnh (0–5)
-MAX_TRADES_PER_RUN = 4     # tối đa số lệnh mỗi lần cron
+TOP_N_FOR_TA = 40
+MIN_SCORE_FOR_TRADE = 3
+MAX_TRADES_PER_RUN = 4
 
-BASE_MARGIN_USDT = 10      # mỗi lệnh dùng 10 USDT margin
-LEVERAGE = 5               # đòn bẩy 5x
-TP_PCT = 0.01              # TP 2%
-SL_PCT = 0.005             # SL 1%
+BASE_MARGIN_USDT = 10.0  # mỗi lệnh khoảng 10 USDT (SPOT, không leverage)
+TP_PCT = 0.01            # 1%
+SL_PCT = 0.005           # 0.5%
 
-SHEET_TTL_HOURS = 24       # dữ liệu trên Sheet chỉ giữ 24h
-
-# múi giờ hiển thị trong cột "Ngày" (UTC+7)
+SHEET_TTL_HOURS = 24
 LOCAL_TZ = timezone(timedelta(hours=7))
 
-BINANCE_BASE = "https://api.binance.com"
 
 # ============================================================
 # TELEGRAM
 # ============================================================
 
 def notify_telegram(text: str) -> None:
-    if (not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID
-            or "YOUR_TELEGRAM" in TELEGRAM_BOT_TOKEN):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("[WARN] Telegram chưa cấu hình, bỏ qua gửi.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -81,11 +91,11 @@ def notify_telegram(text: str) -> None:
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print("[ERROR] Gửi telegram lỗi:", e)
+        print("[ERROR] Gửi Telegram lỗi:", e)
 
 
 # ============================================================
-# GOOGLE SHEETS
+# GOOGLE SHEETS (dùng GOOGLE_SERVICE_ACCOUNT_JSON)
 # ============================================================
 
 def get_gs_client():
@@ -95,30 +105,22 @@ def get_gs_client():
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.file",
     ]
-
     json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     if not json_str:
         raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON is not set")
 
-    # parse JSON từ env
-    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-    import json
     info = json.loads(json_str)
     creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scope)
-
     client = gspread.authorize(creds)
     return client
-
 
 
 def prepare_sheet_and_cleanup():
     """
     - Mở (hoặc tạo) worksheet.
     - Đảm bảo header: Coin / Tín hiệu / Entry / SL / TP / Ngày.
-    - Xoá các dòng có Ngày > 24h.
-    - Trả về:
-        ws: worksheet
-        existing_signals: set((Coin, Tín hiệu)) còn trong 24h (để tránh trade trùng).
+    - Xoá các dòng cũ > 24h.
+    - Trả về: ws, existing_signals (set (Coin, Tín hiệu)).
     """
     client = get_gs_client()
     sh = client.open_by_key(GOOGLE_SPREADSHEET_ID)
@@ -136,15 +138,14 @@ def prepare_sheet_and_cleanup():
         return ws, set()
 
     header = values[0]
-    rows = values[1:]
-
-    # Nếu header sai thì reset
     expected_header = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
+
     if header != expected_header:
         ws.clear()
         ws.append_row(expected_header)
         return ws, set()
 
+    rows = values[1:]
     now_local = datetime.now(LOCAL_TZ)
     cutoff = now_local - timedelta(hours=SHEET_TTL_HOURS)
 
@@ -157,14 +158,12 @@ def prepare_sheet_and_cleanup():
         date_str = r[5]
         try:
             dt = datetime.strptime(date_str, "%d/%m/%Y %H:%M")
-            # dt được xem theo LOCAL_TZ
             dt = dt.replace(tzinfo=LOCAL_TZ)
         except Exception:
             continue
-
         if dt >= cutoff:
             kept_rows.append(r)
-            existing_signals.add((r[0], r[1]))  # (Coin, Tín hiệu)
+            existing_signals.add((r[0].strip(), r[1].strip().upper()))
 
     ws.clear()
     ws.append_row(expected_header)
@@ -175,13 +174,8 @@ def prepare_sheet_and_cleanup():
 
 
 def append_trades_to_sheet(ws, planned_trades):
-    """
-    planned_trades: list dict gồm:
-       Coin, Tín hiệu, Entry, SL, TP, Ngày
-    """
     if not planned_trades:
         return
-
     rows_to_append = []
     for t in planned_trades:
         rows_to_append.append([
@@ -192,15 +186,10 @@ def append_trades_to_sheet(ws, planned_trades):
             f'{t["TP"]:.6f}',
             t["Ngày"],
         ])
-
     ws.append_rows(rows_to_append)
 
 
 def get_trades_for_timestamp(ws, date_str):
-    """
-    Đọc lại sheet và lấy các dòng có Ngày == date_str
-    (tức là các lệnh vừa được tạo trong lần cron này).
-    """
     records = ws.get_all_records()
     new_trades = []
     for rec in records:
@@ -215,49 +204,107 @@ def get_trades_for_timestamp(ws, date_str):
                     "Ngày": rec["Ngày"],
                 })
             except Exception as e:
-                print(f"[WARN] Không parse được dòng mới: {rec} -> {e}")
-                continue
+                print(f"[WARN] Không parse được dòng sheet: {rec} -> {e}")
     return new_trades
 
 
 # ============================================================
-# BINANCE – client & helpers
+# OKX CLIENT (REST V5)
 # ============================================================
 
-binance_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+class OKXClient:
+    def __init__(self, api_key, api_secret, passphrase, simulated=True):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.passphrase = passphrase
+        self.simulated = simulated
 
-
-def get_futures_symbols_usdt() -> set:
-    info = binance_client.futures_exchange_info()
-    symbols = set()
-    for s in info["symbols"]:
-        if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT":
-            symbols.add(s["symbol"])
-    return symbols
-
-
-def get_futures_symbol_filters() -> dict:
-    """
-    mapping: {symbol: {'minQty':..., 'stepSize':..., 'minNotional':...}}
-    """
-    info = binance_client.futures_exchange_info()
-    filters_map = {}
-    for s in info["symbols"]:
-        symbol = s["symbol"]
-        lot_size = [f for f in s["filters"] if f["filterType"] == "LOT_SIZE"][0]
-        min_notional = [f for f in s["filters"] if f["filterType"] == "MIN_NOTIONAL"][0]
-        filters_map[symbol] = {
-            "minQty": float(lot_size["minQty"]),
-            "stepSize": float(lot_size["stepSize"]),
-            "minNotional": float(min_notional["notional"]),
+    def _headers(self, method, path, body=""):
+        ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        msg = ts + method.upper() + path + body
+        sign = base64.b64encode(
+            hmac.new(
+                self.api_secret.encode(),
+                msg.encode(),
+                digestmod="sha256"
+            ).digest()
+        ).decode()
+        headers = {
+            "OK-ACCESS-KEY": self.api_key,
+            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": self.passphrase,
+            "Content-Type": "application/json",
         }
-    return filters_map
+        if self.simulated:
+            headers["x-simulated-trading"] = "1"
+        return headers
 
+    # ---------- PUBLIC ----------
 
-def round_qty(qty: float, step_size: float) -> float:
-    if step_size <= 0:
-        return qty
-    return math.floor(qty / step_size) * step_size
+    def get_spot_tickers(self):
+        url = f"{OKX_BASE_URL}/api/v5/market/tickers"
+        params = {"instType": "SPOT"}
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", [])
+
+    def get_candles(self, inst_id, bar="15m", limit=KLINE_LIMIT):
+        url = f"{OKX_BASE_URL}/api/v5/market/candles"
+        params = {"instId": inst_id, "bar": bar, "limit": limit}
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", [])
+
+    def get_spot_instruments(self):
+        # để lấy minSz, lotSz, ...
+        url = f"{OKX_BASE_URL}/api/v5/public/instruments"
+        params = {"instType": "SPOT"}
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("data", [])
+
+    # ---------- PRIVATE (SPOT TRADE) ----------
+
+    def place_spot_market_order(self, inst_id, side, sz):
+        """
+        side: 'buy' hoặc 'sell'
+        sz: quantity (coin), string
+        """
+        path = "/api/v5/trade/order"
+        url = OKX_BASE_URL + path
+        body_dict = {
+            "instId": inst_id,
+            "tdMode": "cash",
+            "side": side,
+            "ordType": "market",
+            "sz": str(sz),
+        }
+        body = json.dumps(body_dict)
+        headers = self._headers("POST", path, body)
+        r = requests.post(url, headers=headers, data=body, timeout=15)
+        r.raise_for_status()
+        return r.json()
+
+    def get_balance(self, ccy):
+        path = f"/api/v5/account/balance?ccy={ccy}"
+        url = OKX_BASE_URL + path
+        headers = self._headers("GET", path)
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        details = data.get("data", [])
+        if not details:
+            return 0.0
+        # totalEq hoặc availEq
+        detail = details[0]
+        for d in detail.get("details", []):
+            if d.get("ccy") == ccy:
+                return float(d.get("availBal", d.get("cashBal", "0")))
+        return 0.0
 
 
 # ============================================================
@@ -279,68 +326,60 @@ def compute_rsi(closes, period=14):
     return float(rsi)
 
 
-def get_klines(symbol: str, interval: str = INTERVAL, limit: int = KLINE_LIMIT):
-    url = f"{BINANCE_BASE}/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": limit}
-    resp = requests.get(url, params=params, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def score_symbol(symbol: str, ticker: dict) -> dict:
+def score_symbol_okx(inst_id, ticker, client: OKXClient):
     """
-    Chấm điểm pump/dump (0–5) cho 5 logic:
-      1) Biến động 24h (change_pct)
-      2) Biến động 1h (từ 4 nến 15m)
-      3) Volume spike so với 20 nến trước
-      4) Breakout high/low 20 nến
-      5) RSI cực trị
-
-    Trả về dict:
-      symbol, change_pct, abs_change, last_price, pump_score, dump_score
+    inst_id: ví dụ 'PEPE-USDT'
+    ticker: object từ /market/tickers
+    Trả về dict: change_pct, abs_change, last_price, pump_score, dump_score
     """
-    change_pct = float(ticker["priceChangePercent"])
-    last_price = float(ticker["lastPrice"])
+    last = float(ticker["last"])
+    open24h = float(ticker.get("open24h", "0") or "0")
+    if open24h <= 0:
+        change_pct = 0.0
+    else:
+        change_pct = (last / open24h - 1) * 100.0
 
     try:
-        klines = get_klines(symbol)
+        candles = client.get_candles(inst_id, bar=INTERVAL, limit=KLINE_LIMIT)
     except Exception as e:
-        print(f"[WARN] Lỗi get_klines {symbol}: {e}")
+        print(f"[WARN] Lỗi get_candles {inst_id}: {e}")
         return {
-            "symbol": symbol,
+            "instId": inst_id,
             "change_pct": change_pct,
             "abs_change": abs(change_pct),
-            "last_price": last_price,
+            "last_price": last,
             "pump_score": 0,
             "dump_score": 0,
         }
 
-    closes = [float(k[4]) for k in klines]
-    volumes = [float(k[5]) for k in klines]
-
-    if len(closes) < 25:
+    # OKX trả list [ts, o, h, l, c, vol, volCcy, ...] và mới nhất ở index 0
+    if not candles or len(candles) < 25:
         return {
-            "symbol": symbol,
+            "instId": inst_id,
             "change_pct": change_pct,
             "abs_change": abs(change_pct),
-            "last_price": last_price,
+            "last_price": last,
             "pump_score": 0,
             "dump_score": 0,
         }
+
+    candles_sorted = list(reversed(candles))  # cũ -> mới
+    closes = [float(c[4]) for c in candles_sorted]
+    vols = [float(c[5]) for c in candles_sorted]
 
     last_close = closes[-1]
-    last_vol = volumes[-1]
+    last_vol = vols[-1]
     prev_closes = closes[:-1]
-    prev_vols = volumes[:-1]
+    prev_vols = vols[:-1]
 
-    # Biến động 1h gần nhất (với 15m candle: 4 nến)
+    # 1h change (4 nến 15m)
     if len(closes) > 4:
         close_1h_ago = closes[-5]
         change_1h = (last_close / close_1h_ago - 1) * 100
     else:
         change_1h = 0.0
 
-    # Volume spike vs trung bình 20 nến
+    # volume spike
     vol_avg_20 = np.mean(prev_vols[-20:]) if len(prev_vols) >= 20 else np.mean(prev_vols)
     vol_spike_ratio = last_vol / vol_avg_20 if vol_avg_20 > 0 else 1.0
 
@@ -349,22 +388,23 @@ def score_symbol(symbol: str, ticker: dict) -> dict:
 
     rsi = compute_rsi(closes, period=14)
 
-    # ---- PUMP SCORE ----
     pump_score = 0
+    dump_score = 0
+
+    # PUMP score
     if change_pct > 0:
-        if change_pct >= 3:        # 1) 24h tăng mạnh
+        if change_pct >= 3:
             pump_score += 1
-        if change_1h >= 1:         # 2) 1h vừa qua tăng
+        if change_1h >= 1:
             pump_score += 1
-        if vol_spike_ratio >= 2:   # 3) volume gấp >=2 lần
+        if vol_spike_ratio >= 2:
             pump_score += 1
-        if last_close >= highest_20:  # 4) breakout high 20 nến
+        if last_close >= highest_20:
             pump_score += 1
-        if rsi >= 55:              # 5) RSI cao
+        if rsi >= 55:
             pump_score += 1
 
-    # ---- DUMP SCORE ----
-    dump_score = 0
+    # DUMP score
     if change_pct < 0:
         if change_pct <= -3:
             dump_score += 1
@@ -378,10 +418,10 @@ def score_symbol(symbol: str, ticker: dict) -> dict:
             dump_score += 1
 
     return {
-        "symbol": symbol,
+        "instId": inst_id,
         "change_pct": change_pct,
         "abs_change": abs(change_pct),
-        "last_price": last_price,
+        "last_price": last,
         "pump_score": pump_score,
         "dump_score": dump_score,
     }
@@ -391,45 +431,40 @@ def score_symbol(symbol: str, ticker: dict) -> dict:
 # SCAN & PLAN TRADES
 # ============================================================
 
-def scan_market_and_signals():
+def scan_okx_market(client: OKXClient):
     """
-    1) Lấy 24h tickers.
-    2) Lọc USDT + có Futures.
-    3) Chọn TOP_N_FOR_TA theo abs_change.
+    1) Lấy toàn bộ tickers SPOT.
+    2) Lọc instId kết thúc bằng -USDT.
+    3) Chọn top theo abs_change.
     4) Chấm điểm PUMP/DUMP.
-    5) Trả về DataFrame: symbol, direction, score, change_pct, abs_change, last_price.
     """
-    url = f"{BINANCE_BASE}/api/v3/ticker/24hr"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    tickers = resp.json()
-
-    futures_symbols = get_futures_symbols_usdt()
-
+    tickers = client.get_spot_tickers()
     tmp = []
     for t in tickers:
-        symbol = t["symbol"]
-        if not symbol.endswith(QUOTE):
+        inst_id = t["instId"]
+        if not inst_id.endswith(f"-{QUOTE}"):
             continue
-        if symbol not in futures_symbols:
-            continue
-        change_pct = float(t["priceChangePercent"])
+        last = float(t["last"])
+        open24h = float(t.get("open24h", "0") or "0")
+        if open24h <= 0:
+            change_pct = 0.0
+        else:
+            change_pct = (last / open24h - 1) * 100.0
         tmp.append({
-            "symbol": symbol,
+            "instId": inst_id,
             "ticker": t,
             "abs_change": abs(change_pct),
         })
 
+    if not tmp:
+        return pd.DataFrame()
+
     tmp_sorted = sorted(tmp, key=lambda x: x["abs_change"], reverse=True)[:TOP_N_FOR_TA]
 
-    scored = []
-    print(f"[INFO] Đang chấm điểm {len(tmp_sorted)} symbol...")
+    results = []
+    print(f"[INFO] Đang chấm điểm {len(tmp_sorted)} cặp trên OKX SPOT...")
     for rec in tmp_sorted:
-        s = score_symbol(rec["symbol"], rec["ticker"])
-        scored.append(s)
-
-    rows = []
-    for s in scored:
+        s = score_symbol_okx(rec["instId"], rec["ticker"], client)
         pump_score = s["pump_score"]
         dump_score = s["dump_score"]
         if pump_score == 0 and dump_score == 0:
@@ -442,8 +477,8 @@ def scan_market_and_signals():
             direction = "SHORT"
             score = dump_score
 
-        rows.append({
-            "symbol": s["symbol"],
+        results.append({
+            "instId": s["instId"],
             "direction": direction,
             "score": score,
             "change_pct": round(s["change_pct"], 2),
@@ -451,25 +486,15 @@ def scan_market_and_signals():
             "last_price": s["last_price"],
         })
 
-    if not rows:
+    if not results:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(results)
     df = df.sort_values(by=["score", "abs_change"], ascending=[False, False]).reset_index(drop=True)
     return df
 
 
 def plan_trades_from_signals(df_signals, existing_signals):
-    """
-    Từ df_signals => chọn các lệnh sẽ trade:
-      - score >= MIN_SCORE_FOR_TRADE
-      - (Coin, Tín hiệu) chưa từng xuất hiện trong 24h (dựa trên sheet)
-      - tối đa MAX_TRADES_PER_RUN
-
-    Trả về:
-      planned_trades: list dict (Coin, Tín hiệu, Entry, SL, TP, Ngày, score, change_pct)
-      date_str: chuỗi Ngày (dd/MM/yyyy HH:mm)
-    """
     if df_signals.empty:
         return [], None
 
@@ -480,10 +505,9 @@ def plan_trades_from_signals(df_signals, existing_signals):
     if candidates.empty:
         return [], date_str
 
-    # bỏ các lệnh đã có trong sheet (24h)
     filtered = []
     for _, row in candidates.iterrows():
-        coin = row["symbol"]
+        coin = row["instId"]
         direction = row["direction"]
         if (coin, direction) in existing_signals:
             continue
@@ -498,19 +522,19 @@ def plan_trades_from_signals(df_signals, existing_signals):
 
     planned = []
     for _, row in df.iterrows():
-        symbol = row["symbol"]
+        inst_id = row["instId"]
         direction = row["direction"]
         price = float(row["last_price"])
 
         if direction == "LONG":
             tp = price * (1 + TP_PCT)
             sl = price * (1 - SL_PCT)
-        else:  # SHORT
+        else:
             tp = price * (1 - TP_PCT)
             sl = price * (1 + SL_PCT)
 
         planned.append({
-            "Coin": symbol,
+            "Coin": inst_id,
             "Tín hiệu": direction,
             "Entry": price,
             "SL": sl,
@@ -524,183 +548,161 @@ def plan_trades_from_signals(df_signals, existing_signals):
 
 
 # ============================================================
-# TRADE – vào lệnh & TP/SL
+# TRADE SPOT ON OKX
 # ============================================================
 
-def ensure_leverage(symbol: str, leverage: int):
-    try:
-        binance_client.futures_change_leverage(symbol=symbol, leverage=leverage)
-    except Exception as e:
-        print(f"[WARN] Không set được leverage {symbol}: {e}")
+def build_spot_instrument_map(client: OKXClient):
+    data = client.get_spot_instruments()
+    mp = {}
+    for d in data:
+        inst_id = d["instId"]
+        min_sz = float(d.get("minSz", "0.0") or "0.0")
+        lot_sz = float(d.get("lotSz", "0.0") or "0.0")
+        mp[inst_id] = {
+            "minSz": min_sz,
+            "lotSz": lot_sz,
+        }
+    return mp
 
 
-def open_futures_trade(symbol: str, direction: str, filters_map: dict):
-    """
-    Mỗi lệnh:
-      margin = 10 USDT
-      leverage = 5x  => notional ~ 50 USDT
-    direction: LONG -> BUY, SHORT -> SELL
-    """
-    ticker = binance_client.futures_symbol_ticker(symbol=symbol)
-    price = float(ticker["price"])
-
-    position_notional = BASE_MARGIN_USDT * LEVERAGE
-    raw_qty = position_notional / price
-
-    filt = filters_map.get(symbol)
-    if not filt:
-        print(f"[WARN] Không tìm thấy filter cho {symbol}, bỏ qua.")
-        return None
-
-    step = filt["stepSize"]
-    min_qty = filt["minQty"]
-    min_notional = filt["minNotional"]
-
-    qty = round_qty(raw_qty, step)
-    if qty <= 0 or qty < min_qty or qty * price < min_notional:
-        print(f"[WARN] Qty quá nhỏ {symbol}: qty={qty}, price={price}")
-        return None
-
-    side = SIDE_BUY if direction == "LONG" else SIDE_SELL
-
-    ensure_leverage(symbol, LEVERAGE)
-
-    order = binance_client.futures_create_order(
-        symbol=symbol,
-        side=side,
-        type="MARKET",
-        quantity=qty
-    )
-
-    entry_price = float(order["avgPrice"]) if order.get("avgPrice") not in (None, "0.0000") else price
-    return {
-        "order": order,
-        "entry_price": entry_price,
-        "qty": qty,
-        "side": side,
-    }
+def round_sz(sz, lot_sz, min_sz):
+    if lot_sz > 0:
+        sz = math.floor(sz / lot_sz) * lot_sz
+    if sz < min_sz:
+        return 0.0
+    return float(f"{sz:.12f}".rstrip("0").rstrip("."))
 
 
-def set_tp_sl_for_trade(symbol: str, side: str, tp_price: float, sl_price: float):
-    """
-    Đặt TP/SL:
-      LONG  -> TP/SL bán (SELL)
-      SHORT -> TP/SL mua (BUY)
-
-    Dùng closePosition=True + reduceOnly=True để:
-      - Khi TP khớp thì SL tự vô hiệu (vì không còn position).
-      - Khi SL khớp thì TP cũng không còn hiệu lực.
-    """
-    if side == SIDE_BUY:
-        tp_side = SIDE_SELL
-        sl_side = SIDE_SELL
-    else:
-        tp_side = SIDE_BUY
-        sl_side = SIDE_BUY
-
-    tp_order = sl_order = None
-
-    try:
-        tp_order = binance_client.futures_create_order(
-            symbol=symbol,
-            side=tp_side,
-            type="TAKE_PROFIT_MARKET",
-            stopPrice=float(f"{tp_price:.6f}"),
-            closePosition=True,
-            reduceOnly=True,
-        )
-    except Exception as e:
-        print(f"[WARN] Lỗi đặt TP {symbol}: {e}")
-
-    try:
-        sl_order = binance_client.futures_create_order(
-            symbol=symbol,
-            side=sl_side,
-            type="STOP_MARKET",
-            stopPrice=float(f"{sl_price:.6f}"),
-            closePosition=True,
-            reduceOnly=True,
-        )
-    except Exception as e:
-        print(f"[WARN] Lỗi đặt SL {symbol}: {e}")
-
-    return tp_order, sl_order
-
-
-def execute_trades(new_trades):
-    """
-    new_trades: list dict đọc từ sheet (Coin, Tín hiệu, Entry, SL, TP, Ngày)
-    """
+def execute_trades_okx_spot(client: OKXClient, new_trades):
     if not new_trades:
-        print("[INFO] Không có lệnh mới trong sheet để vào.")
+        print("[INFO] Không có lệnh mới trong sheet để vào (OKX SPOT).")
         return
 
-    filters_map = get_futures_symbol_filters()
+    # Lấy thông tin instrument để biết minSz, lotSz
+    inst_map = build_spot_instrument_map(client)
+
+    # Số USDT khả dụng
+    usdt_avail = client.get_balance("USDT")
+    print(f"[INFO] USDT khả dụng: {usdt_avail}")
 
     for t in new_trades:
-        symbol = t["Coin"]
+        inst_id = t["Coin"]
         direction = t["Tín hiệu"]
         entry_planned = t["Entry"]
         sl_price = t["SL"]
         tp_price = t["TP"]
 
+        if inst_id not in inst_map:
+            print(f"[WARN] Không tìm thấy instrument SPOT cho {inst_id}, bỏ qua.")
+            continue
+
+        inst_info = inst_map[inst_id]
+        min_sz = inst_info["minSz"]
+        lot_sz = inst_info["lotSz"] if inst_info["lotSz"] > 0 else min_sz
+
+        # lấy giá hiện tại
         try:
-            trade_info = open_futures_trade(symbol, direction, filters_map)
-            if not trade_info:
+            candles = client.get_candles(inst_id, bar=INTERVAL, limit=1)
+            if candles:
+                last_price = float(candles[0][4])
+            else:
+                last_price = entry_planned
+        except Exception:
+            last_price = entry_planned
+
+        side = "buy" if direction == "LONG" else "sell"
+
+        if side == "buy":
+            notional = min(BASE_MARGIN_USDT, usdt_avail)
+            if notional < BASE_MARGIN_USDT * 0.5:
+                print(f"[WARN] USDT quá ít ({usdt_avail}), bỏ qua mua {inst_id}.")
+                continue
+            sz_raw = notional / last_price
+            sz = round_sz(sz_raw, lot_sz, min_sz)
+            if sz <= 0:
+                print(f"[WARN] Sz quá nhỏ cho {inst_id}, bỏ.")
+                continue
+        else:  # sell
+            # coin base, ví dụ BTC-USDT -> BTC
+            base = inst_id.split("-")[0]
+            base_avail = client.get_balance(base)
+            if base_avail <= 0:
+                print(f"[WARN] Không có {base} để bán, bỏ SHORT {inst_id}.")
+                continue
+            # bán khoảng 10 USDT worth hoặc toàn bộ nếu ít
+            target_sz = BASE_MARGIN_USDT / last_price
+            sz_raw = min(target_sz, base_avail)
+            sz = round_sz(sz_raw, lot_sz, min_sz)
+            if sz <= 0:
+                print(f"[WARN] Sz sell quá nhỏ cho {inst_id}, bỏ.")
                 continue
 
-            entry_real = trade_info["entry_price"]
-            qty = trade_info["qty"]
-            side = trade_info["side"]
-
-            set_tp_sl_for_trade(symbol, side, tp_price, sl_price)
+        try:
+            resp = client.place_spot_market_order(inst_id, side, sz)
+            usdt_avail = client.get_balance("USDT")  # update lại sau mỗi lệnh
 
             msg = (
-                f"🚀 *NEW TRADE*\n"
-                f"Coin: `{symbol}`\n"
+                f"🚀 *OKX SPOT TRADE*\n"
+                f"Coin: `{inst_id}`\n"
                 f"Tín hiệu: *{direction}*\n"
+                f"Side: `{side}`\n"
+                f"Qty: `{sz}`\n"
                 f"Entry (sheet): `{entry_planned:.6f}`\n"
-                f"Entry (real): `{entry_real:.6f}`\n"
-                f"TP: `{tp_price:.6f}`\n"
-                f"SL: `{sl_price:.6f}`\n"
-                f"Số lượng: `{qty}` (margin ~{BASE_MARGIN_USDT} USDT, x{LEVERAGE})"
+                f"Giá hiện tại: `{last_price:.6f}`\n"
+                f"TP target: `{tp_price:.6f}`\n"
+                f"SL target: `{sl_price:.6f}`\n"
+                f"(TP/SL hiện *chưa đặt tự động* trên OKX – chỉ là mốc tham chiếu.)"
             )
             print(msg)
             notify_telegram(msg)
-
+            print("[OKX RESP]", resp)
         except Exception as e:
-            print(f"[ERROR] Lỗi vào lệnh {symbol}: {e}")
-            notify_telegram(f"❌ Lỗi vào lệnh {symbol}: {e}")
+            print(f"[ERROR] Lỗi vào lệnh SPOT {inst_id}: {e}")
+            notify_telegram(f"❌ Lỗi vào lệnh OKX SPOT {inst_id}: {e}")
 
 
 # ============================================================
-# MAIN FLOW
+# MAIN
 # ============================================================
 
 def main():
-    print("====== CRON RUN START ======")
+    print("====== OKX BOT CRON START ======")
 
-    # 1) Chuẩn bị sheet & lấy các lệnh đã trade trong 24h để tránh trùng
+    simulated = (OKX_SIMULATED_TRADING == "1")
+    okx_client = OKXClient(
+        api_key=OKX_API_KEY,
+        api_secret=OKX_API_SECRET,
+        passphrase=OKX_API_PASSPHRASE,
+        simulated=simulated
+    )
+
+    # 1) Prepare sheet & get existing signals
     try:
         ws, existing_signals = prepare_sheet_and_cleanup()
     except Exception as e:
-        print("[ERROR] Lỗi chuẩn bị Google Sheet:", e)
+        print("[ERROR] Google Sheet prepare lỗi:", e)
         notify_telegram(f"⚠️ Lỗi Google Sheet (prepare): {e}")
         return
 
-    # 2) Scan market & chấm điểm
-    df_signals = scan_market_and_signals()
+    # 2) Scan OKX market
+    try:
+        df_signals = scan_okx_market(okx_client)
+    except Exception as e:
+        print("[ERROR] Scan thị trường OKX lỗi:", e)
+        notify_telegram(f"⚠️ Lỗi scan OKX: {e}")
+        return
+
     if df_signals.empty:
-        print("[INFO] Không có tín hiệu PUMP/DUMP.")
+        print("[INFO] Không có tín hiệu PUMP/DUMP trên OKX.")
         return
 
     print("[INFO] Top signals:")
     print(df_signals.head())
 
-    # 3) Lên kế hoạch các lệnh sẽ trade
+    # 3) Plan trades
     planned_trades, date_str = plan_trades_from_signals(df_signals, existing_signals)
     if not planned_trades:
-        print("[INFO] Không có lệnh nào đạt score / chưa trùng sheet.")
+        print("[INFO] Không có lệnh mới đạt điều kiện.")
         return
 
     print("[INFO] Planned trades:")
@@ -711,27 +713,32 @@ def main():
             f"score={t['score']} 24h={t['change_pct']}%"
         )
 
-    # 4) Ghi lệnh vào Google Sheet (append + đã cleanup ở bước 1)
+    # 4) Append to Google Sheet
     try:
         append_trades_to_sheet(ws, planned_trades)
         print("[INFO] Đã append lệnh mới vào Google Sheet.")
     except Exception as e:
-        print("[ERROR] Lỗi append Google Sheet:", e)
+        print("[ERROR] Append Google Sheet lỗi:", e)
         notify_telegram(f"⚠️ Lỗi Google Sheet (append): {e}")
         return
 
-    # 5) Đọc lại sheet & lấy đúng các dòng mới (Ngày == date_str) để bot vào lệnh
+    # 5) Read back new trades (by timestamp)
     try:
         new_trades = get_trades_for_timestamp(ws, date_str)
     except Exception as e:
-        print("[ERROR] Lỗi đọc sheet cho timestamp mới:", e)
+        print("[ERROR] Đọc sheet theo timestamp lỗi:", e)
         notify_telegram(f"⚠️ Lỗi Google Sheet (read new trades): {e}")
         return
 
-    # 6) Vào lệnh Futures + đặt TP/SL + gửi Telegram
-    execute_trades(new_trades)
+    # 6) Execute SPOT trades on OKX
+    try:
+        execute_trades_okx_spot(okx_client, new_trades)
+    except Exception as e:
+        print("[ERROR] Lỗi execute trades OKX:", e)
+        notify_telegram(f"⚠️ Lỗi execute trades OKX: {e}")
+        return
 
-    print("====== CRON RUN END ======")
+    print("====== OKX BOT CRON END ======")
 
 
 if __name__ == "__main__":
