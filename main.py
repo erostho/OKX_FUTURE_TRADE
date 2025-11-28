@@ -219,40 +219,39 @@ class OKXClient:
         self.passphrase = passphrase
         self.simulated = simulated
 
-        def _headers(self, method, path, body=""):
-            ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
-            msg = ts + method.upper() + path + body
-    
-            signature = hmac.new(
-                self.api_secret.encode(),
-                msg.encode(),
-                digestmod="sha256"
-            ).digest()
-    
-            sign_base64 = base64.b64encode(signature).decode()
-    
-            headers = {
-                "OK-ACCESS-KEY": self.api_key,
-                "OK-ACCESS-SIGN": sign_base64,
-                "OK-ACCESS-TIMESTAMP": ts,
-                "OK-ACCESS-PASSPHRASE": self.passphrase,
-                "Content-Type": "application/json",
-            }
-    
-            if self.simulated:
-                headers["x-simulated-trading"] = "1"
-    
-            # 🔥 LOG thêm để debug signature lỗi
-            print("---- OKX HEADER DEBUG ----")
-            print("Method:", method)
-            print("Path:", path)
-            print("Timestamp:", ts)
-            print("Message for HMAC:", msg)
-            print("Signature:", sign_base64)
-            print("Headers:", headers)
-            print("---------------------------")
-    
-            return headers
+    def _headers(self, method, path, body=""):
+        ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+        msg = ts + method.upper() + path + body
+
+        signature = hmac.new(
+            self.api_secret.encode(),
+            msg.encode(),
+            digestmod="sha256"
+        ).digest()
+
+        sign_base64 = base64.b64encode(signature).decode()
+
+        headers = {
+            "OK-ACCESS-KEY": self.api_key,
+            "OK-ACCESS-SIGN": sign_base64,
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": self.passphrase,
+            "Content-Type": "application/json",
+        }
+
+        if self.simulated:
+            headers["x-simulated-trading"] = "1"
+
+        print("\n========= OKX SIGN DEBUG =========")
+        print("Method:", method)
+        print("Path:", path)
+        print("Timestamp:", ts)
+        print("Message for HMAC:", msg)
+        print("Signature:", sign_base64)
+        print("Headers:", headers)
+        print("==================================\n")
+
+        return headers
 
 
     # ---------- PUBLIC ----------
@@ -320,55 +319,75 @@ class OKXClient:
         body = json.dumps(body_dict)
         headers = self._headers("POST", path, body)
         r = requests.post(url, headers=headers, data=body, timeout=15)
-        r.raise_for_status()
-        return r.json()
-        def place_oco_tp_sl(self, inst_id, side, sz, tp_trigger_px, sl_trigger_px):
-            """
-            Đặt OCO TP/SL cho SPOT:
-              - inst_id: 'BTC-USDT'
-              - side: 'sell' nếu đang LONG (tức TP/SL đều là lệnh bán)
-                      'buy'  nếu đang SHORT (TP/SL đều là lệnh mua)
-              - sz: khối lượng coin (giống lệnh vào)
-              - tp_trigger_px: giá kích hoạt TP
-              - sl_trigger_px: giá kích hoạt SL
-    
-            ordType = 'oco' => khi TP khớp thì SL bị hủy và ngược lại.
-            tpOrdPx = -1, slOrdPx = -1 => dùng MARKET price khi trigger.
-            """
-            path = "/api/v5/trade/order-algo"
-            url = OKX_BASE_URL + path
-    
-            body_dict = {
-                "instId": inst_id,
-                "tdMode": "cash",
-                "side": side,            # 'sell' hoặc 'buy'
-                "ordType": "oco",
-                "sz": str(sz),
-    
-                # TP
-                "tpTriggerPx": str(tp_trigger_px),
-                "tpTriggerPxType": "last",
-                "tpOrdPx": "-1",         # -1 = market khi trigger
-    
-                # SL
-                "slTriggerPx": str(sl_trigger_px),
-                "slTriggerPxType": "last",
-                "slOrdPx": "-1",         # -1 = market khi trigger
-            }
-    
-            body = json.dumps(body_dict)
-            headers = self._headers("POST", path, body)
-    
-            r = requests.post(url, headers=headers, data=body, timeout=15)
+                if r.status_code != 200:
+            print("\n❌ MARKET ORDER ERROR")
+            print("URL:", r.url)
+            print("Status:", r.status_code)
+            print("Response:", r.text)
+            print("Sent Body:", body, "\n")
             r.raise_for_status()
-            return r.json()
+
+        return r.json()
+    def place_oco_tp_sl(self, inst_id, side, sz, tp_trigger_px, sl_trigger_px):
+        """
+        Đặt OCO TP/SL cho SPOT:
+            - inst_id: 'BTC-USDT'
+            - side: 'sell' nếu đang LONG (tức TP/SL đều là lệnh bán)
+                    'buy'  nếu đang SHORT (TP/SL đều là lệnh mua)
+            - sz: khối lượng coin (giống lệnh vào)
+            - tp_trigger_px: giá kích hoạt TP
+            - sl_trigger_px: giá kích hoạt SL
+    
+        ordType = 'oco' => khi TP khớp thì SL bị hủy và ngược lại.
+        tpOrdPx = -1, slOrdPx = -1 => dùng MARKET price khi trigger.
+        """
+        path = "/api/v5/trade/order-algo"
+        url = OKX_BASE_URL + path
+    
+        body_dict = {
+            "instId": inst_id,
+            "tdMode": "cash",
+            "side": side,            # 'sell' hoặc 'buy'
+            "ordType": "oco",
+            "sz": str(sz),
+    
+            # TP
+            "tpTriggerPx": str(tp_trigger_px),
+            "tpTriggerPxType": "last",
+            "tpOrdPx": "-1",         # -1 = market khi trigger
+    
+            # SL
+            "slTriggerPx": str(sl_trigger_px),
+            "slTriggerPxType": "last",
+            "slOrdPx": "-1",         # -1 = market khi trigger
+        }
+    
+        body = json.dumps(body_dict)
+        headers = self._headers("POST", path, body)
+    
+        r = requests.post(url, headers=headers, data=body, timeout=15)
+                if r.status_code != 200:
+        print("\n❌ OCO ORDER ERROR")
+        print("URL:", r.url)
+        print("Status:", r.status_code)
+        print("Response:", r.text)
+        print("Sent Body:", body, "\n")
+        r.raise_for_status()
+
+        return r.json()
 
     def get_balance(self, ccy):
         path = f"/api/v5/account/balance?ccy={ccy}"
         url = OKX_BASE_URL + path
         headers = self._headers("GET", path)
         r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
+
+        if r.status_code != 200:
+            print("\n❌ BALANCE ERROR")
+            print("URL:", r.url)
+            print("Status:", r.status_code)
+            print("Response:", r.text, "\n")
+            r.raise_for_status()
         data = r.json()
         details = data.get("data", [])
         if not details:
