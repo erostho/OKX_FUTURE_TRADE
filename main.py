@@ -257,48 +257,56 @@ class OKXClient:
     # ---------- PUBLIC ----------
 
     def get_spot_tickers(self):
+        """Lấy toàn bộ tickers SPOT"""
         url = f"{OKX_BASE_URL}/api/v5/market/tickers"
         params = {"instType": "SPOT"}
-        try:
-            r.raise_for_status()
-        except Exception:
-            print("❌ OKX REQUEST FAILED")
+
+        r = requests.get(url, params=params, timeout=15)
+
+        if r.status_code != 200:
+            print("❌ GET_SPOT_TICKERS ERROR")
             print("URL:", r.url)
-            print("Status Code:", r.status_code)
-            print("Response:", r.text)
-            raise
+            print("Status:", r.status_code)
+            print("Response:", r.text, "\n")
+            r.raise_for_status()
 
         data = r.json()
         return data.get("data", [])
 
     def get_candles(self, inst_id, bar="15m", limit=KLINE_LIMIT):
+        """Lấy nến cho 1 cặp"""
         url = f"{OKX_BASE_URL}/api/v5/market/candles"
         params = {"instId": inst_id, "bar": bar, "limit": limit}
-        try:
-            r.raise_for_status()
-        except Exception:
-            print("❌ OKX REQUEST FAILED")
+
+        r = requests.get(url, params=params, timeout=15)
+
+        if r.status_code != 200:
+            print("❌ GET_CANDLES ERROR")
             print("URL:", r.url)
-            print("Status Code:", r.status_code)
-            print("Response:", r.text)
-            raise
+            print("Status:", r.status_code)
+            print("Response:", r.text, "\n")
+            r.raise_for_status()
+
         data = r.json()
         return data.get("data", [])
 
     def get_spot_instruments(self):
-        # để lấy minSz, lotSz, ...
+        """Lấy thông tin instrument SPOT để biết minSz, lotSz,..."""
         url = f"{OKX_BASE_URL}/api/v5/public/instruments"
         params = {"instType": "SPOT"}
-        try:
-            r.raise_for_status()
-        except Exception:
-            print("❌ OKX REQUEST FAILED")
+
+        r = requests.get(url, params=params, timeout=15)
+
+        if r.status_code != 200:
+            print("❌ GET_SPOT_INSTRUMENTS ERROR")
             print("URL:", r.url)
-            print("Status Code:", r.status_code)
-            print("Response:", r.text)
-            raise
+            print("Status:", r.status_code)
+            print("Response:", r.text, "\n")
+            r.raise_for_status()
+
         data = r.json()
         return data.get("data", [])
+
 
     # ---------- PRIVATE (SPOT TRADE) ----------
 
