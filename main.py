@@ -160,7 +160,14 @@ class OKXClient:
         return data.get("data", [])
 
     # ---------- PRIVATE ----------
-
+    def get_open_positions(self):
+        """
+        Lấy danh sách vị thế futures (SWAP) đang mở trên OKX.
+        """
+        path = "/api/v5/account/positions?instType=SWAP"
+        data = self._request("GET", path, params=None)
+        return data.get("data", [])
+        
     def get_usdt_balance(self):
         # NOTE: path bao gồm luôn query string để ký chính xác
         path = "/api/v5/account/balance?ccy=USDT"
@@ -437,9 +444,9 @@ def plan_trades_from_signals(df, existing_keys):
         )
 
     for row in top_df.itertuples():
-         entry = row.last_price
+        entry = row.last_price
         # 5% TP, 2% SL
-        if row.direction == "LONG"
+        if row.direction == "LONG":
             tp = entry * 1.05
             sl = entry * 0.98
         else:
@@ -509,7 +516,32 @@ def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
         return 0.0
     return contracts
 
+def build_open_position_map(okx: OKXClient):
+    """
+    Trả về dict:
+    {
+      'BTC-USDT-SWAP': {'long': True/False, 'short': True/False},
+      ...
+    }
+    dùng để biết symbol nào đã có LONG / SHORT đang mở.
+    """
+    positions = okx.get_open_positions()
+    pos_map = {}
+    for p in positions:
+        try:
+            inst_id = p.get("instId")
+            pos_side = (p.get("posSide") or "").lower()    # 'long' / 'short'
+            pos = float(p.get("pos", "0") or "0")
+            if not inst_id or pos == 0:
+                continue
 
+            if inst_id not in pos_map:
+                pos_map[inst_id] = {"long": False, "short": False}
+            if pos_side in ("long", "short"):
+                pos_map[inst_id][pos_side] = True
+        except Exception:
+            continue
+    return pos_map
 # ========== EXECUTE FUTURES TRADES ==========
 
 def execute_futures_trades(okx: OKXClient, trades):
@@ -517,11 +549,11 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("[INFO] Không có lệnh futures nào để vào.")
         return
 
-    # metadata SWAP
+    # metadata SWAP (ctVal, lotSz, minSz...)
     swap_ins = okx.get_swap_instruments()
     swap_meta = build_swap_meta_map(swap_ins)
 
-    # kiểm tra balance (margin ~ NOTIONAL / leverage)
+    # equity USDT
     avail_usdt = okx.get_usdt_balance()
     margin_per_trade = NOTIONAL_PER_TRADE / FUT_LEVERAGE
     max_trades_by_balance = int(avail_usdt // margin_per_trade)
@@ -531,17 +563,38 @@ def execute_futures_trades(okx: OKXClient, trades):
 
     allowed_trades = trades[: max_trades_by_balance]
 
-    # 👉 Gom tất cả coin mở lệnh thành công để gửi 1 tin duy nhất
+    # 🔥 LẤY VỊ THẾ ĐANG MỞ
+    open_pos_map = build_open_position_map(okx)
+    logging.info("[INFO] Open positions: %s", open_pos_map)
+
+    # Gom các dòng để gửi 1 tin Telegram duy nhất
     telegram_lines = []
 
     for t in allowed_trades:
-        coin = t["coin"]         # ví dụ NEIRO-USDT
+        coin = t["coin"]         # ví dụ 'BTC-USDT'
         signal = t["signal"]     # LONG / SHORT
         entry = t["entry"]
         tp = t["tp"]
         sl = t["sl"]
 
+        # Spot -> Perp SWAP
         swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+
+        # ❗ Nếu đã có vị thế mở cùng hướng trên OKX -> bỏ qua, không mở thêm
+        pos_info = open_pos_map.get(swap_inst, {"long": False, "short": False})
+        if signal == "LONG" and pos_info.get("long"):
+            logging.info(
+                "[INFO] Đã có vị thế LONG đang mở với %s, bỏ qua tín hiệu mới.",
+                swap_inst,
+            )
+            continue
+        if signal == "SHORT" and pos_info.get("short"):
+            logging.info(
+                "[INFO] Đã có vị thế SHORT đang mở với %s, bỏ qua tín hiệu mới.",
+                swap_inst,
+            )
+            continue
+
         meta = swap_meta.get(swap_inst)
         if not meta:
             logging.warning(
@@ -583,7 +636,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("TP: %.8f", tp)
         logging.info("SL: %.8f", sl)
 
-        # 1) Set leverage isolated x5 (không bắt buộc nhưng nên làm)
+        # 1) Set leverage isolated x5
         try:
             okx.set_isolated_leverage(swap_inst, FUT_LEVERAGE)
         except Exception:
@@ -592,7 +645,7 @@ def execute_futures_trades(okx: OKXClient, trades):
                 swap_inst,
             )
 
-        # 2) Market order
+        # 2) Mở vị thế
         order_resp = okx.place_futures_market_order(
             inst_id=swap_inst,
             side=side_open,
@@ -608,10 +661,10 @@ def execute_futures_trades(okx: OKXClient, trades):
             logging.error(
                 "[OKX ORDER RESP] Lỗi mở lệnh: code=%s msg=%s", code, msg
             )
-            # KHÔNG gửi telegram lỗi nữa để giữ nguyên 1 tin duy nhất
+            # không gửi telegram lỗi, chỉ log
             continue
 
-        # 3) OCO TP/SL
+        # 3) Đặt TP/SL OCO
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
             pos_side=pos_side,
@@ -630,19 +683,18 @@ def execute_futures_trades(okx: OKXClient, trades):
                 oco_resp.get("msg", ""),
             )
 
-        # 👉 Nếu đến đây là lệnh đã mở (dù OCO có thể lỗi),
-        # thêm 1 dòng vào danh sách gửi Telegram:
-        coin_name = coin.replace("-USDT", "")   # bỏ -USDT
+        # 4) Gom 1 dòng cho Telegram (bỏ -USDT)
+        coin_name = coin.replace("-USDT", "")
         line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
         telegram_lines.append(line)
 
-    # Sau khi xử lý xong tất cả coin:
+    # Sau khi duyệt hết các lệnh:
     if telegram_lines:
-        # Gộp thành 1 message, mỗi coin 1 dòng
         msg = "\n".join(telegram_lines)
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
+
 
 
 
