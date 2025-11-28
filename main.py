@@ -66,7 +66,7 @@ TOP_N_FOR_TA = 40
 MIN_SCORE_FOR_TRADE = 3
 MAX_TRADES_PER_RUN = 4
 
-BASE_MARGIN_USDT = 10.0  # mỗi lệnh khoảng 10 USDT (SPOT, không leverage)
+BASE_MARGIN_USDT = 25.0  # mỗi lệnh khoảng 10 USDT (SPOT, không leverage)
 TP_PCT = 0.01            # 1%
 SL_PCT = 0.005           # 0.5%
 
@@ -687,6 +687,9 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
         print("[INFO] Không có lệnh mới trong sheet để vào (OKX SPOT).")
         return
 
+    # Mỗi lệnh target ~25 USDT
+    BASE_TRADE_NOTIONAL_USDT = 25.0
+
     # Lấy thông tin instrument để biết minSz, lotSz
     inst_map = build_spot_instrument_map(client)
 
@@ -695,8 +698,8 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
     print(f"[INFO] USDT khả dụng: {usdt_avail}")
 
     for t in new_trades:
-        inst_id = t["Coin"]
-        direction = t["Tín hiệu"]
+        inst_id = t["Coin"]          # ví dụ 'NEIRO-USDT'
+        direction = t["Tín hiệu"]    # LONG / SHORT
         entry_planned = t["Entry"]
         sl_price = t["SL"]
         tp_price = t["TP"]
@@ -709,7 +712,7 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
         min_sz = inst_info["minSz"]
         lot_sz = inst_info["lotSz"] if inst_info["lotSz"] > 0 else min_sz
 
-        # lấy giá hiện tại
+        # Giá hiện tại (fallback = entry_planned)
         try:
             candles = client.get_candles(inst_id, bar=INTERVAL, limit=1)
             if candles:
@@ -721,25 +724,29 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
 
         side = "buy" if direction == "LONG" else "sell"
 
+        # Tính khối lượng theo notional 25 USDT
         if side == "buy":
-            notional = min(BASE_MARGIN_USDT, usdt_avail)
-            if notional < BASE_MARGIN_USDT * 0.5:
+            # Giữ lại 10% để phòng phí / rounding
+            max_usable = usdt_avail * 0.9
+            if max_usable < min(5.0, BASE_TRADE_NOTIONAL_USDT * 0.5):
                 print(f"[WARN] USDT quá ít ({usdt_avail}), bỏ qua mua {inst_id}.")
                 continue
+
+            notional = min(BASE_TRADE_NOTIONAL_USDT, max_usable)
             sz_raw = notional / last_price
             sz = round_sz(sz_raw, lot_sz, min_sz)
             if sz <= 0:
                 print(f"[WARN] Sz quá nhỏ cho {inst_id}, bỏ.")
                 continue
         else:  # sell
-            # coin base, ví dụ BTC-USDT -> BTC
+            # base = NEIRO
             base = inst_id.split("-")[0]
             base_avail = client.get_balance(base)
             if base_avail <= 0:
                 print(f"[WARN] Không có {base} để bán, bỏ SHORT {inst_id}.")
                 continue
-            # bán khoảng 10 USDT worth hoặc toàn bộ nếu ít
-            target_sz = BASE_MARGIN_USDT / last_price
+
+            target_sz = BASE_TRADE_NOTIONAL_USDT / last_price
             sz_raw = min(target_sz, base_avail)
             sz = round_sz(sz_raw, lot_sz, min_sz)
             if sz <= 0:
@@ -749,11 +756,42 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
         try:
             # 1) Vào lệnh market
             resp_order = client.place_spot_market_order(inst_id, side, sz)
-            usdt_avail = client.get_balance("USDT")  # update sau mỗi lệnh
+            print("[OKX ORDER RESP]", resp_order)
+
+            # --- CHECK THÀNH CÔNG HAY THẤT BẠI ---
+            ok = False
+            err_detail = ""
+
+            if resp_order.get("code") == "0":
+                data_list = resp_order.get("data", [])
+                if data_list:
+                    first = data_list[0]
+                    if first.get("sCode") == "0":
+                        ok = True
+                    else:
+                        err_detail = first.get("sMsg") or first.get("msg") or str(first)
+            else:
+                err_detail = resp_order.get("msg", str(resp_order))
+
+            if not ok:
+                msg_fail = (
+                    f"❌ *LỆNH OKX SPOT THẤT BẠI*\n"
+                    f"Coin: `{inst_id}`\n"
+                    f"Tín hiệu: *{direction}*\n"
+                    f"Side: `{side}`\n"
+                    f"Qty: `{sz}`\n"
+                    f"Lý do: {err_detail}"
+                )
+                print(msg_fail)
+                notify_telegram(msg_fail)
+                # Không đặt TP/SL nếu lệnh vào thất bại
+                continue
+
+            # Nếu đến đây là lệnh đã vào thành công
+            usdt_avail = client.get_balance("USDT")  # cập nhật lại sau mỗi lệnh
 
             # 2) Đặt OCO TP/SL cho cùng khối lượng
             try:
-                # LONG -> TP/SL là lệnh SELL ; SHORT -> lệnh BUY
                 oco_side = "sell" if direction == "LONG" else "buy"
                 resp_oco = client.place_oco_tp_sl(
                     inst_id=inst_id,
@@ -762,7 +800,25 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
                     tp_trigger_px=tp_price,
                     sl_trigger_px=sl_price,
                 )
-                oco_info = "TP/SL OCO đặt thành công."
+
+                oco_ok = False
+                oco_detail = ""
+                if resp_oco.get("code") == "0":
+                    data_list = resp_oco.get("data", [])
+                    if data_list:
+                        first = data_list[0]
+                        if first.get("sCode") == "0":
+                            oco_ok = True
+                        else:
+                            oco_detail = first.get("sMsg") or first.get("msg") or str(first)
+                else:
+                    oco_detail = resp_oco.get("msg", str(resp_oco))
+
+                if oco_ok:
+                    oco_info = "TP/SL OCO đặt thành công."
+                else:
+                    oco_info = f"Đặt TP/SL OCO bị lỗi: {oco_detail}"
+
             except Exception as e2:
                 oco_info = f"Đặt TP/SL OCO bị lỗi: {e2}"
                 print("[WARN]", oco_info)
@@ -784,13 +840,11 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
             )
             print(msg)
             notify_telegram(msg)
-            print("[OKX ORDER RESP]", resp_order)
-            if resp_oco is not None:
-                print("[OKX OCO RESP]", resp_oco)
 
         except Exception as e:
             print(f"[ERROR] Lỗi vào lệnh SPOT {inst_id}: {e}")
             notify_telegram(f"❌ Lỗi vào lệnh OKX SPOT {inst_id}: {e}")
+
 
 
 # ============================================================
