@@ -288,6 +288,46 @@ class OKXClient:
         r = requests.post(url, headers=headers, data=body, timeout=15)
         r.raise_for_status()
         return r.json()
+        def place_oco_tp_sl(self, inst_id, side, sz, tp_trigger_px, sl_trigger_px):
+            """
+            Đặt OCO TP/SL cho SPOT:
+              - inst_id: 'BTC-USDT'
+              - side: 'sell' nếu đang LONG (tức TP/SL đều là lệnh bán)
+                      'buy'  nếu đang SHORT (TP/SL đều là lệnh mua)
+              - sz: khối lượng coin (giống lệnh vào)
+              - tp_trigger_px: giá kích hoạt TP
+              - sl_trigger_px: giá kích hoạt SL
+    
+            ordType = 'oco' => khi TP khớp thì SL bị hủy và ngược lại.
+            tpOrdPx = -1, slOrdPx = -1 => dùng MARKET price khi trigger.
+            """
+            path = "/api/v5/trade/order-algo"
+            url = OKX_BASE_URL + path
+    
+            body_dict = {
+                "instId": inst_id,
+                "tdMode": "cash",
+                "side": side,            # 'sell' hoặc 'buy'
+                "ordType": "oco",
+                "sz": str(sz),
+    
+                # TP
+                "tpTriggerPx": str(tp_trigger_px),
+                "tpTriggerPxType": "last",
+                "tpOrdPx": "-1",         # -1 = market khi trigger
+    
+                # SL
+                "slTriggerPx": str(sl_trigger_px),
+                "slTriggerPxType": "last",
+                "slOrdPx": "-1",         # -1 = market khi trigger
+            }
+    
+            body = json.dumps(body_dict)
+            headers = self._headers("POST", path, body)
+    
+            r = requests.post(url, headers=headers, data=body, timeout=15)
+            r.raise_for_status()
+            return r.json()
 
     def get_balance(self, ccy):
         path = f"/api/v5/account/balance?ccy={ccy}"
@@ -638,24 +678,47 @@ def execute_trades_okx_spot(client: OKXClient, new_trades):
                 continue
 
         try:
-            resp = client.place_spot_market_order(inst_id, side, sz)
-            usdt_avail = client.get_balance("USDT")  # update lại sau mỗi lệnh
+            # 1) Vào lệnh market
+            resp_order = client.place_spot_market_order(inst_id, side, sz)
+            usdt_avail = client.get_balance("USDT")  # update sau mỗi lệnh
 
+            # 2) Đặt OCO TP/SL cho cùng khối lượng
+            try:
+                # LONG -> TP/SL là lệnh SELL ; SHORT -> lệnh BUY
+                oco_side = "sell" if direction == "LONG" else "buy"
+                resp_oco = client.place_oco_tp_sl(
+                    inst_id=inst_id,
+                    side=oco_side,
+                    sz=sz,
+                    tp_trigger_px=tp_price,
+                    sl_trigger_px=sl_price,
+                )
+                oco_info = "TP/SL OCO đặt thành công."
+            except Exception as e2:
+                oco_info = f"Đặt TP/SL OCO bị lỗi: {e2}"
+                print("[WARN]", oco_info)
+                resp_oco = None
+
+            # 3) Log + Telegram
             msg = (
                 f"🚀 *OKX SPOT TRADE*\n"
                 f"Coin: `{inst_id}`\n"
                 f"Tín hiệu: *{direction}*\n"
-                f"Side: `{side}`\n"
+                f"Side vào lệnh: `{side}`\n"
                 f"Qty: `{sz}`\n"
                 f"Entry (sheet): `{entry_planned:.6f}`\n"
                 f"Giá hiện tại: `{last_price:.6f}`\n"
-                f"TP target: `{tp_price:.6f}`\n"
-                f"SL target: `{sl_price:.6f}`\n"
-                f"(TP/SL hiện *chưa đặt tự động* trên OKX – chỉ là mốc tham chiếu.)"
+                f"TP: `{tp_price:.6f}`\n"
+                f"SL: `{sl_price:.6f}`\n"
+                f"TP/SL: *OCO tự động trên OKX* (1 khớp thì lệnh kia tự huỷ)\n"
+                f"Chi tiết OCO: {oco_info}"
             )
             print(msg)
             notify_telegram(msg)
-            print("[OKX RESP]", resp)
+            print("[OKX ORDER RESP]", resp_order)
+            if resp_oco is not None:
+                print("[OKX OCO RESP]", resp_oco)
+
         except Exception as e:
             print(f"[ERROR] Lỗi vào lệnh SPOT {inst_id}: {e}")
             notify_telegram(f"❌ Lỗi vào lệnh OKX SPOT {inst_id}: {e}")
