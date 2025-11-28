@@ -59,7 +59,7 @@ def is_backtest_time_vn():
     (bot chạy trong khung 10 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 22 and now_vn.minute <= 55
+    return now_vn.hour == 19 and now_vn.minute <= 15
 
 # ========== OKX REST CLIENT ==========
 
