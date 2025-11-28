@@ -319,7 +319,7 @@ class OKXClient:
         body = json.dumps(body_dict)
         headers = self._headers("POST", path, body)
         r = requests.post(url, headers=headers, data=body, timeout=15)
-                if r.status_code != 200:
+        if r.status_code != 200:
             print("\n❌ MARKET ORDER ERROR")
             print("URL:", r.url)
             print("Status:", r.status_code)
@@ -366,13 +366,13 @@ class OKXClient:
         headers = self._headers("POST", path, body)
     
         r = requests.post(url, headers=headers, data=body, timeout=15)
-                if r.status_code != 200:
-        print("\n❌ OCO ORDER ERROR")
-        print("URL:", r.url)
-        print("Status:", r.status_code)
-        print("Response:", r.text)
-        print("Sent Body:", body, "\n")
-        r.raise_for_status()
+        if r.status_code != 200:
+            print("\n❌ OCO ORDER ERROR")
+            print("URL:", r.url)
+            print("Status:", r.status_code)
+            print("Response:", r.text)
+            print("Sent Body:", body, "\n")
+            r.raise_for_status()
 
         return r.json()
 
