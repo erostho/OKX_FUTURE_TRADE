@@ -376,28 +376,36 @@ class OKXClient:
 
         return r.json()
 
-    def get_balance(self, ccy):
-        path = f"/api/v5/account/balance?ccy={ccy}"
-        url = OKX_BASE_URL + path
-        headers = self._headers("GET", path)
-        r = requests.get(url, headers=headers, timeout=15)
-
-        if r.status_code != 200:
-            print("\n❌ BALANCE ERROR")
-            print("URL:", r.url)
-            print("Status:", r.status_code)
-            print("Response:", r.text, "\n")
-            r.raise_for_status()
-        data = r.json()
-        details = data.get("data", [])
-        if not details:
+        def get_balance(self, ccy):
+            path = f"/api/v5/account/balance?ccy={ccy}"
+            url = OKX_BASE_URL + path
+            headers = self._headers("GET", path)
+    
+            print("\n---- GET BALANCE REQUEST ----")
+            print("URL:", url)
+            print("Headers:", headers)
+            print("------------------------------\n")
+    
+            r = requests.get(url, headers=headers, timeout=15)
+    
+            if r.status_code != 200:
+                print("❌ BALANCE ERROR")
+                print("URL:", r.url)
+                print("Status:", r.status_code)
+                print("Response:", r.text, "\n")
+                r.raise_for_status()
+    
+            data = r.json()
+            details = data.get("data", [])
+            if not details:
+                return 0.0
+    
+            detail = details[0]
+            for d in detail.get("details", []):
+                if d.get("ccy") == ccy:
+                    return float(d.get("availBal", d.get("cashBal", "0")))
             return 0.0
-        # totalEq hoặc availEq
-        detail = details[0]
-        for d in detail.get("details", []):
-            if d.get("ccy") == ccy:
-                return float(d.get("availBal", d.get("cashBal", "0")))
-        return 0.0
+
 
 
 # ============================================================
