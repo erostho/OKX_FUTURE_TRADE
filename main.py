@@ -552,12 +552,10 @@ def build_signals_from_tickers(tickers):
     df = df.sort_values(["score", "abs_change"], ascending=[False, False])
     df = df.head(TOP_N_BY_CHANGE)
     return df
-
-
-def plan_trades_from_signals(df):
+def plan_trades_from_signals(df, okx: "OKXClient"):
     """
-    Từ df_signals (đã lọc, sort) -> danh sách lệnh dự kiến (planned_trades)
-    Không còn chặn trùng theo Google Sheet nữa.
+    Từ df_signals -> planned_trades.
+    TP/SL tính theo ATR 15m của từng cặp.
     """
     planned = []
     now_s = now_str_vn()
@@ -591,17 +589,12 @@ def plan_trades_from_signals(df):
     for row in top_df.itertuples():
         entry = row.last_price
 
-        # TP/SL ví dụ: TP 2%, SL 1%
-        if row.direction == "LONG":
-            tp = entry * 1.02
-            sl = entry * 0.99
-        else:
-            tp = entry * 0.98
-            sl = entry * 1.01
+        # 👉 TP/SL theo ATR
+        tp, sl = calc_tp_sl_from_atr(okx, row.instId, row.direction, entry)
 
         planned.append(
             {
-                "coin": row.instId,       # VD: BTC-USDT
+                "coin": row.instId,       # VD: MOODENG-USDT
                 "signal": row.direction,  # LONG / SHORT
                 "entry": entry,
                 "tp": tp,
@@ -624,7 +617,6 @@ def plan_trades_from_signals(df):
     return planned
 
 
-
 # ========== FUTURES SIZE CALC ==========
 
 def build_swap_meta_map(instruments):
@@ -645,6 +637,102 @@ def build_swap_meta_map(instruments):
             "minSz": min_sz,
         }
     return meta
+# ===== ATR & TP/SL HELPER =====
+
+def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 30):
+    """
+    Tính ATR (Average True Range) trên khung 15m cho 1 cặp.
+    Dùng ~30 nến, lấy ATR 14 nến gần nhất.
+
+    Trả về: atr (float) hoặc None nếu lỗi.
+    """
+    try:
+        candles = okx.get_candles(inst_id, bar="15m", limit=limit)
+    except Exception as e:
+        logging.error("Lỗi get_candles cho %s: %s", inst_id, e)
+        return None
+
+    if not candles or len(candles) < period + 1:
+        return None
+
+    # OKX trả nến mới -> cũ, ta sort lại theo thời gian tăng dần
+    try:
+        candles_sorted = sorted(candles, key=lambda x: int(x[0]))
+    except Exception:
+        candles_sorted = candles
+
+    trs = []
+    # format nến OKX: [ts, o, h, l, c, ...]
+    try:
+        prev_close = float(candles_sorted[0][4])
+    except Exception:
+        return None
+
+    for k in candles_sorted[1:]:
+        try:
+            high = float(k[2])
+            low = float(k[3])
+            close = float(k[4])
+        except Exception:
+            continue
+
+        tr = max(
+            high - low,
+            abs(high - prev_close),
+            abs(low - prev_close),
+        )
+        trs.append(tr)
+        prev_close = close
+
+    if len(trs) < period:
+        return None
+
+    atr = sum(trs[-period:]) / period
+    return atr if atr > 0 else None
+
+
+def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
+    """
+    Tính TP/SL theo ATR 15m:
+
+    - risk = 1.2 * ATR (nhưng kẹp trong [0.6%; 8%] của giá)
+    - TP = entry ± risk * RR (RR ~ 2.0)
+
+    Trả về: (tp, sl)
+    Nếu không tính được ATR -> fallback về 2% / 1%.
+    """
+    atr = calc_atr_15m(okx, inst_id)
+    # fallback nếu ATR lỗi
+    if not atr or atr <= 0:
+        # fallback cũ: TP 2%, SL 1%
+        if direction == "LONG":
+            tp = entry * 1.02
+            sl = entry * 0.99
+        else:
+            tp = entry * 0.98
+            sl = entry * 1.01
+        return tp, sl
+
+    # risk thô theo ATR
+    risk = 1.2 * atr
+    risk_pct = risk / entry
+
+    # kẹp risk_pct để tránh quá bé / quá to
+    MIN_RISK_PCT = 0.006   # 0.6%
+    MAX_RISK_PCT = 0.08    # 8%
+    risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
+    risk = risk_pct * entry
+
+    RR = 2.0  # TP ~ 2R
+
+    if direction.upper() == "LONG":
+        sl = entry - risk
+        tp = entry + risk * RR
+    else:  # SHORT
+        sl = entry + risk
+        tp = entry - risk * RR
+
+    return tp, sl
 
 
 def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
@@ -896,7 +984,7 @@ def main():
         return
 
     # 3) Plan trades
-    planned_trades = plan_trades_from_signals(df_signals)
+    planned_trades = plan_trades_from_signals(df_signals, okx)
 
     # 4) Append sheet
     append_signals(ws, planned_trades)
