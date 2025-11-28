@@ -219,42 +219,70 @@ class OKXClient:
         self.passphrase = passphrase
         self.simulated = simulated
 
-    def _headers(self, method, path, body=""):
-        ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
-        msg = ts + method.upper() + path + body
-        sign = base64.b64encode(
-            hmac.new(
+        def _headers(self, method, path, body=""):
+            ts = datetime.utcnow().isoformat(timespec="milliseconds") + "Z"
+            msg = ts + method.upper() + path + body
+    
+            signature = hmac.new(
                 self.api_secret.encode(),
                 msg.encode(),
                 digestmod="sha256"
             ).digest()
-        ).decode()
-        headers = {
-            "OK-ACCESS-KEY": self.api_key,
-            "OK-ACCESS-SIGN": sign,
-            "OK-ACCESS-TIMESTAMP": ts,
-            "OK-ACCESS-PASSPHRASE": self.passphrase,
-            "Content-Type": "application/json",
-        }
-        if self.simulated:
-            headers["x-simulated-trading"] = "1"
-        return headers
+    
+            sign_base64 = base64.b64encode(signature).decode()
+    
+            headers = {
+                "OK-ACCESS-KEY": self.api_key,
+                "OK-ACCESS-SIGN": sign_base64,
+                "OK-ACCESS-TIMESTAMP": ts,
+                "OK-ACCESS-PASSPHRASE": self.passphrase,
+                "Content-Type": "application/json",
+            }
+    
+            if self.simulated:
+                headers["x-simulated-trading"] = "1"
+    
+            # 🔥 LOG thêm để debug signature lỗi
+            print("---- OKX HEADER DEBUG ----")
+            print("Method:", method)
+            print("Path:", path)
+            print("Timestamp:", ts)
+            print("Message for HMAC:", msg)
+            print("Signature:", sign_base64)
+            print("Headers:", headers)
+            print("---------------------------")
+    
+            return headers
+
 
     # ---------- PUBLIC ----------
 
     def get_spot_tickers(self):
         url = f"{OKX_BASE_URL}/api/v5/market/tickers"
         params = {"instType": "SPOT"}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except Exception:
+            print("❌ OKX REQUEST FAILED")
+            print("URL:", r.url)
+            print("Status Code:", r.status_code)
+            print("Response:", r.text)
+            raise
+
         data = r.json()
         return data.get("data", [])
 
     def get_candles(self, inst_id, bar="15m", limit=KLINE_LIMIT):
         url = f"{OKX_BASE_URL}/api/v5/market/candles"
         params = {"instId": inst_id, "bar": bar, "limit": limit}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except Exception:
+            print("❌ OKX REQUEST FAILED")
+            print("URL:", r.url)
+            print("Status Code:", r.status_code)
+            print("Response:", r.text)
+            raise
         data = r.json()
         return data.get("data", [])
 
@@ -262,8 +290,14 @@ class OKXClient:
         # để lấy minSz, lotSz, ...
         url = f"{OKX_BASE_URL}/api/v5/public/instruments"
         params = {"instType": "SPOT"}
-        r = requests.get(url, params=params, timeout=15)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except Exception:
+            print("❌ OKX REQUEST FAILED")
+            print("URL:", r.url)
+            print("Status Code:", r.status_code)
+            print("Response:", r.text)
+            raise
         data = r.json()
         return data.get("data", [])
 
