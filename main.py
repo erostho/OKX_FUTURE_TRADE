@@ -35,7 +35,7 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "YOUR_BINANCE_API_SECRET")
 
 # Google Sheets
 GOOGLE_SPREADSHEET_ID = os.getenv("GOOGLE_SPREADSHEET_ID", "YOUR_SHEET_ID")
-GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
 GOOGLE_WORKSHEET_NAME = os.getenv("GOOGLE_WORKSHEET_NAME", "Signals")
 
 # Telegram
@@ -53,8 +53,8 @@ MAX_TRADES_PER_RUN = 4     # tối đa số lệnh mỗi lần cron
 
 BASE_MARGIN_USDT = 10      # mỗi lệnh dùng 10 USDT margin
 LEVERAGE = 5               # đòn bẩy 5x
-TP_PCT = 0.01              # TP 1%
-SL_PCT = 0.005             # SL 0.5%
+TP_PCT = 0.01              # TP 2%
+SL_PCT = 0.005             # SL 1%
 
 SHEET_TTL_HOURS = 24       # dữ liệu trên Sheet chỉ giữ 24h
 
@@ -95,11 +95,20 @@ def get_gs_client():
         "https://www.googleapis.com/auth/drive",
         "https://www.googleapis.com/auth/drive.file",
     ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        GOOGLE_SERVICE_ACCOUNT_FILE, scope
-    )
+
+    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not json_str:
+        raise Exception("GOOGLE_SERVICE_ACCOUNT_JSON is not set")
+
+    # parse JSON từ env
+    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    import json
+    info = json.loads(json_str)
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(info, scope)
+
     client = gspread.authorize(creds)
     return client
+
 
 
 def prepare_sheet_and_cleanup():
