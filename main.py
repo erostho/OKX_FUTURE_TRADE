@@ -17,6 +17,7 @@ from google.oauth2 import service_account
 
 # ========== CONFIG ==========
 OKX_BASE_URL = "https://www.okx.com"
+CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
 
 # Trading config
 FUT_LEVERAGE = 6              # x6 isolated
@@ -52,6 +53,13 @@ def is_quiet_hours_vn():
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
     return now_vn.hour >= 22 or now_vn.hour < 6
+def is_backtest_time_vn():
+    """
+    Trả về True nếu giờ VN nằm trong khoảng 19:00 - 19:10.
+    (bot chạy trong khung 10 phút đó thì sẽ chạy thêm backtest)
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    return now_vn.hour == 22 and now_vn.minute <= 55
 
 # ========== OKX REST CLIENT ==========
 
@@ -249,6 +257,143 @@ class OKXClient:
         logging.info("[OKX OCO RESP] %s", data)
         return data
 
+def load_trade_cache():
+    """
+    Đọc cache lệnh đã vào từ file JSON.
+    Trả về list[dict].
+    """
+    if not os.path.exists(CACHE_FILE):
+        return []
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
+
+
+def save_trade_cache(trades):
+    """
+    Ghi lại list trades vào file JSON.
+    """
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(trades, f, ensure_ascii=False)
+    except Exception as e:
+        logging.error("Lỗi save cache: %s", e)
+
+
+def append_trade_to_cache(trade: dict):
+    """
+    Thêm 1 lệnh mới vào cache.
+    trade: {'coin', 'signal', 'entry', 'tp', 'sl', 'time'}
+    """
+    trades = load_trade_cache()
+    trades.append(trade)
+    save_trade_cache(trades)
+def eval_trades_with_prices(trades, price_map, only_today: bool):
+    """
+    Đếm TP/SL/OPEN cho list trades với price_map hiện tại.
+    only_today=True -> chỉ tính lệnh của ngày hôm nay (theo time trong trade).
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today_str = now_vn.strftime("%d/%m/%Y")
+
+    total = 0
+    tp_count = 0
+    sl_count = 0
+    open_count = 0
+
+    for t in trades:
+        try:
+            coin = t.get("coin")
+            signal = str(t.get("signal") or "").upper()
+            entry = float(t.get("entry") or 0)
+            tp = float(t.get("tp") or 0)
+            sl = float(t.get("sl") or 0)
+            time_s = str(t.get("time") or "")
+
+            if only_today and not time_s.startswith(today_str):
+                continue
+
+            price = price_map.get(coin)
+            if price is None or price == 0:
+                continue
+
+            total += 1
+            status = "OPEN"
+
+            if signal == "LONG":
+                if tp > 0 and price >= tp:
+                    status = "TP"
+                elif sl > 0 and price <= sl:
+                    status = "SL"
+            elif signal == "SHORT":
+                if tp > 0 and price <= tp:
+                    status = "TP"
+                elif sl > 0 and price >= sl:
+                    status = "SL"
+
+            if status == "TP":
+                tp_count += 1
+            elif status == "SL":
+                sl_count += 1
+            else:
+                open_count += 1
+        except Exception:
+            continue
+
+    closed = tp_count + sl_count
+    winrate = (tp_count / closed * 100) if closed > 0 else 0.0
+    return total, tp_count, sl_count, open_count, winrate
+def run_backtest_if_needed(okx: "OKXClient"):
+    """
+    Nếu đang trong khung giờ backtest (19:00 - 19:10 VN)
+    thì chạy backtest với cache và gửi 1 tin Telegram.
+    """
+    if not is_backtest_time_vn():
+        return
+
+    trades = load_trade_cache()
+    if not trades:
+        logging.info("[BACKTEST] Cache trống, không có lệnh nào.")
+        return
+
+    # Lấy giá spot hiện tại cho toàn bộ USDT pairs
+    try:
+        tickers = okx.get_spot_tickers()
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi lấy giá OKX: %s", e)
+        return
+
+    price_map = {}
+    for t in tickers:
+        inst_id = t.get("instId")
+        try:
+            last = float(t.get("last", "0") or "0")
+        except Exception:
+            continue
+        price_map[inst_id] = last
+
+    # 1) Toàn bộ lịch sử cache
+    total_all, tp_all, sl_all, open_all, win_all = eval_trades_with_prices(
+        trades, price_map, only_today=False
+    )
+
+    # 2) Riêng ngày hôm nay
+    total_today, tp_today, sl_today, open_today, win_today = eval_trades_with_prices(
+        trades, price_map, only_today=True
+    )
+
+    msg = (
+        f"[BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={open_all} win={win_all:.1f}%\n"
+        f"[BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={open_today} win={win_today:.1f}%"
+    )
+
+    logging.info(msg)
+    send_telegram_message(msg)
 
 # ========== GOOGLE SHEETS ==========
 
@@ -685,7 +830,18 @@ def execute_futures_trades(okx: OKXClient, trades):
                 oco_resp.get("msg", ""),
             )
 
-        # 4) Gom 1 dòng cho Telegram (bỏ -USDT)
+        # 4) Lệnh đã mở thành công -> lưu vào CACHE
+        trade_cache_item = {
+            "coin": coin,          # ví dụ: 'BTC-USDT'
+            "signal": signal,      # 'LONG' / 'SHORT'
+            "entry": entry,
+            "tp": tp,
+            "sl": sl,
+            "time": now_str_vn(),  # thời điểm vào lệnh theo VN
+        }
+        append_trade_to_cache(trade_cache_item)
+
+        # Đồng thời thêm dòng Telegram (bỏ -USDT)
         coin_name = coin.replace("-USDT", "")
         line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
         telegram_lines.append(line)
@@ -747,7 +903,9 @@ def main():
 
     # 5) Futures + Telegram
     execute_futures_trades(okx, planned_trades)
-
+    
+    # 6) Nếu đang trong khung 19:00 - 19:10 VN thì chạy backtest
+    run_backtest_if_needed(okx)
 
 if __name__ == "__main__":
     main()
