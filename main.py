@@ -19,14 +19,14 @@ from google.oauth2 import service_account
 OKX_BASE_URL = "https://www.okx.com"
 
 # Trading config
-FUT_LEVERAGE = 6              # x5 isolated
+FUT_LEVERAGE = 6              # x6 isolated
 NOTIONAL_PER_TRADE = 25.0     # 25 USDT position size (ký quỹ ~5$ với x5)
-MAX_TRADES_PER_RUN = 5        # tối đa 5 lệnh / 1 lần cron
+MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 
 # Scanner config
-MIN_ABS_CHANGE_PCT = 5.0      # chỉ lấy coin |24h change| >= 5%
+MIN_ABS_CHANGE_PCT = 3.0      # chỉ lấy coin |24h change| >= 3%
 MIN_VOL_USDT = 100000         # min 24h volume quote
-TOP_N_BY_CHANGE = 40          # universe: top 40 theo độ biến động
+TOP_N_BY_CHANGE = 200          # universe: top 200 theo độ biến động
 
 # Google Sheet headers
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
@@ -45,7 +45,13 @@ def setup_logging():
 def now_str_vn():
     # Render dùng UTC -> +7h cho giờ VN
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
-
+def is_quiet_hours_vn():
+    """
+    Trả về True nếu đang trong khung giờ 22h–06h (giờ VN),
+    dùng để tắt Telegram ban đêm.
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    return now_vn.hour >= 22 or now_vn.hour < 6
 
 # ========== OKX REST CLIENT ==========
 
@@ -314,6 +320,12 @@ def append_signals(ws, trades):
 # ========== TELEGRAM ==========
 
 def send_telegram_message(text):
+    # 1. Tắt thông báo trong khung giờ 22h–06h (giờ VN)
+    if is_quiet_hours_vn():
+        logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
+        return
+
+    # 2. Gửi như bình thường ngoài khung giờ trên
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
@@ -321,6 +333,7 @@ def send_telegram_message(text):
             "TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID chưa cấu hình, bỏ qua gửi Telegram."
         )
         return
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": chat_id, "text": text}
     try:
@@ -424,11 +437,7 @@ def plan_trades_from_signals(df, existing_keys):
         )
 
     for row in top_df.itertuples():
-        key = (row.instId, row.direction)
-        if key in existing_keys:
-            continue
-
-        entry = row.last_price
+         entry = row.last_price
         # 5% TP, 2% SL
         if row.direction == "LONG":
             tp = entry * 1.05
@@ -522,6 +531,9 @@ def execute_futures_trades(okx: OKXClient, trades):
 
     allowed_trades = trades[: max_trades_by_balance]
 
+    # 👉 Gom tất cả coin mở lệnh thành công để gửi 1 tin duy nhất
+    telegram_lines = []
+
     for t in allowed_trades:
         coin = t["coin"]         # ví dụ NEIRO-USDT
         signal = t["signal"]     # LONG / SHORT
@@ -529,7 +541,6 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
 
-        # Spot -> Perp SWAP
         swap_inst = coin.replace("-USDT", "-USDT-SWAP")
         meta = swap_meta.get(swap_inst)
         if not meta:
@@ -572,7 +583,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("TP: %.8f", tp)
         logging.info("SL: %.8f", sl)
 
-        # 1) Set leverage isolated x5
+        # 1) Set leverage isolated x5 (không bắt buộc nhưng nên làm)
         try:
             okx.set_isolated_leverage(swap_inst, FUT_LEVERAGE)
         except Exception:
@@ -597,13 +608,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             logging.error(
                 "[OKX ORDER RESP] Lỗi mở lệnh: code=%s msg=%s", code, msg
             )
-            text = (
-                "❌ *OKX FUTURES TRADE FAILED*\n"
-                f"Coin: {coin}\n"
-                f"Tín hiệu: {signal}\n"
-                f"Lỗi: {msg}"
-            )
-            send_telegram_message(text)
+            # KHÔNG gửi telegram lỗi nữa để giữ nguyên 1 tin duy nhất
             continue
 
         # 3) OCO TP/SL
@@ -616,33 +621,29 @@ def execute_futures_trades(okx: OKXClient, trades):
             sl_px=sl,
             td_mode="isolated",
         )
-
-        oco_msg = oco_resp.get("msg", "")
         oco_code = oco_resp.get("code")
-        success_oco = oco_code == "0"
-
-        # 4) Telegram
-        text_lines = [
-            "🚀 OKX FUTURES TRADE",
-            f"Coin: {coin}",
-            f"Future: {swap_inst}",
-            f"Tín hiệu: {signal}",
-            f"PosSide: {pos_side}",
-            f"Leverage: x{FUT_LEVERAGE} isolated",
-            f"Qty (contracts): {contracts}",
-            f"Entry (sheet): {entry:.8f}",
-            f"TP: {tp:.8f}",
-            f"SL: {sl:.8f}",
-            "TP/SL: OCO tự động trên OKX (1 khớp thì lệnh kia tự hủy)",
-        ]
-        if success_oco:
-            text_lines.append("Chi tiết OCO: TP/SL OCO đặt *thành công*.")
-        else:
-            text_lines.append(
-                f"Chi tiết OCO: LỖI đặt OCO code={oco_code} msg={oco_msg}"
+        if oco_code != "0":
+            logging.error(
+                "[OKX OCO RESP] Lỗi đặt TP/SL OCO cho %s: code=%s msg=%s",
+                swap_inst,
+                oco_code,
+                oco_resp.get("msg", ""),
             )
 
-        send_telegram_message("\n".join(text_lines))
+        # 👉 Nếu đến đây là lệnh đã mở (dù OCO có thể lỗi),
+        # thêm 1 dòng vào danh sách gửi Telegram:
+        coin_name = coin.replace("-USDT", "")   # bỏ -USDT
+        line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
+        telegram_lines.append(line)
+
+    # Sau khi xử lý xong tất cả coin:
+    if telegram_lines:
+        # Gộp thành 1 message, mỗi coin 1 dòng
+        msg = "\n".join(telegram_lines)
+        send_telegram_message(msg)
+    else:
+        logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
+
 
 
 # ========== MAIN ==========
@@ -679,7 +680,7 @@ def main():
     # 2) Google Sheet
     try:
         ws = prepare_worksheet()
-        existing = get_recent_signals(ws)
+        #existing = get_recent_signals(ws)
     except Exception as e:
         logging.error("[ERROR] Google Sheet prepare lỗi: %s", e)
         return
