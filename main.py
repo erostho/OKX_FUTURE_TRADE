@@ -409,10 +409,10 @@ def build_signals_from_tickers(tickers):
     return df
 
 
-def plan_trades_from_signals(df, existing_keys):
+def plan_trades_from_signals(df):
     """
-    df: signals dataframe
-    existing_keys: set of (coin, signal)
+    Từ df_signals (đã lọc, sort) -> danh sách lệnh dự kiến (planned_trades)
+    Không còn chặn trùng theo Google Sheet nữa.
     """
     planned = []
     now_s = now_str_vn()
@@ -445,18 +445,19 @@ def plan_trades_from_signals(df, existing_keys):
 
     for row in top_df.itertuples():
         entry = row.last_price
-        # 5% TP, 2% SL
+
+        # TP/SL ví dụ: TP 2%, SL 1%
         if row.direction == "LONG":
-            tp = entry * 1.05
-            sl = entry * 0.98
+            tp = entry * 1.02
+            sl = entry * 0.99
         else:
-            tp = entry * 0.95
-            sl = entry * 1.02
+            tp = entry * 0.98
+            sl = entry * 1.01
 
         planned.append(
             {
-                "coin": row.instId,
-                "signal": row.direction,
+                "coin": row.instId,       # VD: BTC-USDT
+                "signal": row.direction,  # LONG / SHORT
                 "entry": entry,
                 "tp": tp,
                 "sl": sl,
@@ -476,6 +477,7 @@ def plan_trades_from_signals(df, existing_keys):
         )
 
     return planned
+
 
 
 # ========== FUTURES SIZE CALC ==========
