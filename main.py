@@ -738,7 +738,7 @@ def main():
         return
 
     # 3) Plan trades
-    planned_trades = plan_trades_from_signals(df_signals, existing)
+    planned_trades = plan_trades_from_signals(df_signals)
 
     # 4) Append sheet
     append_signals(ws, planned_trades)
