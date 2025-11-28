@@ -156,17 +156,22 @@ class OKXClient:
     # ---------- PRIVATE ----------
 
     def get_usdt_balance(self):
-        path = "/api/v5/account/balance"
-        params = {"ccy": "USDT"}
-        data = self._request("GET", path, params=params)
+        # NOTE: path bao gồm luôn query string để ký chính xác
+        path = "/api/v5/account/balance?ccy=USDT"
+
+        # không truyền params nữa, query đã nằm trong path
+        data = self._request("GET", path, params=None)
+
         details = data.get("data", [])
         if not details:
             return 0.0
+
         detail = details[0]
         if "details" in detail and detail["details"]:
             avail = float(detail["details"][0].get("availBal", "0"))
         else:
             avail = float(detail.get("availBal", "0"))
+
         logging.info("[INFO] USDT khả dụng: %.8f", avail)
         return avail
 
