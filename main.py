@@ -1,8 +1,4 @@
-if telegram_lines:
-    msg = "📊 LỆNH FUTURE\n" + "\n".join(telegram_lines)
-    send_telegram_message(msg)
-else:
-    logging.info("[INFO] Không có lệnh futures nào được mở thành công.")import os
+import os
 import json
 import time
 import math
