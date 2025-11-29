@@ -43,7 +43,7 @@ PUMP_MIN_CHANGE_5M      = 0.5       # %change 5m tối thiểu
 PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 10 nến trước
 
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
-PUMP_MAX_CHANGE_1H      = 50.0      # %change 1h tối đa (tránh đu quá trễ)
+PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
 
 # ================== HELPERS CHUNG ==================
 
@@ -744,22 +744,22 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         body_ratio = body5 / range5  # thân / range
         close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
 
-        # điều kiện chung: 1h change trong khoảng "vừa phải"
-        #if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
-        #    continue
-        # vol spike bắt buộc
-        #if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
-        #    continue
+        # Filter1 điều kiện chung: 1h change trong khoảng "vừa phải"
+        if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
+            continue
+        # Filter1 vol spike bắt buộc
+        if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
+            continue
         direction = None
 
         # LONG: lực tăng
-        if (
-            change_15m >= PUMP_MIN_CHANGE_15M
-            and change_5m >= PUMP_MIN_CHANGE_5M
-            and change_1h > 0
-        ):
+        #if (
+        #    change_15m >= PUMP_MIN_CHANGE_15M
+        #    and change_5m >= PUMP_MIN_CHANGE_5M
+        #    and change_1h > 0
+        #):
             # nến 5m xanh, thân lớn, close gần high
-            if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
+        #    if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
                 direction = "LONG"
 
         # SHORT: lực giảm
