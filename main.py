@@ -970,12 +970,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP_DYN] Lỗi close position %s %s: %s", instId, posSide, e)
-    logging.info(
-        f"[TP-DYN] HOLD | inst={instId} | side={posSide} | "
-        f"profit={profit_pct:.2f}% | flat={flat_move} | engulf={engulfing} | "
-        f"vol_drop={vol_drop} | ema_break={ema_break}"
-    )
-
+    logging.info(f"[TP-DYN] Giữ lệnh {instId} – chưa đến điểm thoát.")
     logging.info("===== DYNAMIC TP DONE =====")
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
