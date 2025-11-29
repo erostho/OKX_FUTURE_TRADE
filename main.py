@@ -511,41 +511,40 @@ def send_telegram_message(text):
 
 # ========== SCANNER LOGIC ==========
 
-def build_signals_from_tickers(tickers):
-    rows = []
-    for t in tickers:
-        inst_id = t.get("instId")
-        if not inst_id or not inst_id.endswith("-USDT"):
-            continue
+def build_signals_pump_dump_pro(okx: "OKXClient"):
+    """
+    Bộ lọc PUMP/DUMP PRO:
 
-        last = float(t.get("last", "0"))
-        open24h = float(t.get("open24h", "0"))
-        vol_quote = float(t.get("volCcy24h", "0"))
+    B1: Lấy toàn bộ SPOT tickers:
+        - lọc theo |change24h| và vol24h (PUMP_MIN_ABS_CHANGE_24H, PUMP_MIN_VOL_USDT_24H)
+        - sort theo abs_change24h, lấy top PUMP_PRE_TOP_N làm ứng viên
 
-        if open24h <= 0 or last <= 0:
-            continue
+    B2: Với MỖI coin ứng viên:
+        - Lấy 15m candles:
+            + change_15m: (close_now - close_15m_trước) / close_15m_trước
+            + change_1h:  (close_now - close_1h_trước) / close_1h_trước (~4 nến)
+            + vol spike: vol_now > PUMP_VOL_SPIKE_RATIO * avg_vol_10_nến_trước
+        - Lấy 5m candles:
+            + change_5m
+            + thân nến xung lực (body lớn, close gần high/low)
 
-        change_pct = (last - open24h) / open24h * 100.0
-        abs_change = abs(change_pct)
+        - Điều kiện LONG:
+            + change_15m >= PUMP_MIN_CHANGE_15M
+            + change_5m  >= PUMP_MIN_CHANGE_5M
+            + PUMP_MIN_CHANGE_1H <= change_1h <= PUMP_MAX_CHANGE_1H
+            + vol spike
+            + nến 5m cuối là nến xanh mạnh, close gần high
 
-        if abs_change < MIN_ABS_CHANGE_PCT:
-            continue
-        if vol_quote < MIN_VOL_USDT:
-            continue
+        - Điều kiện SHORT: ngược lại
 
-        direction = "LONG" if change_pct > 0 else "SHORT"
-        rows.append(
-            {
-                "instId": inst_id,
-                "direction": direction,
-                "change_pct": change_pct,
-                "abs_change": abs_change,
-                "last_price": last,
-                "vol_quote": vol_quote,
-            }
-        )
-
-    if not rows:
+    Trả về DataFrame giống format cũ:
+        columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
+    """
+    # -------- B1: pre-filter bằng tickers 24h --------
+    try:
+        tickers = okx.get_spot_tickers()
+    except Exception as e:
+        logging.error("[PUMP_PRO] Lỗi get_spot_tickers: %s", e)
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -554,17 +553,232 @@ def build_signals_from_tickers(tickers):
                 "abs_change",
                 "last_price",
                 "vol_quote",
+                "score",
             ]
         )
 
-    df = pd.DataFrame(rows)
-    # score đơn giản theo abs_change
-    df["score"] = pd.qcut(
-        df["abs_change"], q=5, labels=[1, 2, 3, 4, 5]
-    ).astype(int)
-    df = df.sort_values(["score", "abs_change"], ascending=[False, False])
-    df = df.head(TOP_N_BY_CHANGE)
+    pre_rows = []
+    for t in tickers:
+        inst_id = t.get("instId")
+        if not inst_id or not inst_id.endswith("-USDT"):
+            continue
+
+        last = safe_float(t.get("last"))
+        open24 = safe_float(t.get("open24h"))
+        vol_quote = safe_float(t.get("volCcy24h"))  # volume tính theo quote (USDT)
+
+        if last <= 0 or open24 <= 0:
+            continue
+
+        change24 = percent_change(last, open24)
+        abs_change24 = abs(change24)
+
+        if abs_change24 < PUMP_MIN_ABS_CHANGE_24H:
+            continue
+        if vol_quote < PUMP_MIN_VOL_USDT_24H:
+            continue
+
+        pre_rows.append(
+            {
+                "instId": inst_id,
+                "last": last,
+                "change24": change24,
+                "abs_change24": abs_change24,
+                "vol_quote": vol_quote,
+            }
+        )
+
+    if not pre_rows:
+        logging.info("[PUMP_PRO] Không có coin nào qua pre-filter 24h.")
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    pre_df = pd.DataFrame(pre_rows)
+    pre_df = pre_df.sort_values("abs_change24", ascending=False)
+    pre_df = pre_df.head(PUMP_PRE_TOP_N)
+
+    logging.info(
+        "[PUMP_PRO] Pre-filter còn %d coin ứng viên (top %d theo biến động 24h).",
+        len(pre_df),
+        PUMP_PRE_TOP_N,
+    )
+
+    # -------- B2: refine bằng 15m & 5m --------
+    final_rows = []
+
+    for row in pre_df.itertuples():
+        inst_id = row.instId
+        last_price = row.last
+        vol_quote = row.vol_quote
+
+        # 15m candles
+        try:
+            c15 = okx.get_candles(inst_id, bar="15m", limit=20)
+        except Exception as e:
+            logging.warning("[PUMP_PRO] Lỗi get_candles 15m cho %s: %s", inst_id, e)
+            continue
+
+        if not c15 or len(c15) < 6:  # cần ít nhất 6 nến để tính 1h
+            continue
+
+        # sort theo thời gian tăng dần
+        try:
+            c15_sorted = sorted(c15, key=lambda x: int(x[0]))
+        except Exception:
+            c15_sorted = c15
+
+        # nến hiện tại và nến trước đó
+        try:
+            o_now = safe_float(c15_sorted[-1][1])
+            h_now = safe_float(c15_sorted[-1][2])
+            l_now = safe_float(c15_sorted[-1][3])
+            c_now = safe_float(c15_sorted[-1][4])
+            vol_now = safe_float(c15_sorted[-1][5])  # thường là volCcy hoặc vol
+        except Exception:
+            continue
+
+        try:
+            c_15m_prev = safe_float(c15_sorted[-2][4])
+        except Exception:
+            c_15m_prev = c_now
+
+        # close 1h trước (4 nến 15m)
+        try:
+            c_1h_prev = safe_float(c15_sorted[-5][4])
+        except Exception:
+            c_1h_prev = c_15m_prev
+
+        change_15m = percent_change(c_now, c_15m_prev)
+        change_1h = percent_change(c_now, c_1h_prev)
+
+        # vol spike: so sánh vol_now với avg vol 10 nến trước đó
+        vols_before = []
+        for k in c15_sorted[-11:-1]:
+            vols_before.append(safe_float(k[5]))
+        if not vols_before:
+            avg_vol_10 = 0
+        else:
+            avg_vol_10 = sum(vols_before) / len(vols_before)
+
+        vol_spike_ratio = (vol_now / avg_vol_10) if avg_vol_10 > 0 else 0.0
+
+        # 5m candles
+        try:
+            c5 = okx.get_candles(inst_id, bar="5m", limit=10)
+        except Exception as e:
+            logging.warning("[PUMP_PRO] Lỗi get_candles 5m cho %s: %s", inst_id, e)
+            continue
+
+        if not c5 or len(c5) < 3:
+            continue
+
+        try:
+            c5_sorted = sorted(c5, key=lambda x: int(x[0]))
+        except Exception:
+            c5_sorted = c5
+
+        try:
+            o5_now = safe_float(c5_sorted[-1][1])
+            h5_now = safe_float(c5_sorted[-1][2])
+            l5_now = safe_float(c5_sorted[-1][3])
+            c5_now = safe_float(c5_sorted[-1][4])
+        except Exception:
+            continue
+
+        try:
+            c5_prev = safe_float(c5_sorted[-2][4])
+        except Exception:
+            c5_prev = c5_now
+
+        change_5m = percent_change(c5_now, c5_prev)
+
+        # phân tích thân nến 5m
+        range5 = max(h5_now - l5_now, 1e-8)
+        body5 = abs(c5_now - o5_now)
+        body_ratio = body5 / range5  # thân / range
+        close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
+
+        # điều kiện chung: 1h change trong khoảng "vừa phải"
+        if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
+            continue
+
+        # vol spike bắt buộc
+        if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
+            continue
+
+        direction = None
+
+        # LONG: lực tăng
+        if (
+            change_15m >= PUMP_MIN_CHANGE_15M
+            and change_5m >= PUMP_MIN_CHANGE_5M
+            and change_1h > 0
+        ):
+            # nến 5m xanh, thân lớn, close gần high
+            if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
+                direction = "LONG"
+
+        # SHORT: lực giảm
+        if (
+            change_15m <= -PUMP_MIN_CHANGE_15M
+            and change_5m <= -PUMP_MIN_CHANGE_5M
+            and change_1h < 0
+        ):
+            # nến 5m đỏ, thân lớn, close gần low
+            if c5_now < o5_now and body_ratio > 0.5 and close_pos < 0.4:
+                direction = "SHORT"
+
+        if direction is None:
+            continue
+
+        # score = kết hợp cường độ 15m, 5m, 1h và vol spike
+        score = (
+            abs(change_15m)
+            + abs(change_5m) * 1.5
+            + abs(change_1h) * 0.5
+            + max(0.0, min(vol_spike_ratio, 10.0))
+        )
+
+        final_rows.append(
+            {
+                "instId": inst_id,
+                "direction": direction,
+                "change_pct": change_15m,
+                "abs_change": abs(change_15m),
+                "last_price": last_price,
+                "vol_quote": vol_quote,
+                "score": score,
+            }
+        )
+
+    if not final_rows:
+        logging.info("[PUMP_PRO] Không coin nào pass filter PRO.")
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    df = pd.DataFrame(final_rows)
+    df = df.sort_values("score", ascending=False)
+    logging.info("[PUMP_PRO] Sau refine còn %d coin pass filter.", len(df))
     return df
+
 def plan_trades_from_signals(df, okx: "OKXClient"):
     """
     Từ df_signals -> planned_trades.
@@ -978,17 +1192,16 @@ def main():
 
     okx = OKXClient(api_key, api_secret, passphrase, simulated_trading=simulated)
 
-    # 1) Scan market
-    try:
-        tickers = okx.get_spot_tickers()
-    except Exception as e:
-        logging.error("[ERROR] Scan thị trường OKX lỗi: %s", e)
-        return
 
-    df_signals = build_signals_from_tickers(tickers)
+    # 1) Scan market với bộ lọc PUMP/DUMP PRO
+    df_signals = build_signals_pump_dump_pro(okx)
     logging.info(
-        "[INFO] Đang chấm điểm %d cặp SPOT trên OKX ...", len(df_signals)
+        "[INFO] PUMP/DUMP PRO trả về %d tín hiệu.", len(df_signals)
     )
+
+    if df_signals.empty:
+        logging.info("[INFO] Không có tín hiệu hợp lệ, dừng bot lần chạy này.")
+        return
 
     # 2) Google Sheet
     try:
