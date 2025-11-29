@@ -773,7 +773,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         #        direction = "SHORT"
 
         if direction is None:
-            return
+            continue
 
         # score = kết hợp cường độ 15m, 5m, 1h và vol spike
         score = (
