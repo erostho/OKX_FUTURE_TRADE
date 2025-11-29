@@ -1354,7 +1354,7 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Đồng thời thêm dòng Telegram (bỏ -USDT)
         coin_name = coin.replace("-USDT", "")
-        line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
+        line = f"📊 LỆNH FUTURE | {coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
         telegram_lines.append(line)
 
     # Sau khi duyệt hết các lệnh:
