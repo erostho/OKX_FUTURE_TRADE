@@ -31,6 +31,12 @@ TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 # Google Sheet headers
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 
+# ======== DYNAMIC TP CONFIG ========
+TP_DYN_MIN_PROFIT_PCT   = 3.0   # chỉ bật TP động khi lãi >= 3%
+TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
+TP_DYN_VOL_DROP_RATIO   = 0.5   # vol hiện tại < 50% avg 10 nến -> yếu
+TP_DYN_EMA_LEN          = 5     # EMA-5
+
 # ========== PUMP/DUMP PRO CONFIG ==========
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
