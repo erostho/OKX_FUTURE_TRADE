@@ -89,7 +89,7 @@ def is_backtest_time_vn():
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
-    def __init__(self, api_key, api_secret, passphrase, simulated_trading=True):
+    def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
         self.api_secret = api_secret
         self.passphrase = passphrase
