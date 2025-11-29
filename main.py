@@ -581,9 +581,13 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         )
 
     pre_rows = []
-    for t in fut_tickers:
-        fut_id = t.get("instId")          # ví dụ: "MOODENG-USDT-SWAP"
-        if not fut_id or not fut_id.endswith("-USDT-SWAP"):
+    for t in futures_list:
+        # t đôi khi là string ("BTC-USDT-SWAP"), đôi khi là dict {"instId": "..."}
+        if isinstance(t, str):
+            fut_id = t
+        else:
+            fut_id = t.get("instId", "")
+        if not fut_id:
             continue
 
         # spot_id dùng làm "coin" chung cho bot & Google Sheet
