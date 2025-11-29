@@ -1,4 +1,8 @@
-import os
+if telegram_lines:
+    msg = "📊 LỆNH FUTURE\n" + "\n".join(telegram_lines)
+    send_telegram_message(msg)
+else:
+    logging.info("[INFO] Không có lệnh futures nào được mở thành công.")import os
 import json
 import time
 import math
@@ -864,8 +868,10 @@ def run_dynamic_tp(okx: "OKXClient"):
           4) Giá cắt EMA-5 ngược hướng.
       - Nếu 1 trong 4 điều kiện xảy ra -> đóng FULL vị thế.
     """
+    logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
+    positions = okx.get_open_positions()
+    logging.info(f"[TP-DYN] Số vị thế đang mở: {len(positions)}")
     logging.info("===== DYNAMIC TP START =====")
-
     positions = okx.get_open_positions()
     logging.info(f"[TP-DYN] Đang kiểm tra {len(positions)} vị thế mở…")
     if not positions:
@@ -1431,7 +1437,7 @@ def main():
     )
 
     # Luôn ưu tiên TP dynamic trước
-    run_dynamic_tp(okx)
+    run_dynamic_tp(okx: "OKXClient")
 
     # Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     # 5,20,35,50 đều có minute % 15 == 5
