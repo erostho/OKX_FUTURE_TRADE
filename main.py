@@ -851,7 +851,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     df = df.sort_values("score", ascending=False)
     logging.info("[PUMP_PRO] Sau refine còn %d coin pass filter.", len(df))
     return df
-def run_dynamic_tp(okx: "OKXClient"):
+def run_dynamic_tp(okx):
     """
     TP động cho các lệnh futures đang mở.
     Chạy chung trong main, mỗi lần cron (15').
@@ -867,9 +867,6 @@ def run_dynamic_tp(okx: "OKXClient"):
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
     positions = okx.get_open_positions()
     logging.info(f"[TP-DYN] Số vị thế đang mở: {len(positions)}")
-    logging.info("===== DYNAMIC TP START =====")
-    positions = okx.get_open_positions()
-    logging.info(f"[TP-DYN] Đang kiểm tra {len(positions)} vị thế mở…")
     if not positions:
         logging.info("[TP_DYN] Không có vị thế futures nào đang mở.")
         return
@@ -1433,7 +1430,7 @@ def main():
     )
 
     # Luôn ưu tiên TP dynamic trước
-    run_dynamic_tp(okx: "OKXClient")
+    run_dynamic_tp(okx)
 
     # Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     # 5,20,35,50 đều có minute % 15 == 5
