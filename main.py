@@ -1403,7 +1403,11 @@ def main():
     now_vn  = now_utc + timedelta(hours=7)   # VN = UTC+7
     minute  = now_vn.minute
 
-    okx = OKXClient()
+    okx = OKXClient(
+        api_key=os.getenv("OKX_API_KEY"),
+        api_secret=os.getenv("OKX_API_SECRET"),
+        passphrase=os.getenv("OKX_API_PASSPHRASE")
+    )
 
     # Luôn ưu tiên TP dynamic trước
     run_dynamic_tp(okx)
