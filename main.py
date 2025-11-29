@@ -113,16 +113,15 @@ class OKXClient:
             .replace("+00:00", "Z")
         )
 
-    def set_leverage(self, instId, lever=5, posSide="long", mgnMode="isolated"):
+    def set_leverage(self, instId, lever=5):
         path = "/api/v5/account/set-leverage"
         body = {
             "instId": instId,
             "lever": str(lever),
-            "mgnMode": mgnMode,
-            "posSide": posSide
+            "mgnMode": "isolated"
         }
-    
         headers = self._headers("POST", path, body)
+    
         r = requests.post(OKX_BASE_URL + path, headers=headers, data=json.dumps(body))
         print("[INFO] SET LEVERAGE RESP:", r.text)
         return r.json()
