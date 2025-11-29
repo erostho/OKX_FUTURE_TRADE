@@ -126,8 +126,6 @@ class OKXClient:
         print("[INFO] SET LEVERAGE RESP:", r.text)
         return r.json()
 
-
-
     def _sign(self, timestamp, method, path, body):
         if body is None:
             body = ""
@@ -322,6 +320,19 @@ class OKXClient:
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX OCO RESP] %s", data)
         return data
+    def close_swap_position(self, inst_id, pos_side):
+        """
+        Đóng FULL vị thế bằng market order.
+        """
+        path = "/api/v5/trade/close-position"
+        body = {
+            "instId": inst_id,
+            "mgnMode": "isolated",
+            "posSide": pos_side
+        }
+        logging.info(f"[OKX] Close position: {inst_id} | {pos_side}")
+        return self._request("POST", path, body_dict=body)
+
 
 def load_trade_cache():
     """
@@ -1035,6 +1046,14 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
 
     return tp, sl
 
+def calc_ema(prices, length):
+    if not prices or len(prices) < length:
+        return None
+    ema = prices[0]
+    alpha = 2 / (length + 1)
+    for p in prices[1:]:
+        ema = alpha * p + (1 - alpha) * ema
+    return ema
 
 def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
     """
@@ -1250,19 +1269,12 @@ def execute_futures_trades(okx: OKXClient, trades):
 def run_dynamic_tp(okx: OKXClient):
     """
     TP động cho các lệnh futures đang mở.
-    Chạy chung trong main, mỗi lần cron (15').
-    Logic:
-      - Chỉ xét lệnh đang LÃI >= TP_DYN_MIN_PROFIT_PCT.
-      - Lấy nến 5m gần nhất, kiểm tra 4 dấu hiệu suy yếu:
-          1) 3 nến 5m liên tiếp không còn tiến thêm theo hướng đang lãi.
-          2) Nến đảo chiều mạnh (engulfing).
-          3) Volume giảm mạnh so với trung bình 10 nến trước.
-          4) Giá cắt EMA-5 ngược hướng.
-      - Nếu 1 trong 4 điều kiện xảy ra -> đóng FULL vị thế.
     """
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
+
     positions = okx.get_open_positions()
     logging.info(f"[TP-DYN] Số vị thế đang mở: {len(positions)}")
+
     if not positions:
         logging.info("[TP_DYN] Không có vị thế futures nào đang mở.")
         return
@@ -1270,30 +1282,33 @@ def run_dynamic_tp(okx: OKXClient):
     for p in positions:
         try:
             instId  = p.get("instId")
-            posSide = p.get("posSide")        # 'long' / 'short'
-            sz      = safe_float(p.get("availPos", "0"))
-            avg_px  = safe_float(p.get("avgPx", "0"))  # giá vào bình quân
-            logging.info(f"[TP-DYN] -> Kiểm tra {inst} | {side}")
-        except Exception:
+            posSide = p.get("posSide")  # 'long'/'short'
+            pos     = safe_float(p.get("pos", "0"))            # tổng khối lượng
+            avail   = safe_float(p.get("availPos", pos))       # fallback
+            sz      = avail if avail > 0 else pos
+            avg_px  = safe_float(p.get("avgPx", "0"))
+
+            logging.info(f"[TP-DYN] -> Kiểm tra {instId} | {posSide}")
+        except Exception as e:
+            logging.error(f"[TP-DYN] Lỗi đọc position: {e}")
             continue
 
         if not instId or sz <= 0 or avg_px <= 0:
             continue
 
-        # Lấy nến 5m
+        # --- Lấy nến 5m ---
         try:
             c5 = okx.get_candles(instId, bar="5m", limit=30)
         except Exception as e:
-            logging.warning("[TP_DYN] Lỗi get_candles 5m cho %s: %s", instId, e)
+            logging.warning(f"[TP-DYN] Lỗi get_candles 5m {instId}: {e}")
             continue
 
-        if not c5 or len(c5) < TP_DYN_FLAT_BARS + 5:
+        if not c5 or len(c5) < TP_DYN_FLAT_BARS + 10:
             continue
 
-        # sort theo thời gian tăng dần
         try:
             c5_sorted = sorted(c5, key=lambda x: int(x[0]))
-        except Exception:
+        except:
             c5_sorted = c5
 
         closes = [safe_float(k[4]) for k in c5_sorted]
@@ -1301,9 +1316,6 @@ def run_dynamic_tp(okx: OKXClient):
         highs  = [safe_float(k[2]) for k in c5_sorted]
         lows   = [safe_float(k[3]) for k in c5_sorted]
         vols   = [safe_float(k[5]) for k in c5_sorted]
-
-        if len(closes) < TP_DYN_FLAT_BARS + 1:
-            continue
 
         c_now   = closes[-1]
         c_prev1 = closes[-2]
@@ -1315,58 +1327,64 @@ def run_dynamic_tp(okx: OKXClient):
         l_prev1 = lows[-2]
         vol_now = vols[-1]
 
-        # % lãi hiện tại
+        # % Lãi
         if posSide == "long":
-            profit_pct = (c_now - avg_px) / avg_px * 100.0
+            profit_pct = (c_now - avg_px) / avg_px * 100
         else:
-            profit_pct = (avg_px - c_now) / avg_px * 100.0
+            profit_pct = (avg_px - c_now) / avg_px * 100
 
         if profit_pct < TP_DYN_MIN_PROFIT_PCT:
-            # chưa đủ lãi để bật TP động
+            logging.info(f"[TP-DYN] {instId} lãi {profit_pct:.2f}% < threshold → bỏ qua")
             continue
 
-        # 1) 3 nến 5m không còn tiến thêm
+        # 1) 3 nến không tiến thêm
         if posSide == "long":
             flat_move = not (c_now > c_prev1 > c_prev2)
         else:
             flat_move = not (c_now < c_prev1 < c_prev2)
 
-        # 2) Nến đảo chiều mạnh (engulfing đơn giản)
+        # 2) Engulfing đảo chiều
         body_now  = abs(c_now - o_now)
         body_prev = abs(c_prev1 - o_prev1)
         engulfing = False
+
         if posSide == "long":
-            # nến đỏ, thân lớn, đóng dưới low nến trước
             engulfing = (c_now < o_now) and (body_now > body_prev) and (c_now < l_prev1)
         else:
-            # nến xanh, thân lớn, đóng trên high nến trước
             engulfing = (c_now > o_now) and (body_now > body_prev) and (c_now > h_prev1)
 
-        # 3) Volume giảm mạnh
-        vols_before = vols[-(TP_DYN_FLAT_BARS + 10):-1]  # 10 nến trước
-        avg_vol10 = sum(vols_before) / max(len(vols_before), 1)
-        vol_drop = avg_vol10 > 0 and (vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO
+        # 3) Volume drop
+        vols_before = vols[-(TP_DYN_FLAT_BARS + 10):-1]
+        avg_vol10 = sum(vols_before) / max(1, len(vols_before))
+        vol_drop = (avg_vol10 > 0) and ((vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO)
 
-        # 4) Giá cắt EMA-5 ngược chiều
-        ema5 = calc_ema(closes[-(TP_DYN_EMA_LEN + 3):], TP_DYN_EMA_LEN)
+        # 4) EMA-5 break
+        ema5 = calc_ema(closes[-(TP_DYN_EMA_LEN + 5):], TP_DYN_EMA_LEN)
         ema_break = False
-        if ema5 is not None:
+        if ema5:
             if posSide == "long":
                 ema_break = c_now < ema5
             else:
                 ema_break = c_now > ema5
-        should_close = flat_move or engulfing or vol_drop or ema_break
+
         logging.info(
-            "[TP_DYN] %s %s profit=%.2f%% flat=%s engulf=%s vol_drop=%s ema_break=%s",
-            instId, posSide, profit_pct, flat_move, engulfing, vol_drop, ema_break,
+            f"[TP-DYN] {instId} profit={profit_pct:.2f}% | flat={flat_move} | engulf={engulfing} | "
+            f"vol_drop={vol_drop} | ema_break={ema_break}"
         )
+
+        should_close = flat_move or engulfing or vol_drop or ema_break
+
         if should_close:
-            logging.info("[TP_DYN] Đóng vị thế %s %s do tín hiệu suy yếu.", instId, posSide)
+            logging.info(f"[TP_DYN] → ĐÓNG vị thế {instId} ({posSide}) do tín hiệu suy yếu.")
+
             try:
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
-                logging.error("[TP_DYN] Lỗi close position %s %s: %s", instId, posSide, e)
-    logging.info(f"[TP-DYN] Giữ lệnh {instId} – chưa đến điểm thoát.")
+                logging.error(f"[TP-DYN] Lỗi đóng lệnh {instId}: {e}")
+
+        else:
+            logging.info(f"[TP-DYN] Giữ lệnh {instId} – chưa đến điểm thoát.")
+
     logging.info("===== DYNAMIC TP DONE =====")
 
 def run_full_bot(okx):
@@ -1417,6 +1435,7 @@ def run_full_bot(okx):
 
 def main():
     # Nếu muốn tính theo giờ VN:
+    setup_logging()
     now_utc = datetime.now(timezone.utc)
     now_vn  = now_utc + timedelta(hours=7)   # VN = UTC+7
     minute  = now_vn.minute
