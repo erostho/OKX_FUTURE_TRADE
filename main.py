@@ -760,20 +760,20 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         #):
             # nến 5m xanh, thân lớn, close gần high
         #    if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
-                direction = "LONG"
+        #       direction = "LONG"
 
         # SHORT: lực giảm
-        if (
-            change_15m <= -PUMP_MIN_CHANGE_15M
-            and change_5m <= -PUMP_MIN_CHANGE_5M
-            and change_1h < 0
-        ):
+        #if (
+        #    change_15m <= -PUMP_MIN_CHANGE_15M
+        #    and change_5m <= -PUMP_MIN_CHANGE_5M
+        #    and change_1h < 0
+        #):
             # nến 5m đỏ, thân lớn, close gần low
-            if c5_now < o5_now and body_ratio > 0.5 and close_pos < 0.4:
-                direction = "SHORT"
+        #    if c5_now < o5_now and body_ratio > 0.5 and close_pos < 0.4:
+        #        direction = "SHORT"
 
         if direction is None:
-            continue
+            return
 
         # score = kết hợp cường độ 15m, 5m, 1h và vol spike
         score = (
