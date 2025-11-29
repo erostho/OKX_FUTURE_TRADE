@@ -657,153 +657,101 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         PUMP_PRE_TOP_N,
     )
 
-
-    # -------- B2: refine bằng 15m & 5m --------
+    # ------- B2: refine bằng 15m & 5m -------
     final_rows = []
+    
     for row in pre_df.itertuples():
-        inst_id = row.instId
+        inst_id    = row.instId
+        swap_id    = getattr(row, "swapId", inst_id)
         last_price = row.last
-        vol_quote = row.vol_quote
-        swap_id = getattr(row, "swapId", inst_id)
+        vol_quote  = row.vol_quote
+    
         # 15m candles
         try:
             c15 = okx.get_candles(swap_id, bar="15m", limit=20)
         except Exception as e:
-            logging.warning("[PUMP_PRO] Lỗi get_candles 15m cho %s: %s", inst_id, e)
+            logging.warning("[PUMP_PRO] Lỗi get_candles 15m cho %s: %s", swap_id, e)
             continue
-
-        if not c15 or len(c15) < 6:  # cần ít nhất 6 nến để tính 1h
+    
+        if not c15 or len(c15) < 6:
+            logging.debug("[PUMP_PRO][DROP] %s thiếu dữ liệu 15m (<6 nến)", inst_id)
             continue
-
-        # sort theo thời gian tăng dần
-        try:
-            c15_sorted = sorted(c15, key=lambda x: int(x[0]))
-        except Exception:
-            c15_sorted = c15
-
-        # nến hiện tại và nến trước đó
-        try:
-            o_now = safe_float(c15_sorted[-1][1])
-            h_now = safe_float(c15_sorted[-1][2])
-            l_now = safe_float(c15_sorted[-1][3])
-            c_now = safe_float(c15_sorted[-1][4])
-            vol_now = safe_float(c15_sorted[-1][5])  # thường là volCcy hoặc vol
-        except Exception:
-            continue
-
-        try:
-            c_15m_prev = safe_float(c15_sorted[-2][4])
-        except Exception:
-            c_15m_prev = c_now
-
-        # close 1h trước (4 nến 15m)
-        try:
-            c_1h_prev = safe_float(c15_sorted[-5][4])
-        except Exception:
-            c_1h_prev = c_15m_prev
-
-        change_15m = percent_change(c_now, c_15m_prev)
-        change_1h = percent_change(c_now, c_1h_prev)
-
-        # vol spike: so sánh vol_now với avg vol 10 nến trước đó
-        vols_before = []
-        for k in c15_sorted[-11:-1]:
-            vols_before.append(safe_float(k[5]))
-        if not vols_before:
-            avg_vol_10 = 0
-        else:
-            avg_vol_10 = sum(vols_before) / len(vols_before)
-
-        vol_spike_ratio = (vol_now / avg_vol_10) if avg_vol_10 > 0 else 0.0
-
+    
+        # sort theo thời gian tăng dần (giữ style cũ của bạn)
+        c15 = sorted(c15, key=lambda x: x[0])
+    
+        # TODO: phần này dùng công thức cũ của bạn
+        # giả sử bạn đã tính:
+        #   change_15m, change_1h, vol_ratio = ...
+        # ở đây mình ký hiệu:
+        change_15m = change_15m        # <-- dùng biến bạn đã tính
+        change_1h  = change_1h         # nếu có
+        vol_ratio  = vol_ratio         # nếu có
+    
         # 5m candles
         try:
-            c5 = okx.get_candles(swap_id, bar="5m", limit=10)
+            c5 = okx.get_candles(swap_id, bar="5m", limit=20)
         except Exception as e:
-            logging.warning("[PUMP_PRO] Lỗi get_candles 5m cho %s: %s", inst_id, e)
+            logging.warning("[PUMP_PRO] Lỗi get_candles 5m cho %s: %s", swap_id, e)
             continue
-
-        if not c5 or len(c5) < 3:
+    
+        if not c5 or len(c5) < 6:
+            logging.debug("[PUMP_PRO][DROP] %s thiếu dữ liệu 5m (<6 nến)", inst_id)
             continue
-
-        try:
-            c5_sorted = sorted(c5, key=lambda x: int(x[0]))
-        except Exception:
-            c5_sorted = c5
-
-        try:
-            o5_now = safe_float(c5_sorted[-1][1])
-            h5_now = safe_float(c5_sorted[-1][2])
-            l5_now = safe_float(c5_sorted[-1][3])
-            c5_now = safe_float(c5_sorted[-1][4])
-        except Exception:
+    
+        c5 = sorted(c5, key=lambda x: x[0])
+        change_5m = change_5m          # <-- dùng biến bạn đang tính
+    
+        # ========== LOGIC LỌC MỚI CHO B2 ==========
+        drop_reasons = []
+    
+        # chỉ loại nếu cả 15m & 5m đều yếu
+        if abs(change_15m) < PUMP_MIN_CHANGE_15M and abs(change_5m) < PUMP_MIN_CHANGE_5M:
+            drop_reasons.append(
+                f"15m={change_15m:.2f}%, 5m={change_5m:.2f}% < min"
+            )
+    
+        # tạm THÁO vol spike và 1h, chỉ log để xem
+        # nếu bạn vẫn tính được change_1h / vol_ratio:
+        if change_1h is not None:
+            if not (PUMP_MIN_CHANGE_1H <= abs(change_1h) <= PUMP_MAX_CHANGE_1H):
+                logging.debug("[PUMP_PRO][WARN] %s 1h %.2f%% ngoài range (%.1f–%.1f)",
+                              inst_id, change_1h, PUMP_MIN_CHANGE_1H, PUMP_MAX_CHANGE_1H)
+    
+        if vol_ratio is not None:
+            logging.debug("[PUMP_PRO][INFO] %s vol_ratio=%.2f", inst_id, vol_ratio)
+    
+        if drop_reasons:
+            logging.debug("[PUMP_PRO][DROP] %s bị loại ở B2: %s",
+                          inst_id, "; ".join(drop_reasons))
             continue
+        # ==========================================
+    
+        # nếu qua được B2 thì build row như cũ
+        direction = "LONG" if change_15m >= 0 else "SHORT"
+        score = 0
+    
+        # ví dụ tăng điểm:
+        if abs(change_15m) >= PUMP_MIN_CHANGE_15M:
+            score += 1
+        if abs(change_5m) >= PUMP_MIN_CHANGE_5M:
+            score += 1
+        if abs(change_1h) >= PUMP_MIN_CHANGE_1H:
+            score += 1
+    
+        final_rows.append({
+            "instId": inst_id,
+            "swapId": swap_id,
+            "direction": direction,
+            "score": score,
+            "change_pct": change_15m,
+            "abs_change": abs(change_15m),
+            "last_price": last_price,
+            "vol_quote": vol_quote,
+        })
+    
+    logging.info("[PUMP_PRO] Sau B2 còn %d coin.", len(final_rows))
 
-        try:
-            c5_prev = safe_float(c5_sorted[-2][4])
-        except Exception:
-            c5_prev = c5_now
-
-        change_5m = percent_change(c5_now, c5_prev)
-
-        # phân tích thân nến 5m
-        range5 = max(h5_now - l5_now, 1e-8)
-        body5 = abs(c5_now - o5_now)
-        body_ratio = body5 / range5  # thân / range
-        close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
-
-        # điều kiện chung: 1h change trong khoảng "vừa phải"
-        if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
-            continue
-
-        # vol spike bắt buộc
-        if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
-            continue
-
-        direction = None
-
-        # LONG: lực tăng
-        if (
-            change_15m >= PUMP_MIN_CHANGE_15M
-            and change_5m >= PUMP_MIN_CHANGE_5M
-            and change_1h > 0
-        ):
-            # nến 5m xanh, thân lớn, close gần high
-            if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
-                direction = "LONG"
-
-        # SHORT: lực giảm
-        if (
-            change_15m <= -PUMP_MIN_CHANGE_15M
-            and change_5m <= -PUMP_MIN_CHANGE_5M
-            and change_1h < 0
-        ):
-            # nến 5m đỏ, thân lớn, close gần low
-            if c5_now < o5_now and body_ratio > 0.5 and close_pos < 0.4:
-                direction = "SHORT"
-
-        if direction is None:
-            continue
-
-        # score = kết hợp cường độ 15m, 5m, 1h và vol spike
-        score = (
-            abs(change_15m)
-            + abs(change_5m) * 1.5
-            + abs(change_1h) * 0.5
-            + max(0.0, min(vol_spike_ratio, 10.0))
-        )
-
-        final_rows.append(
-            {
-                "instId": inst_id,
-                "direction": direction,
-                "change_pct": change_15m,
-                "abs_change": abs(change_15m),
-                "last_price": last_price,
-                "vol_quote": vol_quote,
-                "score": score,
-            }
-        )
 
     if not final_rows:
         logging.info("[PUMP_PRO] Không coin nào pass filter PRO.")
