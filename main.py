@@ -112,19 +112,31 @@ class OKXClient:
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )
-    def set_leverage(self, instId, lever=5, posSide="long", mgnMode="isolated"):
+    def set_leverage(self, instId, lever=5):
+        """
+        Set leverage cho 1 futures instId (SWAP).
+        Nếu lỗi (parameter / quyền / v.v.) thì chỉ log warning và trả None,
+        không cho bot crash.
+        """
         path = "/api/v5/account/set-leverage"
         body = {
             "instId": instId,
             "lever": str(lever),
-            "mgnMode": mgnMode,
-            "posSide": posSide
+            "mgnMode": "isolated",   # tài khoản đang dùng isolated
+            # KHÔNG gửi posSide nữa để tránh lỗi "Parameter posSide error"
         }
     
-        headers = self._headers("POST", path, body)
-        r = requests.post(OKX_BASE_URL + path, headers=headers, data=json.dumps(body))
-        print("[INFO] SET LEVERAGE RESP:", r.text)
-        return r.json()
+        try:
+            data = self._request("POST", path, body)
+            logging.info("[INFO] SET LEVERAGE %s -> x%s: %s", instId, lever, data)
+            return data
+        except Exception as e:
+            logging.warning(
+                "Không set được leverage cho %s, vẫn dùng leverage hiện tại. Lỗi: %s",
+                instId, e
+            )
+            return None
+
 
 
     def _sign(self, timestamp, method, path, body):
