@@ -34,13 +34,13 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 
 # ========== PUMP/DUMP PRO CONFIG ==========
 
-PUMP_MIN_ABS_CHANGE_24H = 3.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 200_000   # volume USDT 24h tối thiểu
+PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
+PUMP_MIN_VOL_USDT_24H   = 100_000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 2.0       # %change 15m tối thiểu theo hướng LONG/SHORT
 PUMP_MIN_CHANGE_5M      = 1.0       # %change 5m tối thiểu
-PUMP_VOL_SPIKE_RATIO    = 3.0       # vol 15m hiện tại phải > 3x vol avg 10 nến trước
+PUMP_VOL_SPIKE_RATIO    = 1.0       # vol 15m hiện tại phải > 1x vol avg 10 nến trước
 
 PUMP_MIN_CHANGE_1H      = 3.0       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 15.0      # %change 1h tối đa (tránh đu quá trễ)
@@ -625,6 +625,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         pre_rows.append(
             {
                 "instId": inst_id,           # giữ dạng "MOODENG-USDT" như cũ
+                "swapId": fut_id,         # dùng để gọi candles (ABC-USDT-SWAP)
                 "last": last,
                 "change24": change24,
                 "abs_change24": abs_change24,
@@ -659,15 +660,14 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
     # -------- B2: refine bằng 15m & 5m --------
     final_rows = []
-
     for row in pre_df.itertuples():
         inst_id = row.instId
         last_price = row.last
         vol_quote = row.vol_quote
-
+        swap_id = getattr(row, "swapId", inst_id)
         # 15m candles
         try:
-            c15 = okx.get_candles(inst_id, bar="15m", limit=20)
+            c15 = okx.get_candles(swap_id, bar="15m", limit=20)
         except Exception as e:
             logging.warning("[PUMP_PRO] Lỗi get_candles 15m cho %s: %s", inst_id, e)
             continue
@@ -718,7 +718,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
         # 5m candles
         try:
-            c5 = okx.get_candles(inst_id, bar="5m", limit=10)
+            c5 = okx.get_candles(swap_id, bar="5m", limit=10)
         except Exception as e:
             logging.warning("[PUMP_PRO] Lỗi get_candles 5m cho %s: %s", inst_id, e)
             continue
