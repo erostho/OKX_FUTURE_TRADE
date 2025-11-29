@@ -1247,7 +1247,7 @@ def execute_futures_trades(okx: OKXClient, trades):
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
 
-def run_dynamic_tp(okx):
+def run_dynamic_tp(okx: OKXClient):
     """
     TP động cho các lệnh futures đang mở.
     Chạy chung trong main, mỗi lần cron (15').
