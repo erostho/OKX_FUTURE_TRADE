@@ -78,6 +78,19 @@ class OKXClient:
             .isoformat(timespec="milliseconds")
             .replace("+00:00", "Z")
         )
+    def set_leverage(self, instId, lever=5):
+        path = "/api/v5/account/set-leverage"
+        body = {
+            "instId": instId,
+            "lever": str(lever),
+            "mgnMode": "isolated"
+        }
+        headers = self._headers("POST", path, body)
+    
+        r = requests.post(OKX_BASE_URL + path, headers=headers, data=json.dumps(body))
+        print("[INFO] SET LEVERAGE RESP:", r.text)
+        return r.json()
+
 
     def _sign(self, timestamp, method, path, body):
         if body is None:
@@ -881,6 +894,8 @@ def execute_futures_trades(okx: OKXClient, trades):
             )
 
         # 2) Mở vị thế
+        okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
+        time.sleep(0.2)
         order_resp = okx.place_futures_market_order(
             inst_id=swap_inst,
             side=side_open,
