@@ -25,7 +25,7 @@ NOTIONAL_PER_TRADE = 25.0     # 25 USDT position size (ký quỹ ~5$ với x5)
 MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 
 # Scanner config
-MIN_ABS_CHANGE_PCT = 3.0      # chỉ lấy coin |24h change| >= 3%
+MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
 MIN_VOL_USDT = 100000         # min 24h volume quote
 TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 
@@ -35,15 +35,15 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 # ========== PUMP/DUMP PRO CONFIG ==========
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 100_000   # volume USDT 24h tối thiểu
+PUMP_MIN_VOL_USDT_24H   = 100000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 2.0       # %change 15m tối thiểu theo hướng LONG/SHORT
 PUMP_MIN_CHANGE_5M      = 1.0       # %change 5m tối thiểu
 PUMP_VOL_SPIKE_RATIO    = 1.0       # vol 15m hiện tại phải > 1x vol avg 10 nến trước
 
-PUMP_MIN_CHANGE_1H      = 3.0       # %change 1h tối thiểu (tránh sóng quá yếu)
-PUMP_MAX_CHANGE_1H      = 15.0      # %change 1h tối đa (tránh đu quá trễ)
+PUMP_MIN_CHANGE_1H      = 2.0       # %change 1h tối thiểu (tránh sóng quá yếu)
+PUMP_MAX_CHANGE_1H      = 20.0      # %change 1h tối đa (tránh đu quá trễ)
 
 # ================== HELPERS CHUNG ==================
 
