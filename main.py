@@ -866,6 +866,7 @@ def run_dynamic_tp(okx: "OKXClient"):
     logging.info("===== DYNAMIC TP START =====")
 
     positions = okx.get_open_positions()
+    logging.info(f"[TP-DYN] Đang kiểm tra {len(positions)} vị thế mở…")
     if not positions:
         logging.info("[TP_DYN] Không có vị thế futures nào đang mở.")
         return
@@ -876,6 +877,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             posSide = p.get("posSide")        # 'long' / 'short'
             sz      = safe_float(p.get("availPos", "0"))
             avg_px  = safe_float(p.get("avgPx", "0"))  # giá vào bình quân
+            logging.info(f"[TP-DYN] -> Kiểm tra {inst} | {side}")
         except Exception:
             continue
 
@@ -957,21 +959,18 @@ def run_dynamic_tp(okx: "OKXClient"):
                 ema_break = c_now < ema5
             else:
                 ema_break = c_now > ema5
-
         should_close = flat_move or engulfing or vol_drop or ema_break
-
         logging.info(
             "[TP_DYN] %s %s profit=%.2f%% flat=%s engulf=%s vol_drop=%s ema_break=%s",
             instId, posSide, profit_pct, flat_move, engulfing, vol_drop, ema_break,
         )
-
         if should_close:
             logging.info("[TP_DYN] Đóng vị thế %s %s do tín hiệu suy yếu.", instId, posSide)
             try:
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP_DYN] Lỗi close position %s %s: %s", instId, posSide, e)
-
+    logging.info(f"[TP-DYN] Giữ lệnh {inst} – chưa đến điểm thoát.")
     logging.info("===== DYNAMIC TP DONE =====")
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
