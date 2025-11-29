@@ -215,14 +215,18 @@ class OKXClient:
         return data.get("data", [])
 
     # ---------- PRIVATE ----------
+    #def get_open_positions(self):
+        #"""
+        #Lấy danh sách vị thế futures (SWAP) đang mở trên OKX.
+        #"""
+        #path = "/api/v5/account/positions?instType=SWAP"
+        #data = self._request("GET", path, params=None)
+        #return data.get("data", [])
     def get_open_positions(self):
-        """
-        Lấy danh sách vị thế futures (SWAP) đang mở trên OKX.
-        """
-        path = "/api/v5/account/positions?instType=SWAP"
-        data = self._request("GET", path, params=None)
-        return data.get("data", [])
-        
+        path = "/api/v5/account/positions"
+        params = {"instType": "SWAP"}
+        data = self._request("GET", path, params=params)
+        return data.get("data", [])    
     def get_usdt_balance(self):
         # NOTE: path bao gồm luôn query string để ký chính xác
         path = "/api/v5/account/balance?ccy=USDT"
