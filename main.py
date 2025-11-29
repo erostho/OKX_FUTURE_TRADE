@@ -1355,15 +1355,15 @@ def execute_futures_trades(okx: OKXClient, trades):
         }
         append_trade_to_cache(trade_cache_item)
 
-        # Đồng thời thêm dòng Telegram (bỏ -USDT)
-        telegram_lines.append("📊 LỆNH FUTURE")
+        # Đóng thời thêm dòng Telegram (bỏ -USDT)
         coin_name = coin.replace("-USDT", "")
         line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
         telegram_lines.append(line)
 
+
     # Sau khi duyệt hết các lệnh:
     if telegram_lines:
-        msg = "\n".join(telegram_lines)
+        msg = "📊 LỆNH FUTURE" + "\n".join(telegram_lines)
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
