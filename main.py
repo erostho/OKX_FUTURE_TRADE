@@ -745,22 +745,22 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
 
         # Filter1 điều kiện chung: 1h change trong khoảng "vừa phải"
-        if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
-            continue
+        #if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
+        #    continue
         # Filter1 vol spike bắt buộc
         if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
             continue
         direction = None
 
         # LONG: lực tăng
-        #if (
-        #    change_15m >= PUMP_MIN_CHANGE_15M
-        #    and change_5m >= PUMP_MIN_CHANGE_5M
-        #    and change_1h > 0
-        #):
+        if (
+            change_15m >= PUMP_MIN_CHANGE_15M
+            and change_5m >= PUMP_MIN_CHANGE_5M
+            and change_1h > 0
+        ):
             # nến 5m xanh, thân lớn, close gần high
-        #    if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
-        #       direction = "LONG"
+            if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
+               direction = "LONG"
 
         # SHORT: lực giảm
         #if (
