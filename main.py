@@ -27,7 +27,7 @@ MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 # Scanner config
 MIN_ABS_CHANGE_PCT = 3.0      # chỉ lấy coin |24h change| >= 3%
 MIN_VOL_USDT = 100000         # min 24h volume quote
-TOP_N_BY_CHANGE = 200          # universe: top 200 theo độ biến động
+TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 
 # Google Sheet headers
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
