@@ -750,7 +750,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         # vol spike bắt buộc
         #if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
         #    continue
-        #direction = None
+        direction = None
 
         # LONG: lực tăng
         if (
