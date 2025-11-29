@@ -889,6 +889,9 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         body5 = abs(c5_now - o5_now)
         body_ratio = body5 / range5  # thân / range
         close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
+        upper_wick = h5_now - max(o5_now, c5_now)
+        lower_wick = min(o5_now, c5_now) - l5_now
+
 
         # ----- điều kiện chung: 1h change không quá yếu / quá già -----
         # (nếu bạn đang tắt 1H thì có thể comment cả block này)
@@ -952,6 +955,61 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         # Đề phòng trường hợp nến quá dị → fallback về last_price
         if entry_pullback <= 0:
             entry_pullback = last_price
+            
+        # ===== FILTER NẾN RÂU DÀI 5M =====
+        # Nếu LONG mà râu trên quá dài -> pump xả -> bỏ
+        if direction == "LONG":
+            if upper_wick > body5 * 1.2:
+                logging.info("[PUMP_PRO] %s bỏ LONG vì râu trên quá dài.", inst_id)
+                continue
+
+        # Nếu SHORT mà râu dưới quá dài -> dump rồi kéo ngược -> bỏ
+        if direction == "SHORT":
+            if lower_wick > body5 * 1.2:
+                logging.info("[PUMP_PRO] %s bỏ SHORT vì râu dưới quá dài.", inst_id)
+                continue
+        # ===== HẾT FILTER RÂU =====
+
+        # ====== FILTER XU HƯỚNG 1H EMA20 ======
+        try:
+            c1h = okx.get_candles(swap_id, bar="1H", limit=30)
+        except Exception as e:
+            logging.warning("[PUMP_PRO] Lỗi get_candles 1H cho %s: %s", inst_id, e)
+            continue
+
+        if not c1h or len(c1h) < 22:  # cần tối thiểu ~22 nến để tính EMA20 ổn
+            continue
+
+        try:
+            c1h_sorted = sorted(c1h, key=lambda x: int(x[0]))
+        except Exception:
+            c1h_sorted = c1h
+
+        closes_1h = [safe_float(k[4]) for k in c1h_sorted]
+
+        ema20_now  = calc_ema(closes_1h[-20:], 20)
+        ema20_prev = calc_ema(closes_1h[-21:-1], 20)  # EMA20 của nến trước
+
+        if not ema20_now or not ema20_prev:
+            continue
+
+        ema_trend_up   = ema20_now > ema20_prev
+        ema_trend_down = ema20_now < ema20_prev
+
+        # Dùng close hiện tại (15m hoặc 1H đều được, mình dùng 15m close)
+        price_now = c_now
+
+        # LONG: giá phải trên EMA20 1H + EMA dốc lên
+        if direction == "LONG":
+            if not (price_now > ema20_now and ema_trend_up):
+                # đi ngược xu hướng lớn → bỏ
+                continue
+
+        # SHORT: giá phải dưới EMA20 1H + EMA dốc xuống
+        if direction == "SHORT":
+            if not (price_now < ema20_now and ema_trend_down):
+                continue
+        # ====== HẾT FILTER 1H ======
 
         # score = kết hợp cường độ 15m, 5m, 1h và vol spike
         score = (
@@ -970,9 +1028,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price": last_price,
                 "vol_quote": vol_quote,
                 "score": score,
-                "entry_pullback": entry_pullback,   # 🔥 THÊM CỘT NÀY
+                "entry_pullback": entry_pullback,  # bạn đã thêm field này rồi
             }
         )
+
 
     if not final_rows:
         logging.info("[PUMP_PRO] Không coin nào pass filter PRO.")
