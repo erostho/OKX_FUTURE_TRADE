@@ -89,11 +89,11 @@ def is_quiet_hours_vn():
     return now_vn.hour >= 22 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
-    Trả về True nếu giờ VN nằm trong khoảng 19:00 - 19:10.
+    Trả về True nếu giờ VN nằm trong khoảng 20:00 - 20:15.
     (bot chạy trong khung 10 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 19 and now_vn.minute <= 30
+    return now_vn.hour == 20 and now_vn.minute <= 15
 
 # ========== OKX REST CLIENT ==========
 
