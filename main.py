@@ -187,7 +187,7 @@ class OKXClient:
         params = {"instId": inst_id, "bar": bar, "limit": str(limit)}
         data = self._request("GET", path, params=params)
         return data.get("data", [])
-        def get_swap_tickers(self):
+    def get_swap_tickers(self):
         """
         Lấy toàn bộ tickers FUTURES (SWAP) trên OKX.
         Chỉ dùng cho instType=SWAP.
