@@ -820,9 +820,21 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 direction = "SHORT"
         
         if direction is None:
-            # cả LONG/SHORT đều không thỏa → bỏ coin này
             continue
+        # ==== TÍNH ENTRY PULLBACK: 50% THÂN NẾN 5M ====
+        # midpoint = (open + close) / 2
+        mid_body = (o5_now + c5_now) / 2.0
 
+        # Với LONG: mình muốn mua ở dưới giá hiện tại 1 chút (pullback về giữa thân)
+        # Với SHORT: mình muốn bán ở trên giá hiện tại 1 chút (cũng gần giữa thân)
+        if direction == "LONG":
+            entry_pullback = min(c5_now, mid_body)
+        else:  # SHORT
+            entry_pullback = max(c5_now, mid_body)
+
+        # Đề phòng trường hợp nến quá dị → fallback về last_price
+        if entry_pullback <= 0:
+            entry_pullback = last_price
 
         # score = kết hợp cường độ 15m, 5m, 1h và vol spike
         score = (
@@ -841,6 +853,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price": last_price,
                 "vol_quote": vol_quote,
                 "score": score,
+                "entry_pullback": entry_pullback,   # 🔥 THÊM CỘT NÀY
             }
         )
 
@@ -899,9 +912,10 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
         )
 
     for row in top_df.itertuples():
-        entry = row.last_price
-
-        # 👉 TP/SL theo ATR
+        # Nếu scanner đã tính sẵn entry_pullback thì dùng,
+        # còn không thì fallback về last_price cho an toàn.
+        entry = getattr(row, "entry_pullback", row.last_price)
+        # 👉 TP/SL theo ATR, nhưng dựa trên entry "bớt FOMO"
         tp, sl = calc_tp_sl_from_atr(okx, row.instId, row.direction, entry)
 
         planned.append(
