@@ -40,7 +40,7 @@ PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến độ
 
 PUMP_MIN_CHANGE_15M     = 1.0       # %change 15m tối thiểu theo hướng LONG/SHORT
 PUMP_MIN_CHANGE_5M      = 0.5       # %change 5m tối thiểu
-PUMP_VOL_SPIKE_RATIO    = 0.0       # vol 15m hiện tại phải > 1x vol avg 10 nến trước
+PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 10 nến trước
 
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 50.0      # %change 1h tối đa (tránh đu quá trễ)
