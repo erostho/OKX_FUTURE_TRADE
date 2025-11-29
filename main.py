@@ -190,11 +190,12 @@ class OKXClient:
     def get_swap_tickers(self):
         """
         Lấy toàn bộ tickers FUTURES (SWAP) trên OKX.
-        Chỉ dùng cho instType=SWAP.
+        Trả về list các dict: [{'instId': 'BTC-USDT-SWAP', ...}, ...]
         """
         path = "/api/v5/market/tickers"
         params = {"instType": "SWAP"}
-        return self._request("GET", path, params=params)
+        data = self._request("GET", path, params=params)
+        return data.get("data", [])
 
     def get_swap_instruments(self):
         path = "/api/v5/public/instruments"
