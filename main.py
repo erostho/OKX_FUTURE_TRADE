@@ -43,7 +43,7 @@ TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 20000   # volume USDT 24h tối thiểu
+PUMP_MIN_VOL_USDT_24H   = 50000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 1.0       # %change 15m tối thiểu theo hướng LONG/SHORT
