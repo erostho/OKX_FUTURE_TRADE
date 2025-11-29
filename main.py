@@ -1215,8 +1215,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             )
 
         # 2) Mở vị thế
-        # 2) Mở vị thế
-        okx.set_leverage(swap_inst, lever=FUT_LEVERAGE, posSide=pos_side)   # <--- thêm posSide
+        okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
         time.sleep(0.2)
         
         order_resp = okx.place_futures_market_order(
