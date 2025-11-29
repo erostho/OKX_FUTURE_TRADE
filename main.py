@@ -744,36 +744,56 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         body_ratio = body5 / range5  # thân / range
         close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
 
-        # Filter1 điều kiện chung: 1h change trong khoảng "vừa phải"
-        #if abs(change_1h) < PUMP_MIN_CHANGE_1H or abs(change_1h) > PUMP_MAX_CHANGE_1H:
-        #    continue
-        # Filter1 vol spike bắt buộc
+        # ----- điều kiện chung: 1h change không quá yếu / quá già -----
+        # (nếu bạn đang tắt 1H thì có thể comment cả block này)
+        if abs(change_1h) > PUMP_MAX_CHANGE_1H:
+            # quá già, chạy xa rồi
+            continue
+        
+        # ----- vol spike: vẫn cần nhưng nới nhẹ -----
         if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
+            # vol không đủ mạnh → bỏ
             continue
+        
         direction = None
-
-        # LONG: lực tăng
-        #if (
-        #    change_15m >= PUMP_MIN_CHANGE_15M
-        #    and change_5m >= PUMP_MIN_CHANGE_5M
-        #    and change_1h > 0
-        #):
-            # nến 5m xanh, thân lớn, close gần high
-        #    if c5_now > o5_now and body_ratio > 0.5 and close_pos > 0.6:
-        #       direction = "LONG"
-
-        # SHORT: lực giảm
+        
+        # ----- LONG: lực tăng (nới) -----
+        # Chỉ cần 1 trong 2 khung mạnh lên:
+        # - 15m tăng đủ, 5m không quá xấu
+        # HOẶC
+        # - 5m tăng đủ, 15m không quá xấu
         if (
-            change_15m <= -PUMP_MIN_CHANGE_15M
-            and change_5m <= -PUMP_MIN_CHANGE_5M
-            and change_1h < 0
+            (
+                change_15m >= PUMP_MIN_CHANGE_15M and change_5m > -0.2
+            )
+            or
+            (
+                change_5m  >= PUMP_MIN_CHANGE_5M  and change_15m > -0.5
+            )
         ):
-            # nến 5m đỏ, thân lớn, close gần low
-            if c5_now < o5_now and body_ratio > 0.5 and close_pos < 0.4:
+            # Nến 5m xanh, thân khá lớn, close hơi lệch về phía high là được
+            if c5_now > o5_now and body_ratio > 0.4 and close_pos > 0.55:
+                direction = "LONG"
+        
+        # ----- SHORT: lực giảm (nới) -----
+        # Tương tự: chỉ cần 1 trong 2 khung giảm mạnh
+        if (
+            (
+                change_15m <= -PUMP_MIN_CHANGE_15M and change_5m < 0.2
+            )
+            or
+            (
+                change_5m  <= -PUMP_MIN_CHANGE_5M  and change_15m < 0.5
+            )
+        ):
+            # Nến 5m đỏ, thân khá lớn, close hơi lệch về phía low là được
+            if c5_now < o5_now and body_ratio > 0.4 and close_pos < 0.45:
                 direction = "SHORT"
-
+        
         if direction is None:
+            # cả LONG/SHORT đều không thỏa → bỏ coin này
             continue
+
 
         # score = kết hợp cường độ 15m, 5m, 1h và vol spike
         score = (
