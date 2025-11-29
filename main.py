@@ -71,7 +71,7 @@ def percent_change(new, old):
     
 def setup_logging():
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
         datefmt="%b %d %I:%M:%S %p",
     )
