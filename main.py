@@ -581,7 +581,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         )
 
     pre_rows = []
-    for t in futures_list:
+    for t in fut_tickers:
         # t đôi khi là string ("BTC-USDT-SWAP"), đôi khi là dict {"instId": "..."}
         if isinstance(t, str):
             fut_id = t
