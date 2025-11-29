@@ -1247,7 +1247,7 @@ def execute_futures_trades(okx: OKXClient, trades):
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
 
-def run_dynamic_tp(okx, "OKXClient"):
+def run_dynamic_tp(okx):
     """
     TP động cho các lệnh futures đang mở.
     Chạy chung trong main, mỗi lần cron (15').
@@ -1427,7 +1427,7 @@ def main():
     )
 
     # Luôn ưu tiên TP dynamic trước
-    run_dynamic_tp(okx, "OKXClient")
+    run_dynamic_tp(okx)
 
     # Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     # 5,20,35,50 đều có minute % 15 == 5
