@@ -33,8 +33,22 @@ TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 
 
-# ========== HELPERS ==========
+# ================== HELPERS CHUNG ==================
 
+def safe_float(x, default=0.0):
+    """Ép kiểu float an toàn, nếu lỗi trả về default."""
+    try:
+        return float(x)
+    except Exception:
+        return default
+
+
+def percent_change(new, old):
+    """Tính % thay đổi giữa 2 giá trị."""
+    if old == 0:
+        return 0.0
+    return (new - old) / old * 100.0
+    
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,
@@ -173,6 +187,14 @@ class OKXClient:
         params = {"instId": inst_id, "bar": bar, "limit": str(limit)}
         data = self._request("GET", path, params=params)
         return data.get("data", [])
+        def get_swap_tickers(self):
+        """
+        Lấy toàn bộ tickers FUTURES (SWAP) trên OKX.
+        Chỉ dùng cho instType=SWAP.
+        """
+        path = "/api/v5/market/tickers"
+        params = {"instType": "SWAP"}
+        return self._request("GET", path, params=params)
 
     def get_swap_instruments(self):
         path = "/api/v5/public/instruments"
@@ -540,11 +562,12 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     Trả về DataFrame giống format cũ:
         columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
     """
-    # -------- B1: pre-filter bằng tickers 24h --------
+
+    # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
-        tickers = okx.get_spot_tickers()
+        fut_tickers = okx.get_swap_tickers()
     except Exception as e:
-        logging.error("[PUMP_PRO] Lỗi get_spot_tickers: %s", e)
+        logging.error("[PUMP_PRO] Lỗi get_swap_tickers: %s", e)
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -558,14 +581,17 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         )
 
     pre_rows = []
-    for t in tickers:
-        inst_id = t.get("instId")
-        if not inst_id or not inst_id.endswith("-USDT"):
+    for t in fut_tickers:
+        fut_id = t.get("instId")          # ví dụ: "MOODENG-USDT-SWAP"
+        if not fut_id or not fut_id.endswith("-USDT-SWAP"):
             continue
+
+        # spot_id dùng làm "coin" chung cho bot & Google Sheet
+        inst_id = fut_id.replace("-SWAP", "")   # "MOODENG-USDT"
 
         last = safe_float(t.get("last"))
         open24 = safe_float(t.get("open24h"))
-        vol_quote = safe_float(t.get("volCcy24h"))  # volume tính theo quote (USDT)
+        vol_quote = safe_float(t.get("volCcy24h"))  # volume theo USDT 24h
 
         if last <= 0 or open24 <= 0:
             continue
@@ -573,6 +599,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         change24 = percent_change(last, open24)
         abs_change24 = abs(change24)
 
+        # chỉ lấy futures có biến động & volume đủ lớn
         if abs_change24 < PUMP_MIN_ABS_CHANGE_24H:
             continue
         if vol_quote < PUMP_MIN_VOL_USDT_24H:
@@ -580,7 +607,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
         pre_rows.append(
             {
-                "instId": inst_id,
+                "instId": inst_id,           # giữ dạng "MOODENG-USDT" như cũ
                 "last": last,
                 "change24": change24,
                 "abs_change24": abs_change24,
@@ -589,7 +616,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         )
 
     if not pre_rows:
-        logging.info("[PUMP_PRO] Không có coin nào qua pre-filter 24h.")
+        logging.info("[PUMP_PRO] Không có futures nào qua pre-filter 24h.")
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -607,10 +634,11 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     pre_df = pre_df.head(PUMP_PRE_TOP_N)
 
     logging.info(
-        "[PUMP_PRO] Pre-filter còn %d coin ứng viên (top %d theo biến động 24h).",
+        "[PUMP_PRO] Pre-filter FUTURES còn %d coin ứng viên (top %d theo biến động 24h).",
         len(pre_df),
         PUMP_PRE_TOP_N,
     )
+
 
     # -------- B2: refine bằng 15m & 5m --------
     final_rows = []
