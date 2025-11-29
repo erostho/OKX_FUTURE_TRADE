@@ -36,7 +36,10 @@ TP_DYN_MIN_PROFIT_PCT   = 3.0   # chỉ bật TP động khi lãi >= 3%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
 TP_DYN_VOL_DROP_RATIO   = 0.5   # vol hiện tại < 50% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 5     # EMA-5
-
+TP_DYN_FLAT_BARS = 2      # số nến 5m đi ngang trước khi thoát
+TP_DYN_ENGULF = True      # bật thoát khi có engulfing
+TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
+TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
