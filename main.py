@@ -847,7 +847,7 @@ def run_dynamic_tp(okx: "OKXClient"):
     """
     logging.info("===== DYNAMIC TP START =====")
 
-    positions = okx.get_swap_positions()
+    positions = okx.get_open_positions()
     if not positions:
         logging.info("[TP_DYN] Không có vị thế futures nào đang mở.")
         return
