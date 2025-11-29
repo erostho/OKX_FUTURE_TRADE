@@ -350,7 +350,6 @@ def load_trade_cache():
     except Exception:
         return []
 
-
 def save_trade_cache(trades):
     """
     Ghi lại list trades vào file JSON.
@@ -433,10 +432,11 @@ def run_backtest_if_needed(okx: "OKXClient"):
     if not is_backtest_time_vn():
         return
 
-    trades = load_trade_cache()
+    trades = load_history_from_drive()
     if not trades:
-        logging.info("[BACKTEST] Cache trống, không có lệnh nào.")
+        logging.info("[BACKTEST] History Drive trống, không có lệnh nào.")
         return
+    
 
     # Lấy giá spot hiện tại cho toàn bộ USDT pairs
     try:
@@ -544,6 +544,123 @@ def append_signals(ws, trades):
         logging.info(
             "[INFO] Đã append %d lệnh mới vào Google Sheet.", len(rows)
         )
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import io
+import csv
+import tempfile
+
+def get_drive_service():
+    """
+    Tạo service Google Drive từ GOOGLE_SERVICE_ACCOUNT_JSON
+    """
+    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not json_str:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
+    info = json.loads(json_str)
+    scopes = ["https://www.googleapis.com/auth/drive"]
+    credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    service = build("drive", "v3", credentials=credentials)
+    return service
+
+def load_history_from_drive():
+    """
+    Download file CSV từ Google Drive → trả về list[dict] trade.
+    Mỗi dict có key: coin, signal, entry, tp, sl, time
+    """
+    file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
+    if not file_id:
+        logging.warning("[DRIVE] GOOGLE_DRIVE_TRADE_FILE_ID chưa cấu hình.")
+        return []
+
+    try:
+        service = get_drive_service()
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+
+        fh.seek(0)
+        text = fh.read().decode("utf-8").splitlines()
+        if not text:
+            return []
+
+        reader = csv.DictReader(text)
+        trades = []
+        for row in reader:
+            # chuẩn hoá key
+            trades.append({
+                "coin": row.get("coin"),
+                "signal": row.get("signal"),
+                "entry": row.get("entry"),
+                "tp": row.get("tp"),
+                "sl": row.get("sl"),
+                "time": row.get("time"),
+            })
+        logging.info("[DRIVE] Loaded %d trades from Drive CSV", len(trades))
+        return trades
+    except Exception as e:
+        logging.error("[DRIVE] Lỗi load_history_from_drive: %s", e)
+        return []
+def append_trade_to_drive(trade: dict):
+    """
+    Append 1 lệnh vào file CSV trên Google Drive.
+    - Nếu DRIVE_HISTORY_RESET_ONCE=1: bỏ qua dữ liệu cũ → chỉ dùng trade mới.
+    - Luôn ghi lại header đầy đủ mỗi lần upload.
+    """
+    file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
+    if not file_id:
+        logging.warning("[DRIVE] GOOGLE_DRIVE_TRADE_FILE_ID chưa cấu hình, bỏ qua append.")
+        return
+
+    reset_once = os.getenv("DRIVE_HISTORY_RESET_ONCE", "0") == "1"
+
+    # 1) Load dữ liệu cũ (nếu không reset)
+    if reset_once:
+        logging.info("[DRIVE] RESET_ONCE=1 → xoá toàn bộ dữ liệu cũ, chỉ giữ trade mới.")
+        data = []
+    else:
+        data = load_history_from_drive()
+
+    # 2) Thêm trade mới
+    data.append({
+        "coin": str(trade.get("coin")),
+        "signal": str(trade.get("signal")),
+        "entry": str(trade.get("entry")),
+        "tp": str(trade.get("tp")),
+        "sl": str(trade.get("sl")),
+        "time": str(trade.get("time")),
+    })
+
+    # 3) Ghi ra file CSV tạm (luôn có header)
+    fieldnames = ["coin", "signal", "entry", "tp", "sl", "time"]
+
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", newline="", encoding="utf-8") as tmp:
+            writer = csv.DictWriter(tmp, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(data)
+            temp_path = tmp.name
+    except Exception as e:
+        logging.error("[DRIVE] Lỗi ghi file tạm CSV: %s", e)
+        return
+
+    # 4) Upload CSV lên Drive (overwrite file cũ)
+    try:
+        service = get_drive_service()
+        media = MediaFileUpload(temp_path, mimetype="text/csv", resumable=False)
+
+        service.files().update(
+            fileId=file_id,
+            media_body=media
+        ).execute()
+
+        logging.info("[DRIVE] Đã cập nhật history CSV trên Drive. Tổng lệnh: %d", len(data))
+    except Exception as e:
+        logging.error("[DRIVE] Lỗi upload CSV lên Drive: %s", e)
 
 
 # ========== TELEGRAM ==========
@@ -1264,7 +1381,13 @@ def execute_futures_trades(okx: OKXClient, trades):
             "sl": sl,
             "time": now_str_vn(),  # thời điểm vào lệnh theo VN
         }
-        append_trade_to_cache(trade_cache_item)
+        
+        # Nếu muốn vẫn giữ cache JSON local thì có thể gọi cả 2:
+        # append_trade_to_cache(trade_cache_item)
+        
+        # 🔥 Lưu lịch sử lên Google Drive (CSV)
+        append_trade_to_drive(trade_cache_item)
+
 
         # Đóng thời thêm dòng Telegram (bỏ -USDT)
         coin_name = coin.replace("-USDT", "")
@@ -1274,7 +1397,7 @@ def execute_futures_trades(okx: OKXClient, trades):
 
     # Sau khi duyệt hết các lệnh:
     if telegram_lines:
-        msg = "📊 LỆNH FUTURE" + "\n".join(telegram_lines)
+        msg = "📊 LỆNH FUTURE\n" + "\n".join(telegram_lines)
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
