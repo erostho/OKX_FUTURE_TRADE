@@ -691,42 +691,37 @@ def send_telegram_message(text):
 
 
 # ========== SCANNER LOGIC ==========
-
 def build_signals_pump_dump_pro(okx: "OKXClient"):
     """
-    Bộ lọc PUMP/DUMP PRO:
-
-    B1: Lấy toàn bộ SPOT tickers:
-        - lọc theo |change24h| và vol24h (PUMP_MIN_ABS_CHANGE_24H, PUMP_MIN_VOL_USDT_24H)
-        - sort theo abs_change24h, lấy top PUMP_PRE_TOP_N làm ứng viên
-
-    B2: Với MỖI coin ứng viên:
-        - Lấy 15m candles:
-            + change_15m: (close_now - close_15m_trước) / close_15m_trước
-            + change_1h:  (close_now - close_1h_trước) / close_1h_trước (~4 nến)
-            + vol spike: vol_now > PUMP_VOL_SPIKE_RATIO * avg_vol_10_nến_trước
-        - Lấy 5m candles:
-            + change_5m
-            + thân nến xung lực (body lớn, close gần high/low)
-
-        - Điều kiện LONG:
-            + change_15m >= PUMP_MIN_CHANGE_15M
-            + change_5m  >= PUMP_MIN_CHANGE_5M
-            + PUMP_MIN_CHANGE_1H <= change_1h <= PUMP_MAX_CHANGE_1H
-            + vol spike
-            + nến 5m cuối là nến xanh mạnh, close gần high
-
-        - Điều kiện SHORT: ngược lại
-
-    Trả về DataFrame giống format cũ:
-        columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
+    PUMP/DUMP PRO V2:
+    - Giữ nguyên logic V1 (24h filter, 15m/5m momentum, vol_spike).
+    - Bổ sung thêm:
+        + Entry pullback (mid-body + EMA5 5m).
+        + BTC 5m filter (tránh LONG khi BTC đỏ nến, SHORT khi BTC xanh).
+        + Impulse 2–3 sóng (closes 5m cùng chiều).
+        + Wick filter (tránh pump-xả wick dài).
+        + Overextended filter (không đu quá xa high/low 15m).
+        + EMA align: 5m / 15m / 1H cùng hướng.
     """
+
+    # -------- B0: BTC 5m cho market filter --------
+    btc_5m = None
+    try:
+        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
+        if btc_c and len(btc_c) >= 2:
+            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
+            btc_o = safe_float(btc_sorted[-1][1])
+            btc_cl = safe_float(btc_sorted[-1][4])
+            btc_5m = (btc_o, btc_cl)
+    except Exception as e:
+        logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
+        btc_5m = None
 
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
         fut_tickers = okx.get_swap_tickers()
     except Exception as e:
-        logging.error("[PUMP_PRO] Lỗi get_swap_tickers: %s", e)
+        logging.error("[PUMP_PRO_V2] Lỗi get_swap_tickers: %s", e)
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -736,12 +731,12 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price",
                 "vol_quote",
                 "score",
+                "entry_pullback",
             ]
         )
 
     pre_rows = []
     for t in fut_tickers:
-        # t đôi khi là string ("BTC-USDT-SWAP"), đôi khi là dict {"instId": "..."}
         if isinstance(t, str):
             fut_id = t
         else:
@@ -749,12 +744,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         if not fut_id:
             continue
 
-        # spot_id dùng làm "coin" chung cho bot & Google Sheet
-        inst_id = fut_id.replace("-SWAP", "")   # "MOODENG-USDT"
-
+        inst_id = fut_id.replace("-SWAP", "")
         last = safe_float(t.get("last"))
         open24 = safe_float(t.get("open24h"))
-        vol_quote = safe_float(t.get("volCcy24h"))  # volume theo USDT 24h
+        vol_quote = safe_float(t.get("volCcy24h"))
 
         if last <= 0 or open24 <= 0:
             continue
@@ -762,7 +755,6 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         change24 = percent_change(last, open24)
         abs_change24 = abs(change24)
 
-        # chỉ lấy futures có biến động & volume đủ lớn
         if abs_change24 < PUMP_MIN_ABS_CHANGE_24H:
             continue
         if vol_quote < PUMP_MIN_VOL_USDT_24H:
@@ -770,8 +762,8 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
         pre_rows.append(
             {
-                "instId": inst_id,           # giữ dạng "MOODENG-USDT" như cũ
-                "swapId": fut_id,         # dùng để gọi candles (ABC-USDT-SWAP)
+                "instId": inst_id,
+                "swapId": fut_id,
                 "last": last,
                 "change24": change24,
                 "abs_change24": abs_change24,
@@ -780,7 +772,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         )
 
     if not pre_rows:
-        logging.info("[PUMP_PRO] Không có futures nào qua pre-filter 24h.")
+        logging.info("[PUMP_PRO_V2] Không có futures nào qua pre-filter 24h.")
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -790,6 +782,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price",
                 "vol_quote",
                 "score",
+                "entry_pullback",
             ]
         )
 
@@ -798,48 +791,48 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     pre_df = pre_df.head(PUMP_PRE_TOP_N)
 
     logging.info(
-        "[PUMP_PRO] Pre-filter FUTURES còn %d coin ứng viên (top %d theo biến động 24h).",
+        "[PUMP_PRO_V2] Pre-filter FUTURES còn %d coin ứng viên (top %d theo biến động 24h).",
         len(pre_df),
         PUMP_PRE_TOP_N,
     )
 
-    # -------- B2: refine bằng 15m & 5m --------
+    # -------- B2: refine bằng 15m & 5m + filter nâng cao --------
     final_rows = []
+
     for row in pre_df.itertuples():
         inst_id = row.instId
+        swap_id = getattr(row, "swapId", inst_id)
         last_price = row.last
         vol_quote = row.vol_quote
-        swap_id = getattr(row, "swapId", inst_id)
+
         # 15m candles
         try:
-            c15 = okx.get_candles(swap_id, bar="15m", limit=20)
+            c15 = okx.get_candles(swap_id, bar="15m", limit=40)
         except Exception as e:
-            logging.warning("[PUMP_PRO] Lỗi get_candles 15m cho %s: %s", inst_id, e)
+            logging.warning("[PUMP_PRO_V2] Lỗi get_candles 15m cho %s: %s", inst_id, e)
             continue
-        if not c15 or len(c15) < 6:  # cần ít nhất 6 nến để tính 1h
+        if not c15 or len(c15) < 10:
             continue
 
-        # sort theo thời gian tăng dần
         try:
             c15_sorted = sorted(c15, key=lambda x: int(x[0]))
         except Exception:
             c15_sorted = c15
 
-        # nến hiện tại và nến trước đó
         try:
             o_now = safe_float(c15_sorted[-1][1])
             h_now = safe_float(c15_sorted[-1][2])
             l_now = safe_float(c15_sorted[-1][3])
             c_now = safe_float(c15_sorted[-1][4])
-            vol_now = safe_float(c15_sorted[-1][5])  # thường là volCcy hoặc vol
+            vol_now_15 = safe_float(c15_sorted[-1][5])
         except Exception:
             continue
+
         try:
             c_15m_prev = safe_float(c15_sorted[-2][4])
         except Exception:
             c_15m_prev = c_now
 
-        # close 1h trước (4 nến 15m)
         try:
             c_1h_prev = safe_float(c15_sorted[-5][4])
         except Exception:
@@ -848,69 +841,58 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         change_15m = percent_change(c_now, c_15m_prev)
         change_1h = percent_change(c_now, c_1h_prev)
 
-        # vol spike: so sánh vol_now với avg vol 10 nến trước đó
-        vols_before = []
-        for k in c15_sorted[-11:-1]:
-            vols_before.append(safe_float(k[5]))
-        if not vols_before:
-            avg_vol_10 = 0
-        else:
-            avg_vol_10 = sum(vols_before) / len(vols_before)
-        vol_spike_ratio = (vol_now / avg_vol_10) if avg_vol_10 > 0 else 0.0
+        vols_before_15 = [safe_float(k[5]) for k in c15_sorted[-11:-1]]
+        avg_vol_10_15 = sum(vols_before_15) / len(vols_before_15) if vols_before_15 else 0.0
+        vol_spike_ratio = (vol_now_15 / avg_vol_10_15) if avg_vol_10_15 > 0 else 0.0
 
         # 5m candles
         try:
-            c5 = okx.get_candles(swap_id, bar="5m", limit=10)
+            c5 = okx.get_candles(swap_id, bar="5m", limit=20)
         except Exception as e:
-            logging.warning("[PUMP_PRO] Lỗi get_candles 5m cho %s: %s", inst_id, e)
+            logging.warning("[PUMP_PRO_V2] Lỗi get_candles 5m cho %s: %s", inst_id, e)
             continue
-        if not c5 or len(c5) < 3:
+        if not c5 or len(c5) < 5:
             continue
+
         try:
             c5_sorted = sorted(c5, key=lambda x: int(x[0]))
         except Exception:
             c5_sorted = c5
+
         try:
             o5_now = safe_float(c5_sorted[-1][1])
             h5_now = safe_float(c5_sorted[-1][2])
             l5_now = safe_float(c5_sorted[-1][3])
             c5_now = safe_float(c5_sorted[-1][4])
+            vol_now_5 = safe_float(c5_sorted[-1][5])
         except Exception:
             continue
 
         try:
-            c5_prev = safe_float(c5_sorted[-2][4])
+            c5_prev1 = safe_float(c5_sorted[-2][4])
         except Exception:
-            c5_prev = c5_now
-        change_5m = percent_change(c5_now, c5_prev)
+            c5_prev1 = c5_now
+        try:
+            c5_prev2 = safe_float(c5_sorted[-3][4])
+        except Exception:
+            c5_prev2 = c5_prev1
 
-        # phân tích thân nến 5m
+        change_5m = percent_change(c5_now, c5_prev1)
+
         range5 = max(h5_now - l5_now, 1e-8)
         body5 = abs(c5_now - o5_now)
-        body_ratio = body5 / range5  # thân / range
-        close_pos = (c5_now - l5_now) / range5  # vị trí close trong range: 0 = sát low, 1 = sát high
-        upper_wick = h5_now - max(o5_now, c5_now)
-        lower_wick = min(o5_now, c5_now) - l5_now
+        body_ratio = body5 / range5
+        close_pos = (c5_now - l5_now) / range5
 
-
-        # ----- điều kiện chung: 1h change không quá yếu / quá già -----
-        # (nếu bạn đang tắt 1H thì có thể comment cả block này)
+        # ---- filter volume spike như V1 ----
         if abs(change_1h) > PUMP_MAX_CHANGE_1H:
-            # quá già, chạy xa rồi
             continue
-        
-        # ----- vol spike: vẫn cần nhưng nới nhẹ -----
         if vol_spike_ratio < PUMP_VOL_SPIKE_RATIO:
-            # vol không đủ mạnh → bỏ
             continue
-        
+
+        # --------- Xác định direction như V1 (giữ nguyên) ---------
         direction = None
-        
-        # ----- LONG: lực tăng (nới) -----
-        # Chỉ cần 1 trong 2 khung mạnh lên:
-        # - 15m tăng đủ, 5m không quá xấu
-        # HOẶC
-        # - 5m tăng đủ, 15m không quá xấu
+
         if (
             (
                 change_15m >= PUMP_MIN_CHANGE_15M and change_5m > -0.2
@@ -920,12 +902,9 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 change_5m  >= PUMP_MIN_CHANGE_5M  and change_15m > -0.5
             )
         ):
-            # Nến 5m xanh, thân khá lớn, close hơi lệch về phía high là được
             if c5_now > o5_now and body_ratio > 0.4 and close_pos > 0.55:
                 direction = "LONG"
-        
-        # ----- SHORT: lực giảm (nới) -----
-        # Tương tự: chỉ cần 1 trong 2 khung giảm mạnh
+
         if (
             (
                 change_15m <= -PUMP_MIN_CHANGE_15M and change_5m < 0.2
@@ -935,83 +914,112 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 change_5m  <= -PUMP_MIN_CHANGE_5M  and change_15m < 0.5
             )
         ):
-            # Nến 5m đỏ, thân khá lớn, close hơi lệch về phía low là được
             if c5_now < o5_now and body_ratio > 0.4 and close_pos < 0.45:
                 direction = "SHORT"
-        
+
         if direction is None:
             continue
-        # ==== TÍNH ENTRY PULLBACK: 50% THÂN NẾN 5M ====
-        # midpoint = (open + close) / 2
-        mid_body = (o5_now + c5_now) / 2.0
 
-        # Với LONG: mình muốn mua ở dưới giá hiện tại 1 chút (pullback về giữa thân)
-        # Với SHORT: mình muốn bán ở trên giá hiện tại 1 chút (cũng gần giữa thân)
+        # ===== V2 FILTER 1: BTC 5m đồng pha =====
+        if btc_5m is not None:
+            btc_o, btc_cl = btc_5m
+            if direction == "LONG" and btc_cl < btc_o:
+                # BTC đỏ nến 5m -> tránh LONG alt
+                continue
+            if direction == "SHORT" and btc_cl > btc_o:
+                # BTC xanh nến 5m -> tránh SHORT alt
+                continue
+
+        # ===== V2 FILTER 2: Impulse 2–3 sóng (closes 5m cùng chiều) =====
         if direction == "LONG":
-            entry_pullback = min(c5_now, mid_body)
+            if not (c5_now > c5_prev1 > c5_prev2):
+                continue
         else:  # SHORT
-            entry_pullback = max(c5_now, mid_body)
+            if not (c5_now < c5_prev1 < c5_prev2):
+                continue
 
-        # Đề phòng trường hợp nến quá dị → fallback về last_price
-        if entry_pullback <= 0:
-            entry_pullback = last_price
-            
-        # ===== FILTER NẾN RÂU DÀI 5M =====
-        # Nếu LONG mà râu trên quá dài -> pump xả -> bỏ
+        # ===== V2 FILTER 3: Wick filter (tránh pump-xả wick dài) =====
+        upper_wick = h5_now - max(o5_now, c5_now)
+        lower_wick = min(o5_now, c5_now) - l5_now
+
         if direction == "LONG":
             if upper_wick > body5 * 1.2:
-                logging.info("[PUMP_PRO] %s bỏ LONG vì râu trên quá dài.", inst_id)
+                logging.info("[PUMP_PRO_V2] %s bỏ LONG vì râu trên quá dài.", inst_id)
                 continue
-
-        # Nếu SHORT mà râu dưới quá dài -> dump rồi kéo ngược -> bỏ
-        if direction == "SHORT":
+        else:
             if lower_wick > body5 * 1.2:
-                logging.info("[PUMP_PRO] %s bỏ SHORT vì râu dưới quá dài.", inst_id)
+                logging.info("[PUMP_PRO_V2] %s bỏ SHORT vì râu dưới quá dài.", inst_id)
                 continue
-        # ===== HẾT FILTER RÂU =====
 
-        # ====== FILTER XU HƯỚNG 1H EMA20 ======
+        # ===== V2 FILTER 4: Overextended (không đu quá xa high/low 15m) =====
+        highs_15 = [safe_float(k[2]) for k in c15_sorted]
+        lows_15  = [safe_float(k[3]) for k in c15_sorted]
+        if len(highs_15) >= 20 and len(lows_15) >= 20:
+            recent_high = max(highs_15[-20:])
+            recent_low  = min(lows_15[-20:])
+            if direction == "LONG" and c_now > recent_high * 1.005:
+                # quá xa đỉnh gần -> dễ đu đỉnh
+                continue
+            if direction == "SHORT" and c_now < recent_low * 0.995:
+                # quá xa đáy gần -> dễ đu đáy
+                continue
+
+        # ===== V2 FILTER 5: EMA multi-TF align (5m, 15m, 1H) =====
+        # 5m EMA9
+        closes_5 = [safe_float(k[4]) for k in c5_sorted]
+        ema9_5m = calc_ema(closes_5[-12:], 9) if len(closes_5) >= 10 else None
+
+        # 15m EMA20
+        closes_15 = [safe_float(k[4]) for k in c15_sorted]
+        ema20_15m = calc_ema(closes_15[-25:], 20) if len(closes_15) >= 22 else None
+
+        # 1H EMA50
         try:
-            c1h = okx.get_candles(swap_id, bar="1H", limit=30)
+            c1h = okx.get_candles(swap_id, bar="1H", limit=60)
         except Exception as e:
-            logging.warning("[PUMP_PRO] Lỗi get_candles 1H cho %s: %s", inst_id, e)
-            continue
+            logging.warning("[PUMP_PRO_V2] Lỗi get_candles 1H cho %s: %s", inst_id, e)
+            c1h = []
 
-        if not c1h or len(c1h) < 22:  # cần tối thiểu ~22 nến để tính EMA20 ổn
-            continue
+        ema50_1h = None
+        if c1h and len(c1h) >= 52:
+            try:
+                c1h_sorted = sorted(c1h, key=lambda x: int(x[0]))
+            except Exception:
+                c1h_sorted = c1h
+            closes_1h = [safe_float(k[4]) for k in c1h_sorted]
+            ema50_1h = calc_ema(closes_1h[-52:], 50)
 
-        try:
-            c1h_sorted = sorted(c1h, key=lambda x: int(x[0]))
-        except Exception:
-            c1h_sorted = c1h
+        # nếu thiếu EMA nào thì bỏ qua EMA filter (không quá gắt)
+        if ema9_5m and ema20_15m and ema50_1h:
+            if direction == "LONG":
+                if not (c_now > ema9_5m and c_now > ema20_15m and c_now > ema50_1h):
+                    continue
+            else:
+                if not (c_now < ema9_5m and c_now < ema20_15m and c_now < ema50_1h):
+                    continue
 
-        closes_1h = [safe_float(k[4]) for k in c1h_sorted]
+        # ===== ENTRY PULLBACK: mid-body + EMA5 5m =====
+        mid_body = (o5_now + c5_now) / 2.0
+        ema5_5m = calc_ema(closes_5[-8:], 5) if len(closes_5) >= 6 else None
 
-        ema20_now  = calc_ema(closes_1h[-20:], 20)
-        ema20_prev = calc_ema(closes_1h[-21:-1], 20)  # EMA20 của nến trước
+        if ema5_5m:
+            if direction == "LONG":
+                desired = max(mid_body, ema5_5m)
+                entry_pullback = min(c5_now, desired)
+            else:
+                desired = min(mid_body, ema5_5m)
+                entry_pullback = max(c5_now, desired)
+        else:
+            # fallback: dùng mid-body
+            if direction == "LONG":
+                entry_pullback = min(c5_now, mid_body)
+            else:
+                entry_pullback = max(c5_now, mid_body)
 
-        if not ema20_now or not ema20_prev:
-            continue
+        if entry_pullback <= 0:
+            entry_pullback = last_price
 
-        ema_trend_up   = ema20_now > ema20_prev
-        ema_trend_down = ema20_now < ema20_prev
-
-        # Dùng close hiện tại (15m hoặc 1H đều được, mình dùng 15m close)
-        price_now = c_now
-
-        # LONG: giá phải trên EMA20 1H + EMA dốc lên
-        if direction == "LONG":
-            if not (price_now > ema20_now and ema_trend_up):
-                # đi ngược xu hướng lớn → bỏ
-                continue
-
-        # SHORT: giá phải dưới EMA20 1H + EMA dốc xuống
-        if direction == "SHORT":
-            if not (price_now < ema20_now and ema_trend_down):
-                continue
-        # ====== HẾT FILTER 1H ======
-
-        # score = kết hợp cường độ 15m, 5m, 1h và vol spike
+        # ===== score giống V1 (giữ nguyên) =====
         score = (
             abs(change_15m)
             + abs(change_5m) * 1.5
@@ -1028,13 +1036,12 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price": last_price,
                 "vol_quote": vol_quote,
                 "score": score,
-                "entry_pullback": entry_pullback,  # bạn đã thêm field này rồi
+                "entry_pullback": entry_pullback,
             }
         )
 
-
     if not final_rows:
-        logging.info("[PUMP_PRO] Không coin nào pass filter PRO.")
+        logging.info("[PUMP_PRO_V2] Không coin nào pass filter PRO V2.")
         return pd.DataFrame(
             columns=[
                 "instId",
@@ -1044,14 +1051,14 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 "last_price",
                 "vol_quote",
                 "score",
+                "entry_pullback",
             ]
         )
 
     df = pd.DataFrame(final_rows)
     df = df.sort_values("score", ascending=False)
-    logging.info("[PUMP_PRO] Sau refine còn %d coin pass filter.", len(df))
+    logging.info("[PUMP_PRO_V2] Sau refine còn %d coin pass filter.", len(df))
     return df
-
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
     """
