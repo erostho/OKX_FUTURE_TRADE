@@ -32,7 +32,7 @@ TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 3.0   # chỉ bật TP động khi lãi >= 3%
+TP_DYN_MIN_PROFIT_PCT   = 5.0   # chỉ bật TP động khi lãi >= 5%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
 TP_DYN_VOL_DROP_RATIO   = 0.5   # vol hiện tại < 50% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 5     # EMA-5
@@ -1648,7 +1648,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     """
     TP/SL theo ATR 15m (phiên PUMP/DUMP):
       - risk_pct ~ ATR/price, kẹp [1%; 4%]
-      - RR = 1.4 (TP ≈ 1.4R, SL ≈ 1R) → dễ hit TP hơn RR=2
+      - RR = 2 (TP ≈ 2R, SL ≈ 1R) 
     """
     atr = calc_atr_15m(okx, inst_id)
     if not atr or atr <= 0:
@@ -1679,7 +1679,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     risk = risk_pct * entry
 
 
-    RR = 1.5  # TP ~ 1.5R
+    RR = 2  # TP ~ 2R
 
     if direction.upper() == "LONG":
         sl = entry - risk
@@ -2057,21 +2057,24 @@ def run_dynamic_tp(okx: OKXClient):
             else:
                 ema_break = c_now > ema5
 
+
         logging.info(
             f"[TP-DYN] {instId} profit={profit_pct:.2f}% | flat={flat_move} | engulf={engulfing} | "
             f"vol_drop={vol_drop} | ema_break={ema_break}"
         )
 
-        should_close = flat_move or engulfing or vol_drop or ema_break
+        # 🔽 GIẢM ĐỘ NHẠY: cần COMBO tín hiệu xấu
+        weak_move = flat_move or vol_drop          # giá đi ngang / vol đuối
+        strong_reversal = engulfing or ema_break   # đảo chiều rõ rệt
+
+        should_close = strong_reversal and weak_move
 
         if should_close:
-            logging.info(f"[TP_DYN] → ĐÓNG vị thế {instId} ({posSide}) do tín hiệu suy yếu.")
-
+            logging.info(f"[TP_DYN] → ĐÓNG vị thế {instId} ({posSide}) do tín hiệu suy yếu (combo).")
             try:
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error(f"[TP-DYN] Lỗi đóng lệnh {instId}: {e}")
-
         else:
             logging.info(f"[TP-DYN] Giữ lệnh {instId} – chưa đến điểm thoát.")
 
