@@ -41,7 +41,7 @@ TP_DYN_ENGULF = True      # bật thoát khi có engulfing
 TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
-
+MAX_SL_PNL_PCT = 5
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 50000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
@@ -103,11 +103,11 @@ def is_quiet_hours_vn():
     return now_vn.hour >= 23 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
-    Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:35.
-    (bot chạy trong khung 35 phút đó thì sẽ chạy thêm backtest)
+    Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:25.
+    (bot chạy trong khung 25 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 23 and now_vn.minute <= 55
+    return now_vn.hour == 21 and now_vn.minute <= 25
     
 def is_deadzone_time_vn():
     """
@@ -1665,12 +1665,21 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     risk_pct = risk / entry
 
     # kẹp risk_pct để tránh quá bé / quá to
-    MIN_RISK_PCT = 0.01   # 1%
-    MAX_RISK_PCT = 0.04   # 4%
+    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
+    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
+
     risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
+
+    # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
+    # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
+    #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
+    max_risk_pct_by_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE  # ví dụ 5% / 5x = 1% giá
+
+    risk_pct = min(risk_pct, max_risk_pct_by_pnl)
     risk = risk_pct * entry
 
-    RR = 1.4  # TP ~ 1.4R
+
+    RR = 1.5  # TP ~ 1.5R
 
     if direction.upper() == "LONG":
         sl = entry - risk
@@ -1683,8 +1692,8 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
 
     
 def calc_scalp_tp_sl(entry: float, direction: str):
-    tp_pct = 0.004  # 0.4%
-    sl_pct = 0.006  # 0.6%
+    tp_pct = 0.01  # 1%
+    sl_pct = 0.005  # 0.5%
 
     if direction.upper() == "LONG":
         tp = entry * (1 + tp_pct)
