@@ -89,11 +89,11 @@ def is_quiet_hours_vn():
     return now_vn.hour >= 22 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
-    Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:15.
-    (bot chạy trong khung 10 phút đó thì sẽ chạy thêm backtest)
+    Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:35.
+    (bot chạy trong khung 35 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 21 and now_vn.minute <= 15
+    return now_vn.hour == 21 and now_vn.minute <= 35
     
 def is_deadzone_time_vn():
     """
@@ -443,7 +443,7 @@ def eval_trades_with_prices(trades, price_map, only_today: bool):
     return total, tp_count, sl_count, open_count, winrate
 def run_backtest_if_needed(okx: "OKXClient"):
     """
-    Nếu đang trong khung giờ backtest (19:00 - 19:10 VN)
+    Nếu đang trong khung giờ backtest (21:00 - 19:35 VN)
     thì chạy backtest với cache và gửi 1 tin Telegram.
     """
     if not is_backtest_time_vn():
