@@ -388,11 +388,10 @@ def load_trades_for_backtest():
     """
     # 1) Ưu tiên: Drive CSV
     try:
-        if callable(load_trades_cache):
-            trades_drive = load_trades_cache()
-            if trades_drive:
-                logging.info("[BACKTEST] Sử dụng history từ Drive (%d lệnh).", len(trades_drive))
-                return trades_drive
+        trades_drive = load_history_from_drive()   # ✅ gọi đúng tên hàm
+        if trades_drive:
+            logging.info("[BACKTEST] Sử dụng history từ Drive (%d lệnh).", len(trades_drive))
+            return trades_drive
     except Exception as e:
         logging.error("[BACKTEST] Lỗi load Drive CSV: %s", e)
 
