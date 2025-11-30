@@ -100,7 +100,7 @@ def is_quiet_hours_vn():
     dùng để tắt Telegram ban đêm.
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 22 or now_vn.hour < 6
+    return now_vn.hour >= 23 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
     Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:35.
