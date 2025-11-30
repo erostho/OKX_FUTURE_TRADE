@@ -1396,7 +1396,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("TP: %.8f", tp)
         logging.info("SL: %.8f", sl)
 
-        # 1) Set leverage isolated x5
+        # 1) Set leverage isolated x6
         #TWO WAY
         try:
             okx.set_leverage(swap_inst, FUT_LEVERAGE, pos_side=pos_side)
@@ -1407,7 +1407,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             )
         #NET MODE
         # 2) Mở vị thế
-        okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
+        #okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
         time.sleep(0.2)
         
         order_resp = okx.place_futures_market_order(
