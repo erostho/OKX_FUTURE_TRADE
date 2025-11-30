@@ -2002,22 +2002,23 @@ def run_dynamic_tp(okx: OKXClient):
         l_prev1 = lows[-2]
         vol_now = vols[-1]
 
-        # % Lãi
+        # --- % lãi theo giá (chưa nhân đòn bẩy) ---
         if posSide == "long":
             profit_pct = (c_now - avg_px) / avg_px * 100
         else:
             profit_pct = (avg_px - c_now) / avg_px * 100
 
-        # 🔥 SL KHẨN CẤP: nếu lỗ quá MAX_SL_PNL_PCT thì cắt ngay
-        if profit_pct <= -MAX_SL_PNL_PCT:
+        # 🔻 SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL với x5)
+        max_loss_price_pct = MAX_SL_PNL_PCT / FUT_LEVERAGE  # 5% / 5x = 1% giá
+        if profit_pct <= -max_loss_price_pct:
             logging.info(
-                f"[TP-DYN] {instId} lỗ {profit_pct:.2f}% <= -{MAX_SL_PNL_PCT}% → CẮT LỖ KHẨN CẤP."
+                f"[TP-DYN] {instId} lỗ {profit_pct:.2f}% giá (≈ -{MAX_SL_PNL_PCT}% PnL) "
+                f"<= ngưỡng → CẮT LỖ KHẨN CẤP."
             )
             try:
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error(f"[TP-DYN] Lỗi đóng lệnh {instId}: {e}")
-            # sang position tiếp theo
             continue
 
         # Nếu chưa lãi đủ ngưỡng thì không xử lý TP động
