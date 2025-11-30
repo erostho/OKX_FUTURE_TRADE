@@ -107,7 +107,7 @@ def is_backtest_time_vn():
     (bot chạy trong khung 35 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 22 and now_vn.minute <= 55
+    return now_vn.hour == 23 and now_vn.minute <= 55
     
 def is_deadzone_time_vn():
     """
@@ -1576,16 +1576,26 @@ def simulate_trade_result_with_candles(
     if ts_entry is None:
         return "UNKNOWN"
 
-    inst_id = coin  # nếu muốn test perp thì coin + '-SWAP'
+    # ƯU TIÊN BACKTEST BẰNG SWAP (Perpetual Futures)
+    # coin: 'SAHARA-USDT'
+    # swap_inst: 'SAHARA-USDT-SWAP'
+    base = coin.replace("-USDT", "")
+    swap_inst = f"{base}-USDT-SWAP"
 
+    # Thử lấy nến từ SWAP trước
     try:
-        candles = okx.get_candles(inst_id, bar=bar, limit=max_limit)
-    except Exception as e:
-        logging.error("[BT] Lỗi get_candles %s: %s", inst_id, e)
-        return "ERROR"
+        candles = okx.get_candles(swap_inst, bar=bar, limit=max_limit)
+        inst_id = swap_inst
+    except Exception:
+        candles = []
 
+    # Nếu SWAP thất bại → fallback SPOT
     if not candles:
-        return "NO_DATA"
+        try:
+            candles = okx.get_candles(coin, bar=bar, limit=max_limit)
+            inst_id = coin
+        except Exception:
+            return "NO_DATA"
 
     try:
         candles_sorted = sorted(candles, key=lambda x: int(x[0]))
