@@ -716,7 +716,19 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     except Exception as e:
         logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
         btc_5m = None
-
+    # -------- B0: BTC 5m cho market filter --------
+    btc_change_5m = None
+    try:
+        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
+        if btc_c and len(btc_c) >= 2:
+            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
+            btc_o = safe_float(btc_sorted[-1][1])
+            btc_cl = safe_float(btc_sorted[-1][4])
+            if btc_o > 0:
+                btc_change_5m = (btc_cl - btc_o) / btc_o * 100.0
+    except Exception as e:
+        logging.warning("[PUMP_PRO] Lỗi get_candles BTC 5m: %s", e)
+        btc_change_5m = None
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
         fut_tickers = okx.get_swap_tickers()
@@ -926,7 +938,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             if direction == "LONG" and btc_change_5m < -0.5:
                 # BTC đỏ nến 5m -> tránh LONG alt
                 continue
-            if direction == "SHORT" and btc_change_5m > 0.5:
+            if direction == "SHORT" and btc_change_5m> 0.5:
                 # BTC xanh nến 5m -> tránh SHORT alt
                 continue
 
