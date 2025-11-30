@@ -992,10 +992,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         # nếu thiếu EMA nào thì bỏ qua EMA filter (không quá gắt)
         if ema9_5m and ema20_15m:
             if direction == "LONG":
-                and not (c_now > ema9_5m and c_now > ema20_15m):
+                if not (c_now > ema9_5m and c_now > ema20_15m):
                     continue
             else:
-                and not (c_now < ema9_5m and c_now < ema20_15m):
+                if not (c_now < ema9_5m and c_now < ema20_15m):
                     continue
 
         # ===== ENTRY PULLBACK: mid-body + EMA5 5m =====
