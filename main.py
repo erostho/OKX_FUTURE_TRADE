@@ -113,19 +113,6 @@ class OKXClient:
             .replace("+00:00", "Z")
         )
 
-    def set_leverage(self, instId, lever=5):
-        path = "/api/v5/account/set-leverage"
-        body = {
-            "instId": instId,
-            "lever": str(lever),
-            "mgnMode": "isolated"
-        }
-        headers = self._headers("POST", path, body)
-    
-        r = requests.post(OKX_BASE_URL + path, headers=headers, data=json.dumps(body))
-        print("[INFO] SET LEVERAGE RESP:", r.text)
-        return r.json()
-
     def _sign(self, timestamp, method, path, body):
         if body is None:
             body = ""
@@ -260,14 +247,23 @@ class OKXClient:
         logging.info("[INFO] USDT khả dụng: %.8f", avail)
         return avail
 
-    def set_isolated_leverage(self, inst_id, lever=FUT_LEVERAGE):
+    def set_leverage(self, inst_id, lever=FUT_LEVERAGE, pos_side=None, mgn_mode="isolated"):
+        """
+        Set leverage cho 1 instId.
+        - NET mode: không cần posSide.
+        - LONG/SHORT (hedged) mode: yêu cầu posSide = 'long' hoặc 'short'.
+        """
         path = "/api/v5/account/set-leverage"
         body = {
             "instId": inst_id,
             "lever": str(lever),
-            "mgnMode": "isolated",
+            "mgnMode": mgn_mode,
         }
+        if pos_side is not None:
+            body["posSide"] = pos_side  # 'long' hoặc 'short'
+    
         data = self._request("POST", path, body_dict=body)
+        logging.info("[INFO] SET LEVERAGE RESP: %s", data)
         return data
 
     def place_futures_market_order(
@@ -1401,14 +1397,15 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("SL: %.8f", sl)
 
         # 1) Set leverage isolated x5
-        try:
-            okx.set_isolated_leverage(swap_inst, FUT_LEVERAGE)
-        except Exception:
-            logging.warning(
-                "Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
-                swap_inst,
-            )
-
+        #TWO WAY
+        #try:
+            #okx.set_leverage(swap_inst, FUT_LEVERAGE, pos_side=pos_side)
+        #except Exception:
+            #logging.warning(
+                #"Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
+                #swap_inst,
+            #)
+        #NETMDODE
         # 2) Mở vị thế
         okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
         time.sleep(0.2)
