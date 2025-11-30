@@ -94,6 +94,27 @@ def is_backtest_time_vn():
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
     return now_vn.hour == 21 and now_vn.minute <= 15
+    
+def is_deadzone_time_vn():
+    """
+    Phiên trưa 'deadzone' 10:30 - 15:30 giờ VN.
+    Dùng cho chiến lược sideway / scalp an toàn.
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    h = now_vn.hour
+    m = now_vn.minute
+
+    # 10:30–11:00
+    if h == 10 and m >= 30:
+        return True
+    # 11:00–15:00
+    if 11 <= h < 15:
+        return True
+    # 15:00–15:30
+    if h == 15 and m < 30:
+        return True
+
+    return False
 
 # ========== OKX REST CLIENT ==========
 
@@ -1067,6 +1088,236 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     df = df.sort_values("score", ascending=False)
     logging.info("[PUMP_PRO_V2] Sau refine còn %d coin pass filter.", len(df))
     return df
+def build_signals_sideway_deadzone(okx: "OKXClient"):
+    """
+    Scanner phiên DEADZONE (10h30–15h30 VN):
+
+    - Không bắt breakout pump/dump.
+    - Ưu tiên coin volume lớn, biến động 24h vừa phải.
+    - Tìm tín hiệu mean-reversion quanh EMA20 5m (giá lệch không quá xa EMA, có dấu hiệu quay lại).
+    - Trả về DataFrame cùng format với build_signals_pump_dump_pro:
+        columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
+    """
+
+    # Chỉ chạy đúng khung giờ deadzone, ngoài giờ thì trả DF rỗng
+    if not is_deadzone_time_vn():
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    try:
+        fut_tickers = okx.get_swap_tickers()
+    except Exception as e:
+        logging.error("[SIDEWAY] Lỗi get_swap_tickers: %s", e)
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    pre_rows = []
+    for t in fut_tickers:
+        if isinstance(t, str):
+            fut_id = t
+        else:
+            fut_id = t.get("instId", "")
+        if not fut_id:
+            continue
+
+        inst_id = fut_id.replace("-SWAP", "")  # "ABC-USDT"
+
+        last = safe_float(t.get("last"))
+        open24 = safe_float(t.get("open24h"))
+        vol_quote = safe_float(t.get("volCcy24h"))
+
+        if last <= 0 or open24 <= 0:
+            continue
+
+        change24 = percent_change(last, open24)
+        abs_change24 = abs(change24)
+
+        # 🔹 Phiên trưa: tránh coin pump/dump quá mạnh & tránh coin chết
+        if abs_change24 < 0.5:          # quá phẳng -> bỏ
+            continue
+        if abs_change24 > 20.0:         # biến động 24h >20% -> dễ pump/dump, để dành cho phiên tối
+            continue
+        if vol_quote < max(PUMP_MIN_VOL_USDT_24H, 2 * 10_000):  # volume đủ lớn
+            continue
+
+        pre_rows.append(
+            {
+                "instId": inst_id,
+                "swapId": fut_id,
+                "last": last,
+                "change24": change24,
+                "abs_change24": abs_change24,
+                "vol_quote": vol_quote,
+            }
+        )
+
+    if not pre_rows:
+        logging.info("[SIDEWAY] Không coin nào qua pre-filter 24h.")
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    pre_df = pd.DataFrame(pre_rows)
+    # Ưu tiên coin volume lớn & biến động vừa phải
+    pre_df = pre_df.sort_values(["vol_quote", "abs_change24"], ascending=[False, False])
+    pre_df = pre_df.head(150)
+
+    logging.info(
+        "[SIDEWAY] Pre-filter còn %d coin ứng viên (top theo vol & biến động vừa phải).",
+        len(pre_df),
+    )
+
+    final_rows = []
+
+    # Lấy BTC 5m để tránh lúc BTC đang pump/dump mạnh
+    btc_change_5m = None
+    try:
+        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
+        if btc_c and len(btc_c) >= 2:
+            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
+            btc_o = safe_float(btc_sorted[-2][4])
+            btc_c_now = safe_float(btc_sorted[-1][4])
+            if btc_o > 0:
+                btc_change_5m = percent_change(btc_c_now, btc_o)
+    except Exception as e:
+        logging.warning("[SIDEWAY] Lỗi get_candles BTC 5m: %s", e)
+
+    for row in pre_df.itertuples():
+        inst_id = row.instId
+        swap_id = getattr(row, "swapId", inst_id + "-SWAP")
+        vol_quote = row.vol_quote
+
+        # BTC đang biến động mạnh -> bỏ, không scalp phiên trưa
+        if btc_change_5m is not None and abs(btc_change_5m) > 1.0:
+            continue
+
+        # Lấy 5m candles
+        try:
+            c5 = okx.get_candles(swap_id, bar="5m", limit=60)
+        except Exception as e:
+            logging.warning("[SIDEWAY] Lỗi get_candles 5m cho %s: %s", inst_id, e)
+            continue
+
+        if not c5 or len(c5) < 25:
+            continue
+
+        try:
+            c5_sorted = sorted(c5, key=lambda x: int(x[0]))
+        except Exception:
+            c5_sorted = c5
+
+        closes = [safe_float(k[4]) for k in c5_sorted]
+        opens = [safe_float(k[1]) for k in c5_sorted]
+        highs = [safe_float(k[2]) for k in c5_sorted]
+        lows = [safe_float(k[3]) for k in c5_sorted]
+
+        c_now = closes[-1]
+        o_now = opens[-1]
+        h_now = highs[-1]
+        l_now = lows[-1]
+
+        # EMA20 5m để làm "trục" cho mean-reversion
+        ema20_5m = calc_ema(closes[-25:], 20) if len(closes) >= 25 else None
+        if ema20_5m is None or ema20_5m <= 0:
+            continue
+
+        # Độ lệch so với EMA20 (theo %)
+        dist_pct = (c_now - ema20_5m) / ema20_5m * 100.0
+
+        # Range & body nến hiện tại
+        range_5m = max(h_now - l_now, 1e-8)
+        body_5m = abs(c_now - o_now)
+        body_ratio = body_5m / range_5m
+
+        direction = None
+
+        # ========= MEAN-REVERSION LOGIC =========
+        # LONG: giá vừa "chọc xuống EMA20" rồi đóng trên EMA20, lệch không quá xa
+        if (
+            dist_pct > -0.5
+            and dist_pct < 0.5
+            and closes[-2] < ema20_5m <= c_now
+            and body_ratio < 0.7  # nến không quá xung lực
+        ):
+            direction = "LONG"
+
+        # SHORT: ngược lại
+        if (
+            dist_pct < 0.5
+            and dist_pct > -0.5
+            and closes[-2] > ema20_5m >= c_now
+            and body_ratio < 0.7
+        ):
+            # Nếu đã đánh LONG thì bỏ SHORT để tránh lẫn lộn
+            if direction is None:
+                direction = "SHORT"
+
+        if direction is None:
+            continue
+
+        # score: ưu tiên coin volume lớn & lệch EMA vừa phải
+        score = (
+            vol_quote / 1e6  # scale theo triệu USDT
+            - abs(dist_pct) * 2.0
+        )
+
+        final_rows.append(
+            {
+                "instId": inst_id,
+                "direction": direction,
+                "change_pct": dist_pct,            # dùng lệch EMA làm change_pct
+                "abs_change": abs(dist_pct),
+                "last_price": c_now,
+                "vol_quote": vol_quote,
+                "score": score,
+            }
+        )
+
+    if not final_rows:
+        logging.info("[SIDEWAY] Không coin nào pass filter sideway deadzone.")
+        return pd.DataFrame(
+            columns=[
+                "instId",
+                "direction",
+                "change_pct",
+                "abs_change",
+                "last_price",
+                "vol_quote",
+                "score",
+            ]
+        )
+
+    df = pd.DataFrame(final_rows)
+    df = df.sort_values("score", ascending=False)
+    logging.info("[SIDEWAY] Sau refine còn %d coin pass filter.", len(df))
+    return df
+
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
     """
@@ -1599,7 +1850,7 @@ def run_dynamic_tp(okx: OKXClient):
     logging.info("===== DYNAMIC TP DONE =====")
 
 def run_full_bot(okx):
-    #setup_logging()
+    setup_logging()
     logging.info("===== OKX FUTURES BOT CRON START =====")
 
     # ENV
@@ -1614,11 +1865,16 @@ def run_full_bot(okx):
         )
 
     okx = OKXClient(api_key, api_secret, passphrase, simulated_trading=simulated)
-    # 1) Scan market với bộ lọc PUMP/DUMP PRO
-    df_signals = build_signals_pump_dump_pro(okx)
-    logging.info(
-        "[INFO] PUMP/DUMP PRO trả về %d tín hiệu.", len(df_signals)
-    )
+
+    # 1) CHỌN SCANNER THEO GIỜ
+    if is_deadzone_time_vn():
+        logging.info("[MODE] 10h30–15h30 VN -> dùng scanner SIDEWAY DEADZONE.")
+        df_signals = build_signals_sideway_deadzone(okx)
+    else:
+        logging.info("[MODE] Ngoài deadzone -> dùng scanner PUMP/DUMP PRO.")
+        df_signals = build_signals_pump_dump_pro(okx)
+
+    logging.info("[INFO] Scanner trả về %d tín hiệu.", len(df_signals))
 
     if df_signals.empty:
         logging.info("[INFO] Không có tín hiệu hợp lệ, dừng bot lần chạy này.")
