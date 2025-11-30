@@ -80,6 +80,20 @@ def setup_logging():
 def now_str_vn():
     # Render dùng UTC -> +7h cho giờ VN
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
+    
+def parse_trade_time_to_utc_ms(time_str: str) -> int | None:
+    """
+    Convert 'dd/mm/YYYY HH:MM' (giờ VN) -> timestamp ms UTC
+    dùng để so sánh với ts nến OKX (ms UTC).
+    """
+    try:
+        dt_vn = datetime.strptime(time_str, "%d/%m/%Y %H:%M")
+        # trade time đang lưu giờ VN -> trừ 7h về UTC
+        dt_utc = dt_vn - timedelta(hours=7)
+        return int(dt_utc.timestamp() * 1000)
+    except Exception:
+        return None
+
 def is_quiet_hours_vn():
     """
     Trả về True nếu đang trong khung giờ 22h–06h (giờ VN),
@@ -93,7 +107,7 @@ def is_backtest_time_vn():
     (bot chạy trong khung 35 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 21 and now_vn.minute <= 35
+    return now_vn.hour == 22 and now_vn.minute <= 35
     
 def is_deadzone_time_vn():
     """
@@ -441,53 +455,92 @@ def eval_trades_with_prices(trades, price_map, only_today: bool):
     closed = tp_count + sl_count
     winrate = (tp_count / closed * 100) if closed > 0 else 0.0
     return total, tp_count, sl_count, open_count, winrate
+
 def run_backtest_if_needed(okx: "OKXClient"):
     """
-    Nếu đang trong khung giờ backtest (21:00 - 19:35 VN)
-    thì chạy backtest với cache và gửi 1 tin Telegram.
+    Backtest thật bằng nến lịch sử:
+      - Tính 2 dòng:
+            1) BT ALL
+            2) BT TODAY
     """
+
     if not is_backtest_time_vn():
         return
 
-    trades = load_history_from_drive()
+    trades = load_trade_cache()
     if not trades:
-        logging.info("[BACKTEST] History Drive trống, không có lệnh nào.")
-        return
-    
-
-    # Lấy giá spot hiện tại cho toàn bộ USDT pairs
-    try:
-        tickers = okx.get_spot_tickers()
-    except Exception as e:
-        logging.error("[BACKTEST] Lỗi lấy giá OKX: %s", e)
+        logging.info("[BACKTEST] Cache trống.")
+        send_telegram_message("[BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0%\n"
+                              "[BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0%")
         return
 
-    price_map = {}
-    for t in tickers:
-        inst_id = t.get("instId")
-        try:
-            last = float(t.get("last", "0") or "0")
-        except Exception:
-            continue
-        price_map[inst_id] = last
+    # ========== TÁCH LỆNH HÔM NAY ==========
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today_str = now_vn.strftime("%d/%m/%Y")
 
-    # 1) Toàn bộ lịch sử cache
-    total_all, tp_all, sl_all, open_all, win_all = eval_trades_with_prices(
-        trades, price_map, only_today=False
-    )
+    trades_today = []
+    for t in trades:
+        ts = str(t.get("time", ""))
+        if today_str in ts:
+            trades_today.append(t)
 
-    # 2) Riêng ngày hôm nay
-    total_today, tp_today, sl_today, open_today, win_today = eval_trades_with_prices(
-        trades, price_map, only_today=True
-    )
+    # ======= HÀM BACKTEST 1 DANH SÁCH =======
+    def do_backtest(trade_list):
+        total = tp = sl = op = other = 0
 
+        for t in trade_list:
+            try:
+                coin   = t.get("coin")
+                signal = t.get("signal")
+                entry  = float(t.get("entry") or 0)
+                tp_v   = float(t.get("tp") or 0)
+                sl_v   = float(t.get("sl") or 0)
+                time_s = str(t.get("time") or "")
+            except:
+                continue
+
+            if not coin or entry <= 0 or tp_v <= 0 or sl_v <= 0:
+                continue
+
+            total += 1
+            res = simulate_trade_result_with_candles(
+                okx=okx,
+                coin=coin,        # SPOT backtest
+                signal=signal,
+                entry=entry,
+                tp=tp_v,
+                sl=sl_v,
+                time_str=time_s,
+                bar="5m",
+                max_limit=300,
+            )
+
+            if res == "TP":
+                tp += 1
+            elif res == "SL":
+                sl += 1
+            elif res == "OPEN":
+                op += 1
+            else:
+                other += 1
+
+        closed = tp + sl
+        win = (tp / closed * 100) if closed > 0 else 0
+        return total, tp, sl, op, win
+
+    # ============ CHẠY 2 BACKTEST ============
+    total_all, tp_all, sl_all, op_all, win_all = do_backtest(trades)
+    total_today, tp_today, sl_today, op_today, win_today = do_backtest(trades_today)
+
+    # ============ GỬI TELEGRAM ============
     msg = (
-        f"[BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={open_all} win={win_all:.1f}%\n"
-        f"[BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={open_today} win={win_today:.1f}%"
+        f"[BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} win={win_all:.1f}%\n"
+        f"[BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
     )
 
     logging.info(msg)
     send_telegram_message(msg)
+
 
 # ========== GOOGLE SHEETS ==========
 
@@ -1461,6 +1514,91 @@ def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 
     atr = sum(trs[-period:]) / period
     return atr if atr > 0 else None
 
+def simulate_trade_result_with_candles(
+    okx: "OKXClient",
+    coin: str,
+    signal: str,
+    entry: float,
+    tp: float,
+    sl: float,
+    time_str: str,
+    bar: str = "5m",
+    max_limit: int = 300,
+):
+    """
+    Backtest 1 lệnh bằng nến lịch sử:
+      - coin: 'MERL-USDT' (spot) hoặc 'MERL-USDT-SWAP' (perp)
+      - signal: 'LONG' / 'SHORT'
+      - entry, tp, sl: float
+      - time_str: 'dd/mm/YYYY HH:MM' (giờ VN)
+
+    Logic:
+      - lấy ~300 nến 5m gần nhất
+      - tìm nến có ts >= thời điểm vào lệnh
+      - duyệt từng nến: kiểm tra high/low chạm TP/SL
+      - nếu cả TP & SL cùng chạm trong 1 nến -> giả định XẤU NHẤT: SL trước
+    """
+    ts_entry = parse_trade_time_to_utc_ms(time_str)
+    if ts_entry is None:
+        return "UNKNOWN"
+
+    inst_id = coin  # nếu muốn test perp thì coin + '-SWAP'
+
+    try:
+        candles = okx.get_candles(inst_id, bar=bar, limit=max_limit)
+    except Exception as e:
+        logging.error("[BT] Lỗi get_candles %s: %s", inst_id, e)
+        return "ERROR"
+
+    if not candles:
+        return "NO_DATA"
+
+    try:
+        candles_sorted = sorted(candles, key=lambda x: int(x[0]))
+    except Exception:
+        candles_sorted = candles
+
+    # tìm index bắt đầu từ lúc vào lệnh
+    start_idx = None
+    for i, k in enumerate(candles_sorted):
+        try:
+            ts_bar = int(k[0])
+        except Exception:
+            continue
+        if ts_bar >= ts_entry:
+            start_idx = i
+            break
+
+    if start_idx is None:
+        # lệnh quá cũ, không nằm trong khoảng nến tải về
+        return "OUT_OF_RANGE"
+
+    sig = (signal or "").upper()
+
+    for k in candles_sorted[start_idx:]:
+        try:
+            high = float(k[2])
+            low  = float(k[3])
+        except Exception:
+            continue
+
+        if sig == "LONG":
+            hit_tp = high >= tp
+            hit_sl = low  <= sl
+        else:  # SHORT
+            hit_tp = low  <= tp
+            hit_sl = high >= sl
+
+        # nếu trong 1 nến chạm cả TP & SL -> chọn kịch bản xấu: SL
+        if hit_tp and hit_sl:
+            return "SL"
+        if hit_tp:
+            return "TP"
+        if hit_sl:
+            return "SL"
+
+    # duyệt hết mà không chạm TP/SL
+    return "OPEN"
 
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
@@ -1915,7 +2053,7 @@ def run_full_bot(okx):
     # 5) Futures + Telegram
     execute_futures_trades(okx, planned_trades)
     
-    # 6) Nếu đang trong khung 19:00 - 19:10 VN thì chạy backtest
+    # 6) Nếu đang trong khung 22:00 - 22:30 VN thì chạy backtest
     run_backtest_if_needed(okx)
 
 def main():
