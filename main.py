@@ -1920,7 +1920,7 @@ def run_full_bot(okx):
 
 def main():
     # Nếu muốn tính theo giờ VN:
-    #setup_logging()
+    setup_logging()
     now_utc = datetime.now(timezone.utc)
     now_vn  = now_utc + timedelta(hours=7)   # VN = UTC+7
     minute  = now_vn.minute
