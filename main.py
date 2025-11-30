@@ -1398,14 +1398,14 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # 1) Set leverage isolated x5
         #TWO WAY
-        #try:
-            #okx.set_leverage(swap_inst, FUT_LEVERAGE, pos_side=pos_side)
-        #except Exception:
-            #logging.warning(
-                #"Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
-                #swap_inst,
-            #)
-        #NETMDODE
+        try:
+            okx.set_leverage(swap_inst, FUT_LEVERAGE, pos_side=pos_side)
+        except Exception:
+            logging.warning(
+                "Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
+                swap_inst,
+            )
+        #NET MODE
         # 2) Mở vị thế
         okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
         time.sleep(0.2)
