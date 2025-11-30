@@ -19,7 +19,7 @@ OKX_BASE_URL = "https://www.okx.com"
 CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
 
 # Trading config
-FUT_LEVERAGE = 6              # x6 isolated
+FUT_LEVERAGE = 5              # x5 isolated
 NOTIONAL_PER_TRADE = 30.0     # 25 USDT position size (ký quỹ ~5$ với x5)
 MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 
