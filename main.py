@@ -380,6 +380,33 @@ def load_trade_cache():
         return []
     except Exception:
         return []
+def load_trades_for_backtest():
+    """
+    Load lịch sử lệnh cho backtest:
+    1) Ưu tiên dùng Drive CSV (history lâu dài)
+    2) Nếu không có → fallback về JSON local cache
+    """
+    # 1) Ưu tiên: Drive CSV
+    try:
+        if callable(load_trades_from_drive_csv):
+            trades_drive = load_trades_from_drive_csv()
+            if trades_drive:
+                logging.info("[BACKTEST] Sử dụng history từ Drive (%d lệnh).", len(trades_drive))
+                return trades_drive
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi load Drive CSV: %s", e)
+
+    # 2) Fallback: cache JSON local
+    try:
+        trades_local = load_trade_cache()
+        if trades_local:
+            logging.info("[BACKTEST] Sử dụng history từ cache JSON (%d lệnh).", len(trades_local))
+            return trades_local
+    except:
+        pass
+
+    logging.info("[BACKTEST] Không có dữ liệu history.")
+    return []
 
 def save_trade_cache(trades):
     """
@@ -467,7 +494,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
     if not is_backtest_time_vn():
         return
 
-    trades = load_trade_cache()
+    trades = load_trades_for_backtest()
     if not trades:
         logging.info("[BACKTEST] Cache trống.")
         send_telegram_message("[BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0%\n"
