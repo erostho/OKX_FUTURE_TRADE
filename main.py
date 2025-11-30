@@ -1469,7 +1469,7 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Đóng thời thêm dòng Telegram (bỏ -USDT)
         coin_name = coin.replace("-USDT", "")
-        line = f"{coin_name}-{signal}-{entry:.6f}-{tp:.6f}-{sl:.6f}"
+        line = f"{coin_name}-{signal}-{entry:.6f}"
         telegram_lines.append(line)
 
 
