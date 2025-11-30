@@ -20,7 +20,7 @@ CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
 
 # Trading config
 FUT_LEVERAGE = 5              # x5 isolated
-NOTIONAL_PER_TRADE = 30.0     # 25 USDT position size (ký quỹ ~5$ với x5)
+NOTIONAL_PER_TRADE = 25.0     # 25 USDT position size (ký quỹ ~5$ với x5)
 MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 
 # Scanner config
