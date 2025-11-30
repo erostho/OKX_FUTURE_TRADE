@@ -923,19 +923,19 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         # ===== V2 FILTER 1: BTC 5m đồng pha =====
         if btc_5m is not None:
             btc_o, btc_cl = btc_5m
-            if direction == "LONG" and btc_cl < btc_o:
+            if direction == "LONG" and btc_change_5m < -0.5:
                 # BTC đỏ nến 5m -> tránh LONG alt
                 continue
-            if direction == "SHORT" and btc_cl > btc_o:
+            if direction == "SHORT" and btc_change_5m > 0.5:
                 # BTC xanh nến 5m -> tránh SHORT alt
                 continue
 
         # ===== V2 FILTER 2: Impulse 2–3 sóng (closes 5m cùng chiều) =====
         if direction == "LONG":
-            if not (c5_now > c5_prev1 > c5_prev2):
+            if not (c5_now > c5_prev1):
                 continue
         else:  # SHORT
-            if not (c5_now < c5_prev1 < c5_prev2):
+            if not (c5_now < c5_prev1):
                 continue
 
         # ===== V2 FILTER 3: Wick filter (tránh pump-xả wick dài) =====
@@ -943,11 +943,11 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         lower_wick = min(o5_now, c5_now) - l5_now
 
         if direction == "LONG":
-            if upper_wick > body5 * 1.2:
+            if upper_wick > body5 * 1.8:
                 logging.info("[PUMP_PRO_V2] %s bỏ LONG vì râu trên quá dài.", inst_id)
                 continue
         else:
-            if lower_wick > body5 * 1.2:
+            if lower_wick > body5 * 1.8:
                 logging.info("[PUMP_PRO_V2] %s bỏ SHORT vì râu dưới quá dài.", inst_id)
                 continue
 
@@ -957,10 +957,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         if len(highs_15) >= 20 and len(lows_15) >= 20:
             recent_high = max(highs_15[-20:])
             recent_low  = min(lows_15[-20:])
-            if direction == "LONG" and c_now > recent_high * 1.005:
+            if direction == "LONG" and c_now > recent_high * 1.01:
                 # quá xa đỉnh gần -> dễ đu đỉnh
                 continue
-            if direction == "SHORT" and c_now < recent_low * 0.995:
+            if direction == "SHORT" and c_now < recent_low * 0.99:
                 # quá xa đáy gần -> dễ đu đáy
                 continue
 
@@ -990,12 +990,12 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             ema50_1h = calc_ema(closes_1h[-52:], 50)
 
         # nếu thiếu EMA nào thì bỏ qua EMA filter (không quá gắt)
-        if ema9_5m and ema20_15m and ema50_1h:
+        if ema9_5m and ema20_15m:
             if direction == "LONG":
-                if not (c_now > ema9_5m and c_now > ema20_15m and c_now > ema50_1h):
+                and not (c_now > ema9_5m and c_now > ema20_15m):
                     continue
             else:
-                if not (c_now < ema9_5m and c_now < ema20_15m and c_now < ema50_1h):
+                and not (c_now < ema9_5m and c_now < ema20_15m):
                     continue
 
         # ===== ENTRY PULLBACK: mid-body + EMA5 5m =====
