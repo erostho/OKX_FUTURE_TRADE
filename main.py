@@ -110,7 +110,7 @@ def is_deadzone_time_vn():
     # 11:00–15:00
     if 11 <= h < 15:
         return True
-    # 15:00–15:30
+    # 15:00–16:00
     if h == 15 and m < 30:
         return True
 
@@ -1358,7 +1358,10 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
         # còn không thì fallback về last_price cho an toàn.
         entry = getattr(row, "entry_pullback", row.last_price)
         # 👉 TP/SL theo ATR, nhưng dựa trên entry "bớt FOMO"
-        tp, sl = calc_tp_sl_from_atr(okx, row.instId, row.direction, entry)
+        if is_deadzone_time_vn():
+            tp, sl = calc_scalp_tp_sl(entry, row.direction)
+        else:
+            tp, sl = calc_tp_sl_from_atr(okx, row.instId, row.direction, entry)
 
         planned.append(
             {
@@ -1501,6 +1504,18 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
         tp = entry - risk * RR
 
     return tp, sl
+def calc_scalp_tp_sl(entry: float, direction: str):
+    tp_pct = 0.005  # 0.5%
+    sl_pct = 0.005  # 0.5%
+
+    if direction.upper() == "LONG":
+        tp = entry * (1 + tp_pct)
+        sl = entry * (1 - sl_pct)
+    else:
+        tp = entry * (1 - tp_pct)
+        sl = entry * (1 + sl_pct)
+    return tp, sl
+
 
 def calc_ema(prices, length):
     if not prices or len(prices) < length:
@@ -1580,6 +1595,9 @@ def execute_futures_trades(okx: OKXClient, trades):
 
     # Gom các dòng để gửi 1 tin Telegram duy nhất
     telegram_lines = []
+    
+    # chọn leverage theo giờ
+    this_lever = 3 if is_deadzone_time_vn() else FUT_LEVERAGE
 
     for t in allowed_trades:
         coin = t["coin"]         # ví dụ 'BTC-USDT'
@@ -1650,7 +1668,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         # 1) Set leverage isolated x6
         #TWO WAY
         try:
-            okx.set_leverage(swap_inst, FUT_LEVERAGE, pos_side=pos_side)
+            okx.set_leverage(swap_inst, this_lever, pos_side=pos_side)
         except Exception:
             logging.warning(
                 "Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
@@ -1658,7 +1676,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             )
         #NET MODE
         # 2) Mở vị thế
-        #okx.set_leverage(swap_inst, lever=FUT_LEVERAGE)
+        #okx.set_leverage(swap_inst, lever=this_lever)
         time.sleep(0.2)
         
         order_resp = okx.place_futures_market_order(
@@ -1667,7 +1685,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             pos_side=pos_side,
             sz=contracts,
             td_mode="isolated",
-            lever=FUT_LEVERAGE,
+            lever=this_lever,
         )
 
         code = order_resp.get("code")
