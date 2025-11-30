@@ -1041,10 +1041,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
         # ===== V2 FILTER 2: Impulse 2–3 sóng (closes 5m cùng chiều) =====
         if direction == "LONG":
-            if not (c5_now > c5_prev1):
+            if not (c5_now > c5_prev1 > c5_prev2):
                 continue
         else:  # SHORT
-            if not (c5_now < c5_prev1):
+            if not (c5_now < c5_prev1 < c5_prev2):
                 continue
 
         # ===== V2 FILTER 3: Wick filter (tránh pump-xả wick dài) =====
@@ -1066,10 +1066,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         if len(highs_15) >= 20 and len(lows_15) >= 20:
             recent_high = max(highs_15[-20:])
             recent_low  = min(lows_15[-20:])
-            if direction == "LONG" and c_now > recent_high * 1.01:
+            if direction == "LONG" and c_now > recent_high * 1.005:
                 # quá xa đỉnh gần -> dễ đu đỉnh
                 continue
-            if direction == "SHORT" and c_now < recent_low * 0.99:
+            if direction == "SHORT" and c_now < recent_low * 0.995:
                 # quá xa đáy gần -> dễ đu đáy
                 continue
 
@@ -1339,25 +1339,33 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
 
         # ========= MEAN-REVERSION LOGIC =========
         # LONG: giá vừa "chọc xuống EMA20" rồi đóng trên EMA20, lệch không quá xa
+        # require dist_pct nằm trong [-0.3%; +0.3%]
+        DEADZONE_MAX_DIST = 0.3
+        
+        ...
+        dist_ok = abs(dist_pct) <= DEADZONE_MAX_DIST
+        small_range = range_5m / ema20_5m < 0.8  # bỏ nến quá dài (có thể là pump/dump mini)
+        
+        direction = None
+        
+        # LONG
         if (
-            dist_pct > -0.5
-            and dist_pct < 0.5
+            dist_ok
             and closes[-2] < ema20_5m <= c_now
-            and body_ratio < 0.7  # nến không quá xung lực
+            and body_ratio < 0.7
+            and small_range
         ):
             direction = "LONG"
-
-        # SHORT: ngược lại
+        
+        # SHORT
         if (
-            dist_pct < 0.5
-            and dist_pct > -0.5
+            dist_ok
             and closes[-2] > ema20_5m >= c_now
             and body_ratio < 0.7
+            and small_range
         ):
-            # Nếu đã đánh LONG thì bỏ SHORT để tránh lẫn lộn
             if direction is None:
                 direction = "SHORT"
-
         if direction is None:
             continue
 
@@ -1629,49 +1637,45 @@ def simulate_trade_result_with_candles(
 
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
-    Tính TP/SL theo ATR 15m:
-
-    - risk = 1.2 * ATR (nhưng kẹp trong [0.6%; 8%] của giá)
-    - TP = entry ± risk * RR (RR ~ 2.0)
-
-    Trả về: (tp, sl)
-    Nếu không tính được ATR -> fallback về 2% / 1%.
+    TP/SL theo ATR 15m (phiên PUMP/DUMP):
+      - risk_pct ~ ATR/price, kẹp [1%; 4%]
+      - RR = 1.4 (TP ≈ 1.4R, SL ≈ 1R) → dễ hit TP hơn RR=2
     """
     atr = calc_atr_15m(okx, inst_id)
-    # fallback nếu ATR lỗi
     if not atr or atr <= 0:
-        # fallback cũ: TP 2%, SL 1%
-        if direction == "LONG":
-            tp = entry * 1.02
+        # fallback nhẹ nhàng hơn: TP 1.5%, SL 1.0%
+        if direction.upper() == "LONG":
+            tp = entry * 1.015
             sl = entry * 0.99
         else:
-            tp = entry * 0.98
+            tp = entry * 0.985
             sl = entry * 1.01
         return tp, sl
 
-    # risk thô theo ATR
-    risk = 1.2 * atr
+    risk = 1.1 * atr
     risk_pct = risk / entry
 
     # kẹp risk_pct để tránh quá bé / quá to
-    MIN_RISK_PCT = 0.006   # 0.6%
-    MAX_RISK_PCT = 0.08    # 8%
+    MIN_RISK_PCT = 0.01   # 1%
+    MAX_RISK_PCT = 0.04   # 4%
     risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
     risk = risk_pct * entry
 
-    RR = 2.0  # TP ~ 2R
+    RR = 1.4  # TP ~ 1.4R
 
     if direction.upper() == "LONG":
         sl = entry - risk
         tp = entry + risk * RR
-    else:  # SHORT
+    else:
         sl = entry + risk
         tp = entry - risk * RR
 
     return tp, sl
+
+    
 def calc_scalp_tp_sl(entry: float, direction: str):
-    tp_pct = 0.005  # 0.5%
-    sl_pct = 0.005  # 0.5%
+    tp_pct = 0.004  # 0.4%
+    sl_pct = 0.006  # 0.6%
 
     if direction.upper() == "LONG":
         tp = entry * (1 + tp_pct)
@@ -1740,6 +1744,14 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("[INFO] Không có lệnh futures nào để vào.")
         return
 
+    # chọn leverage + notional theo giờ
+    if is_deadzone_time_vn():
+        this_lever = 3
+        this_notional = 10.0   # ✅ deadzone chỉ đánh 10 USDT / lệnh
+    else:
+        this_lever = FUT_LEVERAGE
+        this_notional = NOTIONAL_PER_TRADE
+
     # metadata SWAP (ctVal, lotSz, minSz...)
     swap_ins = okx.get_swap_instruments()
     swap_meta = build_swap_meta_map(swap_ins)
@@ -1803,7 +1815,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         min_sz = meta["minSz"]
 
         contracts = calc_contract_size(
-            entry, NOTIONAL_PER_TRADE, ct_val, lot_sz, min_sz
+            entry, this_notional, ct_val, lot_sz, min_sz
         )
         if contracts <= 0:
             logging.warning(
