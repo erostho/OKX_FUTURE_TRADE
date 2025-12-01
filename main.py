@@ -107,7 +107,7 @@ def is_backtest_time_vn():
     (bot chạy trong khung 25 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 21 and now_vn.minute <= 25
+    return now_vn.hour == 20 and now_vn.minute <= 55
     
 def is_deadzone_time_vn():
     """
@@ -509,64 +509,107 @@ def run_backtest_if_needed(okx: "OKXClient"):
         ts = str(t.get("time", ""))
         if today_str in ts:
             trades_today.append(t)
+def get_session_from_time(time_str: str):
+    """
+    time_str dạng YYYY-MM-DD HH:MM:SS
+    Trả về label phiên: "0-7", "7-13", "13-19", "19-24"
+    """
+    try:
+        hour = int(time_str[11:13])
+    except:
+        return None
 
-    # ======= HÀM BACKTEST 1 DANH SÁCH =======
-    def do_backtest(trade_list):
-        total = tp = sl = op = other = 0
+    if 0 <= hour < 7:
+        return "0-7"
+    elif 7 <= hour < 13:
+        return "7-13"
+    elif 13 <= hour < 19:
+        return "13-19"
+    else:
+        return "19-24"
 
-        for t in trade_list:
-            try:
-                coin   = t.get("coin")
-                signal = t.get("signal")
-                entry  = float(t.get("entry") or 0)
-                tp_v   = float(t.get("tp") or 0)
-                sl_v   = float(t.get("sl") or 0)
-                time_s = str(t.get("time") or "")
-            except:
-                continue
+# ======= HÀM BACKTEST 1 DANH SÁCH =======
+def do_backtest(trade_list):
+    total = tp = sl = op = other = 0
+    # session stats
+    session_stat = {
+        "0-7":  {"total":0, "tp":0, "sl":0, "op":0},
+        "7-13": {"total":0, "tp":0, "sl":0, "op":0},
+        "13-19":{"total":0, "tp":0, "sl":0, "op":0},
+        "19-24":{"total":0, "tp":0, "sl":0, "op":0},
+    }
 
-            if not coin or entry <= 0 or tp_v <= 0 or sl_v <= 0:
-                continue
+    for t in trade_list:
+        try:
+            coin   = t.get("coin")
+            signal = t.get("signal")
+            entry  = float(t.get("entry") or 0)
+            tp_v   = float(t.get("tp") or 0)
+            sl_v   = float(t.get("sl") or 0)
+            time_s = str(t.get("time") or "")
+        except:
+            continue
 
-            total += 1
-            res = simulate_trade_result_with_candles(
-                okx=okx,
-                coin=coin,        # SPOT backtest
-                signal=signal,
-                entry=entry,
-                tp=tp_v,
-                sl=sl_v,
-                time_str=time_s,
-                bar="5m",
-                max_limit=300,
-            )
+        if not coin or entry <= 0 or tp_v <= 0 or sl_v <= 0:
+            continue
 
+        total += 1
+        res = simulate_trade_result_with_candles(
+            okx=okx,
+            coin=coin,        # SPOT backtest
+            signal=signal,
+            entry=entry,
+            tp=tp_v,
+            sl=sl_v,
+            time_str=time_s,
+            bar="5m",
+            max_limit=300,
+        )
+        # session
+        sess = get_session_from_time(time_s)
+        if sess:
+            session_stat[sess]["total"] += 1
             if res == "TP":
-                tp += 1
+                session_stat[sess]["tp"] += 1
             elif res == "SL":
-                sl += 1
+                session_stat[sess]["sl"] += 1
             elif res == "OPEN":
-                op += 1
-            else:
-                other += 1
+                session_stat[sess]["op"] += 1
 
-        closed = tp + sl
-        win = (tp / closed * 100) if closed > 0 else 0
-        return total, tp, sl, op, win
+        if res == "TP":
+            tp += 1
+        elif res == "SL":
+            sl += 1
+        elif res == "OPEN":
+            op += 1
+        else:
+            other += 1
 
-    # ============ CHẠY 2 BACKTEST ============
-    total_all, tp_all, sl_all, op_all, win_all = do_backtest(trades)
-    total_today, tp_today, sl_today, op_today, win_today = do_backtest(trades_today)
+    closed = tp + sl
+    win = (tp / closed * 100) if closed > 0 else 0
+    return total, tp, sl, op, win, session_stat
 
-    # ============ GỬI TELEGRAM ============
-    msg = (
-        f"[BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} win={win_all:.1f}%\n"
-        f"[BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
-    )
 
-    logging.info(msg)
-    send_telegram_message(msg)
+# ============ CHẠY 2 BACKTEST ============
+total_all, tp_all, sl_all, op_all, win_all, sess_all = do_backtest(trades)
+total_today, tp_today, sl_today, op_today, win_today, sess_today = do_backtest(trades_today)
 
+
+# ============ GỬI TELEGRAM ============
+msg = (
+    f"[✅BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} win={win_all:.1f}%\n"
+    f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
+)
+msg += "\n\n--- SESSION TODAY ---"
+for s in ["0-7","7-13","13-19","19-24"]:
+    st = sess_today[s]
+    closed = st["tp"] + st["sl"]
+    win = (st["tp"] / closed * 100) if closed > 0 else 0
+    msg += f"\n[{s}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['op']} win={win:.1f}%"
+
+
+logging.info(msg)
+send_telegram_message(msg)
 
 # ========== GOOGLE SHEETS ==========
 
