@@ -2020,17 +2020,19 @@ def run_dynamic_tp(okx: OKXClient):
         l_prev1 = lows[-2]
         vol_now = vols[-1]
 
-        # ====== %PnL HIỆN TẠI ======
+        # ----- TÍNH % GIÁ & % PnL -----
         if posSide == "long":
-            profit_pct = (c_now - avg_px) / avg_px * 100
-        else:
-            profit_pct = (avg_px - c_now) / avg_px * 100
+            price_pct = (c_now - avg_px) / avg_px * 100.0
+        else:  # short
+            price_pct = (avg_px - c_now) / avg_px * 100.0
+        
+        pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
 
         # ====== SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
-        max_loss_price_pct = MAX_SL_PNL_PCT / FUT_LEVERAGE  # 5% / 5x = 1% giá
-        if profit_pct <= -MAX_SL_PNL_PCT:
+        # Ví dụ MAX_SL_PNL_PCT = 5.0 → cắt khi lỗ khoảng -5% PnL
+        if pnl_pct <= -MAX_SL_PNL_PCT:
             logging.info(
-                f"[TP-DYN] {instId} lỗ {profit_pct:.2f}% <= -{MAX_SL_PNL_PCT}% → CẮT LỖ KHẨN CẤP."
+                f"[TP-DYN] {instId} lỗ {pnl_pct:.2f}% <= -{MAX_SL_PNL_PCT}% PnL → CẮT LỖ KHẨN CẤP."
             )
             try:
                 okx.close_swap_position(instId, posSide)
