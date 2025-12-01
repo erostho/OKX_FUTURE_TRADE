@@ -1695,8 +1695,8 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
 
     
 def calc_scalp_tp_sl(entry: float, direction: str):
-    tp_pct = 0.01  # 1%
-    sl_pct = 0.005  # 0.5%
+    tp_pct = 0.02  # 2%
+    sl_pct = 0.01  # 1%
 
     if direction.upper() == "LONG":
         tp = entry * (1 + tp_pct)
