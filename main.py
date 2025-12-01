@@ -52,7 +52,7 @@ PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 1
 
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
-DEADZONE_MIN_ATR_PCT = 0.2   # ví dụ: 0.2%/5m trở lên mới chơi
+DEADZONE_MIN_ATR_PCT = 0.4   # ví dụ: 0.4%/5m trở lên mới chơi
 # ================== HELPERS CHUNG ==================
 
 def safe_float(x, default=0.0):
