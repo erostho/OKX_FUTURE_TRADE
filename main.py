@@ -603,7 +603,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
         f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
     )
     msg += "\n\n--- SESSION TODAY ---"
-    for s in ["0-7","7-13","13-19","19-24"]:
+    for s in ["0-9","9-15","15-20","20-24"]:
         st = sess_today[s]
         closed = st["tp"] + st["sl"]
         win = (st["tp"] / closed * 100) if closed > 0 else 0
