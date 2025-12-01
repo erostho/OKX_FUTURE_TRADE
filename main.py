@@ -52,7 +52,7 @@ PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 1
 
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
-DEADZONE_MIN_ATR_PCT = 0.4   # ví dụ: 0.4%/5m trở lên mới chơi
+DEADZONE_MIN_ATR_PCT = 0.2   # ví dụ: 0.4%/5m trở lên mới chơi
 # ================== HELPERS CHUNG ==================
 
 def safe_float(x, default=0.0):
@@ -1293,7 +1293,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         vol_quote = row.vol_quote
 
         # BTC đang biến động mạnh -> bỏ, không scalp phiên trưa
-        if btc_change_5m is not None and abs(btc_change_5m) > 1.0:
+        if btc_change_5m is not None and abs(btc_change_5m) > 1.5:
             continue
 
         # Lấy 5m candles
@@ -1348,7 +1348,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         # ========= MEAN-REVERSION LOGIC =========
         # LONG: giá vừa "chọc xuống EMA20" rồi đóng trên EMA20, lệch không quá xa
         # require dist_pct nằm trong [-0.3%; +0.3%]
-        DEADZONE_MAX_DIST = 0.3
+        DEADZONE_MAX_DIST = 0.5
         
         ...
         dist_ok = abs(dist_pct) <= DEADZONE_MAX_DIST
