@@ -2051,9 +2051,9 @@ def run_dynamic_tp(okx: OKXClient):
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → dùng config (mặc định 5.0)
 
         # Nếu chưa lãi đủ ngưỡng thì không xử lý TP động
-        if profit_pct < tp_dyn_threshold:
+        if pnl_pct < tp_dyn_threshold:
             logging.info(
-                f"[TP-DYN] {instId} lãi {profit_pct:.2f}% < {tp_dyn_threshold}% → bỏ qua TP động"
+                f"[TP-DYN] {instId} lãi {pnl_pct:.2f}% < {tp_dyn_threshold}% → bỏ qua TP động"
             )
             continue
 
