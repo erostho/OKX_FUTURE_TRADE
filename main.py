@@ -1780,9 +1780,9 @@ def execute_futures_trades(okx: OKXClient, trades):
     if is_deadzone_time_vn():
         # phiên trưa: luôn giảm size + leverage
         this_lever    = 3
-        this_notional = 10.0          # chỉ 10 USDT / lệnh
+        this_notional = 15.0          # chỉ 15 USDT / lệnh
     elif regime == "BAD":
-        # thị trường xấu: giữ size 25$ nhưng hạ đòn bẩy
+        # thị trường xấu: giữ size 20$ nhưng hạ đòn bẩy
         this_lever    = 4
         this_notional = 20.0
     else:
