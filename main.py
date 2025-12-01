@@ -1669,10 +1669,8 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
             tp = entry * 0.985
             sl = entry * 1.01
         return tp, sl
-
     risk = 1.1 * atr
     risk_pct = risk / entry
-
     # kẹp risk_pct để tránh quá bé / quá to
     MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
     MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
@@ -2055,7 +2053,7 @@ def run_dynamic_tp(okx: OKXClient):
             tp_dyn_threshold = 3.0
         else:
             if market_regime == "BAD":
-                tp_dyn_threshold = 3.0          # thị trường xấu → ăn ngắn
+                tp_dyn_threshold = 2.5          # thị trường xấu → ăn ngắn
             else:
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → dùng config (mặc định 5.0)
 
