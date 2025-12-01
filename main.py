@@ -52,7 +52,7 @@ PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 1
 
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
-
+DEADZONE_MIN_ATR_PCT = 0.2   # ví dụ: 0.2%/5m trở lên mới chơi
 # ================== HELPERS CHUNG ==================
 
 def safe_float(x, default=0.0):
@@ -1230,9 +1230,9 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         abs_change24 = abs(change24)
 
         # 🔹 Phiên trưa: tránh coin pump/dump quá mạnh & tránh coin chết
-        if abs_change24 < 0.5:          # quá phẳng -> bỏ
+        if abs_change24 < 1.5:          # quá phẳng -> bỏ
             continue
-        if abs_change24 > 20.0:         # biến động 24h >20% -> dễ pump/dump, để dành cho phiên tối
+        if abs_change24 > 50.0:         # biến động 24h >50% -> dễ pump/dump, để dành cho phiên tối
             continue
         if vol_quote < max(PUMP_MIN_VOL_USDT_24H, 2 * 10_000):  # volume đủ lớn
             continue
@@ -1321,6 +1321,15 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         h_now = highs[-1]
         l_now = lows[-1]
 
+        # ==== VOLATILITY FILTER: ATR% 5m ====
+        ranges = [h - l for h, l in zip(highs[-20:], lows[-20:])]
+        avg_range = sum(ranges) / max(1, len(ranges))
+        atr_pct_5m = avg_range / c_now * 100.0 if c_now > 0 else 0.0
+
+        # coin quá lì, mỗi nến dao động < DEADZONE_MIN_ATR_PCT% -> bỏ
+        if atr_pct_5m < DEADZONE_MIN_ATR_PCT:
+            continue
+            
         # EMA20 5m để làm "trục" cho mean-reversion
         ema20_5m = calc_ema(closes[-25:], 20) if len(closes) >= 25 else None
         if ema20_5m is None or ema20_5m <= 0:
