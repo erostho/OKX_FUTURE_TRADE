@@ -2089,7 +2089,7 @@ def run_dynamic_tp(okx: OKXClient):
                 ema_break = c_now > ema5
 
         logging.info(
-            f"[TP-DYN] {instId} profit={profit_pct:.2f}% (thr={tp_dyn_threshold}%) | "
+            f"[TP-DYN] {instId} profit={pnl_pct:.2f}% (thr={tp_dyn_threshold}%) | "
             f"flat={flat_move} | engulf={engulfing} | vol_drop={vol_drop} | ema_break={ema_break}"
         )
 
