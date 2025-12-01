@@ -1232,7 +1232,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         # 🔹 Phiên trưa: tránh coin pump/dump quá mạnh & tránh coin chết
         if abs_change24 < 1.5:          # quá phẳng -> bỏ
             continue
-        if abs_change24 > 50.0:         # biến động 24h >50% -> dễ pump/dump, để dành cho phiên tối
+        if abs_change24 > 30.0:         # biến động 24h >30% -> dễ pump/dump, để dành cho phiên tối
             continue
         if vol_quote < max(PUMP_MIN_VOL_USDT_24H, 2 * 10_000):  # volume đủ lớn
             continue
@@ -1352,7 +1352,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         
         ...
         dist_ok = abs(dist_pct) <= DEADZONE_MAX_DIST
-        small_range = range_5m / ema20_5m < 0.8  # bỏ nến quá dài (có thể là pump/dump mini)
+        small_range = range_5m / ema20_5m < 1  # bỏ nến quá dài (có thể là pump/dump mini)
         
         direction = None
         
@@ -1360,7 +1360,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         if (
             dist_ok
             and closes[-2] < ema20_5m <= c_now
-            and body_ratio < 0.7
+            and body_ratio < 0.8
             and small_range
         ):
             direction = "LONG"
@@ -1369,7 +1369,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         if (
             dist_ok
             and closes[-2] > ema20_5m >= c_now
-            and body_ratio < 0.7
+            and body_ratio < 0.8
             and small_range
         ):
             if direction is None:
