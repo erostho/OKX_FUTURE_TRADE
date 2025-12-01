@@ -103,11 +103,11 @@ def is_quiet_hours_vn():
     return now_vn.hour >= 23 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
-    Trả về True nếu giờ VN nằm trong khoảng 21:00 - 21:25.
+    Trả về True nếu giờ VN nằm trong khoảng 22:00 - 22:25.
     (bot chạy trong khung 25 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 21 and now_vn.minute <= 55
+    return now_vn.hour == 22 and now_vn.minute <= 25
     
 def is_deadzone_time_vn():
     """
