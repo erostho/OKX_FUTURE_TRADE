@@ -19,8 +19,8 @@ OKX_BASE_URL = "https://www.okx.com"
 CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
 
 # Trading config
-FUT_LEVERAGE = 5              # x5 isolated
-NOTIONAL_PER_TRADE = 25.0     # 25 USDT position size (ký quỹ ~5$ với x5)
+FUT_LEVERAGE = 6              # x5 isolated
+NOTIONAL_PER_TRADE = 30.0     # 30 USDT position size (ký quỹ ~5$ với x6)
 MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
 
 # Scanner config
@@ -1774,8 +1774,8 @@ def execute_futures_trades(okx: OKXClient, trades):
         this_notional = 10.0          # chỉ 10 USDT / lệnh
     elif regime == "BAD":
         # thị trường xấu: giữ size 25$ nhưng hạ đòn bẩy
-        this_lever    = 3
-        this_notional = NOTIONAL_PER_TRADE
+        this_lever    = 4
+        this_notional = 20.0
     else:
         # thị trường tốt: full cấu hình
         this_lever    = FUT_LEVERAGE  # ví dụ 5x
