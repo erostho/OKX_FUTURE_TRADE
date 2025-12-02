@@ -107,7 +107,7 @@ def is_backtest_time_vn():
     (bot chạy trong khung 25 phút đó thì sẽ chạy thêm backtest)
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 22 and now_vn.minute <= 25
+    return now_vn.hour == 08 and now_vn.minute <= 25
     
 def is_deadzone_time_vn():
     """
