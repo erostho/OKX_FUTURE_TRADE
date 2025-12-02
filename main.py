@@ -710,20 +710,29 @@ def run_backtest_if_needed(okx: "OKXClient"):
     # ============ CHẠY 2 BACKTEST ============
     total_all, tp_all, sl_all, op_all, win_all, sess_all = do_backtest(trades)
     total_today, tp_today, sl_today, op_today, win_today, sess_today = do_backtest(trades_today)
-
+    pnl_all_pct, pnl_all_usdt = compute_backtest_pnl(backtest_all_list)
+    pnl_today_pct, pnl_today_usdt = compute_backtest_pnl(backtest_today_list)
+    
+    compute_session_stats(sess_today)
 
     # ============ GỬI TELEGRAM ============
     msg = (
-        f"[✅BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} win={win_all:.1f}%\n"
-        f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
+        f"[✅BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} "
+        f"win={win_all:.1f}%  PNL%={pnl_all_pct:+.2f}%  PNL={pnl_all_usdt:+.2f} USDT\n"
+        f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} "
+        f"win={win_today:.1f}%  PNL%={pnl_today_pct:+.2f}%  PNL={pnl_today_usdt:+.2f} USDT"
     )
+    
     msg += "\n\n--- SESSION TODAY ---"
-    for s in ["0-9","9-15","15-20","20-24"]:
-        st = sess_today[s]
+    for sess in ["0-9", "9-15", "15-20", "20-24"]:
+        st = sess_today[sess]
         closed = st["tp"] + st["sl"]
-        win = (st["tp"] / closed * 100) if closed > 0 else 0
-        msg += f"\n[{s}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['op']} win={win:.1f}%"
-
+        win = (st["tp"] / closed * 100) if closed>0 else 0
+    
+        msg += (
+            f"\n[{sess}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['op']} "
+            f"win={win:.1f}%  PNL%={st['pnl_pct']:+.2f}%  PNL={st['pnl_usdt']:+.2f} USDT"
+        )
 
     logging.info(msg)
     send_telegram_message(msg)
@@ -1812,6 +1821,88 @@ def simulate_trade_result_with_candles(
 
     # duyệt hết mà không chạm TP/SL
     return "OPEN"
+
+# ======== PNL CALCULATIONS ========
+
+def calc_pnl_pct(entry, exit_price, signal):
+    """PnL% dựa trên giá entry/exit."""
+    if entry <= 0 or exit_price <= 0:
+        return 0.0
+    if signal.upper() == "LONG":
+        return (exit_price - entry) / entry * 100
+    else:  # SHORT
+        return (entry - exit_price) / entry * 100
+
+
+def calc_pnl_usdt(notional, pnl_pct):
+    """PnL USDT = notional * pnl%"""
+    return notional * (pnl_pct / 100.0)
+
+
+def compute_backtest_pnl(trade_list, notional=25.0):
+    """
+    trade_list phải có:
+        entry, exit_price, signal, result
+    """
+    total_pct = 0.0
+    total_usdt = 0.0
+    closed = 0
+
+    for t in trade_list:
+        if t.get("result") not in ("TP", "SL"):
+            continue
+
+        entry = float(t.get("entry", 0))
+        exit_price = float(t.get("exit_price", 0))
+        signal = t.get("signal", "")
+
+        pnl_pct = calc_pnl_pct(entry, exit_price, signal)
+        pnl_usdt = calc_pnl_usdt(notional, pnl_pct)
+
+        total_pct += pnl_pct
+        total_usdt += pnl_usdt
+        closed += 1
+
+    avg_pct = total_pct / closed if closed > 0 else 0.0
+    return avg_pct, total_usdt
+
+
+def compute_session_stats(trades_by_session, notional=25.0):
+    """
+    trades_by_session[sess] = {
+        "trades": [...],
+        "tp": x,
+        "sl": y,
+        "op": z,
+        ...
+    }
+    """
+    for s, st in trades_by_session.items():
+        closed = st["tp"] + st["sl"]
+        if closed == 0:
+            st["pnl_pct"] = 0.0
+            st["pnl_usdt"] = 0.0
+            continue
+
+        tot_pct = 0.0
+        tot_usd = 0.0
+
+        for t in st["trades"]:
+            if t.get("result") not in ("TP", "SL"):
+                continue
+
+            entry = float(t.get("entry", 0))
+            exit_price = float(t.get("exit_price", 0))
+            sig = t.get("signal", "")
+
+            pnl_pct = calc_pnl_pct(entry, exit_price, sig)
+            pnl_usdt = calc_pnl_usdt(notional, pnl_pct)
+
+            tot_pct += pnl_pct
+            tot_usd += pnl_usdt
+
+        st["pnl_pct"] = tot_pct / closed
+        st["pnl_usdt"] = tot_usd
 
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
