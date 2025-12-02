@@ -25,7 +25,7 @@ MAX_TRADES_PER_RUN = 20        # tối đa 10 lệnh / 1 lần cron
 
 # Scanner config
 MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
-MIN_VOL_USDT = 100000         # min 24h volume quote
+MIN_VOL_USDT = 1000000         # min 24h volume quote
 TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 
 # Google Sheet headers
@@ -44,7 +44,7 @@ TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # Giới hạn lỗ tối đa theo PnL% (emergency SL)
 MAX_SL_PNL_PCT = 5
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 50000   # volume USDT 24h tối thiểu
+PUMP_MIN_VOL_USDT_24H   = 1000000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 1.0       # %change 15m tối thiểu theo hướng LONG/SHORT
