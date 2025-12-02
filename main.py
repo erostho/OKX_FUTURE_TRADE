@@ -41,8 +41,12 @@ TP_DYN_ENGULF = True      # bật thoát khi có engulfing
 TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
-# Giới hạn lỗ tối đa theo PnL% (emergency SL)
-MAX_SL_PNL_PCT = 5
+
+# SL planned tối đa (khi đặt TP/SL ban đầu)
+MAX_PLANNED_SL_PNL_PCT = 10.0   # cho phép lỗ tối đa 10% PnL nếu chạm SL
+# SL khẩn cấp theo PnL%
+MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
+
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 50000   # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
@@ -1840,8 +1844,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
     # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
     #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
-    max_risk_pct_by_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE  # ví dụ 5% / 5x = 1% giá
-
+    max_risk_pct_by_pnl = MAX_PLANNED_SL_PNL_PCT / FUT_LEVERAGE
     risk_pct = min(risk_pct, max_risk_pct_by_pnl)
     risk = risk_pct * entry
 
@@ -2197,9 +2200,9 @@ def run_dynamic_tp(okx: OKXClient):
 
         # ====== SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
         # Ví dụ MAX_SL_PNL_PCT = 5.0 → cắt khi lỗ khoảng -5% PnL
-        if pnl_pct <= -MAX_SL_PNL_PCT:
+        if pnl_pct <= -MAX_EMERGENCY_SL_PNL_PCT:
             logging.info(
-                f"[TP-DYN] {instId} lỗ {pnl_pct:.2f}% <= -{MAX_SL_PNL_PCT}% PnL → CẮT LỖ KHẨN CẤP."
+                f"[TP-DYN] {instId} lỗ {pnl_pct:.2f}% <= -{MAX_EMERGENCY_SL_PNL_PCT}% PnL → CẮT LỖ KHẨN CẤP."
             )
             try:
                 okx.close_swap_position(instId, posSide)
