@@ -205,7 +205,7 @@ def is_quiet_hours_vn():
     dùng để tắt Telegram ban đêm.
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 23 or now_vn.hour < 6
+    return now_vn.hour >= 24 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
     Chạy backtest theo PHIÊN:
@@ -221,7 +221,7 @@ def is_backtest_time_vn():
     # các lần cron full bot đang chạy ở phút 5,20,35,50
     if h in (9, 15, 20) and 5 <= m <= 7:
         return True
-    if h == 22 and 50 <= m <= 52:
+    if h == 23 and 05 <= m <= 10:
         return True
 
     return False
