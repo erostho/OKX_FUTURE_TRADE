@@ -41,6 +41,7 @@ TP_DYN_ENGULF = True      # bật thoát khi có engulfing
 TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
+# Giới hạn lỗ tối đa theo PnL% (emergency SL)
 MAX_SL_PNL_PCT = 5
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 50000   # volume USDT 24h tối thiểu
@@ -54,6 +55,110 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT = 0.2   # ví dụ: 0.4%/5m trở lên mới chơi
 # ================== HELPERS CHUNG ==================
+
+def decide_risk_config(regime: str | None, session_flag: str | None):
+    """
+    Chọn cấu hình risk theo:
+      - regime:  "GOOD" / "BAD" (market)
+      - session_flag: "GOOD" / "BAD" (hiệu suất phiên trước)
+
+    👉 Áp dụng CHỈ KHI ngoài deadzone.
+    Deadzone vẫn dùng logic riêng (3x, 10 USDT...).
+    """
+    regime = (regime or "GOOD").upper()
+    session_flag = (session_flag or "GOOD").upper()
+
+    # 1) Market GOOD, session GOOD → FULL GAS
+    if regime == "GOOD" and session_flag == "GOOD":
+        return {
+            "leverage": 6,
+            "notional": 25.0,
+            "tp_dyn_min_profit": 5.0,  # % giá
+            "max_sl_pnl_pct": 5.0,
+            "max_trades_per_run": 15,
+        }
+
+    # 2) Market GOOD, session BAD → Market ok nhưng bot đang bắn tệ
+    if regime == "GOOD" and session_flag == "BAD":
+        return {
+            "leverage": 4,
+            "notional": 15.0,
+            "tp_dyn_min_profit": 5.0,
+            "max_sl_pnl_pct": 5.0,
+            "max_trades_per_run": 10,
+        }
+
+    # 3) Market BAD, session GOOD → Market xấu nhưng bot vừa bắn ngon
+    if regime == "BAD" and session_flag == "GOOD":
+        return {
+            "leverage": 4,
+            "notional": 20.0,
+            "tp_dyn_min_profit": 3.0,
+            "max_sl_pnl_pct": 4.0,
+            "max_trades_per_run": 10,
+        }
+
+    # 4) Market BAD, session BAD → HARD DEFENSE MODE
+    return {
+        "leverage": 3,
+        "notional": 10.0,
+        "tp_dyn_min_profit": 3.0,
+        "max_sl_pnl_pct": 3.0,
+        "max_trades_per_run": 7,
+    }
+
+
+def apply_risk_config(okx: "OKXClient"):
+    """
+    Set lại các biến GLOBAL:
+      FUT_LEVERAGE, NOTIONAL_PER_TRADE, TP_DYN_MIN_PROFIT_PCT,
+      MAX_SL_PNL_PCT, MAX_TRADES_PER_RUN
+
+    - Deadzone: luôn dùng cấu hình cố định.
+    - Ngoài deadzone: dùng regime + session_flag.
+    """
+    global FUT_LEVERAGE, NOTIONAL_PER_TRADE
+    global TP_DYN_MIN_PROFIT_PCT, MAX_SL_PNL_PCT, MAX_TRADES_PER_RUN
+
+    # DEADZONE: giữ nguyên style scalping an toàn
+    if is_deadzone_time_vn():
+        FUT_LEVERAGE = 3
+        NOTIONAL_PER_TRADE = 10.0
+        TP_DYN_MIN_PROFIT_PCT = 3.0   # TP động bật khi lãi >= 3% giá
+        MAX_SL_PNL_PCT = 3.0          # emergency SL -3% PnL
+        MAX_TRADES_PER_RUN = 5
+        logging.info("[RISK] DEADZONE config: lev=3, notional=10, tp_dyn=3%%, maxSL=3%%, max_trades=5")
+        return
+
+    # 👉 Ngoài DEADZONE: dùng 2 tầng regime + session_flag
+    try:
+        regime = detect_market_regime(okx)              # "GOOD"/"BAD" – bạn đã có hàm này
+    except NameError:
+        regime = "GOOD"  # fallback nếu chưa cài detect_market_regime
+
+    try:
+        session_flag = get_session_flag_for_next_session()  # "GOOD"/"BAD" – lấy từ backtest session
+    except NameError:
+        session_flag = "GOOD"  # fallback nếu chưa gắn hàm
+
+    cfg = decide_risk_config(regime, session_flag)
+
+    FUT_LEVERAGE = cfg["leverage"]
+    NOTIONAL_PER_TRADE = cfg["notional"]
+    TP_DYN_MIN_PROFIT_PCT = cfg["tp_dyn_min_profit"]
+    MAX_SL_PNL_PCT = cfg["max_sl_pnl_pct"]
+    MAX_TRADES_PER_RUN = cfg["max_trades_per_run"]
+
+    logging.info(
+        "[RISK] regime=%s session=%s -> lev=%dx, notional=%.1f, tp_dyn=%.1f%%, maxSL=%.1f%%, max_trades=%d",
+        regime,
+        session_flag,
+        FUT_LEVERAGE,
+        NOTIONAL_PER_TRADE,
+        TP_DYN_MIN_PROFIT_PCT,
+        MAX_SL_PNL_PCT,
+        MAX_TRADES_PER_RUN,
+    )
 
 def safe_float(x, default=0.0):
     """Ép kiểu float an toàn, nếu lỗi trả về default."""
@@ -114,9 +219,9 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if m == 5 and h in (9, 15, 20):
+    if h in (9, 15, 20) and 5 <= m <= 37:
         return True
-    if h == 22 and m == 50:
+    if h == 22 and 50 <= m <= 52:
         return True
 
     return False
@@ -2290,28 +2395,29 @@ def run_full_bot(okx):
     run_backtest_if_needed(okx)
 
 def main():
-    # Nếu muốn tính theo giờ VN:
     setup_logging()
     now_utc = datetime.now(timezone.utc)
     now_vn  = now_utc + timedelta(hours=7)   # VN = UTC+7
     minute  = now_vn.minute
+
     okx = OKXClient(
         api_key=os.getenv("OKX_API_KEY"),
         api_secret=os.getenv("OKX_API_SECRET"),
         passphrase=os.getenv("OKX_API_PASSPHRASE")
     )
 
-    # Luôn ưu tiên TP dynamic trước
+    # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
+    apply_risk_config(okx)
+
+    # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
 
-    # Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    # 5,20,35,50 đều có minute % 15 == 5
+    # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     if minute % 15 == 5:
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
         run_full_bot(okx)
     else:
         logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
-
 
 if __name__ == "__main__":
     main()
