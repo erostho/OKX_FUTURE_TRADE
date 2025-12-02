@@ -219,7 +219,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 17, 20) and 5 <= m <= 57:
+    if h in (9, 15, 20) and 5 <= m <= 7:
         return True
     if h == 22 and 50 <= m <= 52:
         return True
@@ -229,7 +229,7 @@ def is_backtest_time_vn():
     
 def is_deadzone_time_vn():
     """
-    Phiên trưa 'deadzone' 10:30 - 15:00 giờ VN.
+    Phiên trưa 'deadzone' 10:30 - 16:00 giờ VN.
     Dùng cho chiến lược sideway / scalp an toàn.
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
@@ -239,8 +239,8 @@ def is_deadzone_time_vn():
     # 10:30–11:00
     if h == 10 and m >= 30:
         return True
-    # 11:00–15:00
-    if 11 <= h < 15:
+    # 11:00–16:00
+    if 11 <= h < 16:
         return True
 
     return False
