@@ -219,7 +219,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 17, 20) and 5 <= m <= 57:
+    if h in (9, 16, 20) and 5 <= m <= 57:
         return True
     if h == 22 and 50 <= m <= 52:
         return True
@@ -597,125 +597,40 @@ def eval_trades_with_prices(trades, price_map, only_today: bool):
     winrate = (tp_count / closed * 100) if closed > 0 else 0.0
     return total, tp_count, sl_count, open_count, winrate
     
-# ===== REAL PNL STATS TỪ OKX =====
+def get_session_from_time(time_s: str) -> str | None:
+    if not time_s:
+        return None
 
-BASE_EQUITY = 70.0  # vốn chuẩn để quy ra PnL% (tùy bạn sửa)
+    try:
+        h = int(time_s[11:13])
+        m = int(time_s[14:16])
+    except:
+        return None
 
-def classify_session_from_dt(dt_vn: datetime) -> str:
-    h = dt_vn.hour
-    if 0 <= h < 9:
+    t = h + m / 60.0  # chuyển sang dạng 11.5, 14.25…
+
+    if 0 <= t < 9:
         return "0-9"
-    elif 9 <= h < 15:
+    elif 9 <= t < 15:
         return "9-15"
-    elif 15 <= h < 20:
+    elif 15 <= t < 20:
         return "15-20"
     else:
         return "20-24"
-
-
-def build_real_stats_from_fills(okx, base_equity: float):
+        
+def calc_trade_pnl_pct(entry: float, exit_price: float, signal: str) -> float:
     """
-    Đọc lịch sử fills futures từ OKX, gom PnL thật (đã gồm SL khẩn, TP động, phí...).
-    Trả về:
-        stats_all, stats_today, sess_today
+    Tính PnL% theo giá entry/exit và direction, có nhân FUT_LEVERAGE.
     """
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    today_str = now_vn.strftime("%Y-%m-%d")
+    if entry <= 0 or exit_price <= 0:
+        return 0.0
 
-    # khởi tạo struct thống kê
-    def _empty_stats():
-        return {"total": 0, "tp": 0, "sl": 0, "open": 0, "pnl": 0.0}
+    if signal.upper() == "LONG":
+        price_pct = (exit_price - entry) / entry * 100.0
+    else:  # SHORT
+        price_pct = (entry - exit_price) / entry * 100.0
 
-    stats_all = _empty_stats()
-    stats_today = _empty_stats()
-    sess_today = {
-        "0-9": _empty_stats(),
-        "9-15": _empty_stats(),
-        "15-20": _empty_stats(),
-        "20-24": _empty_stats(),
-    }
-
-    try:
-        # TODO: đổi sang hàm wrapper bạn đang dùng
-        fills = okx.get_futures_fills_history()  
-    except Exception as e:
-        logging.warning(f"[REAL-PNL] Lỗi get fills history: {e}")
-        return stats_all, stats_today, sess_today
-
-    for f in fills:
-        # ---- parse thời gian fill ----
-        # giả sử fillTime là ms timestamp string. Nếu khác thì chỉnh lại khúc này.
-        try:
-            ts_ms = int(f.get("fillTime", 0))
-            dt_utc = datetime.utcfromtimestamp(ts_ms / 1000)
-        except Exception:
-            continue
-
-        dt_vn = dt_utc + timedelta(hours=7)
-        date_key = dt_vn.strftime("%Y-%m-%d")
-
-        # chỉ quan tâm futures USDT-SWAP
-        inst_id = str(f.get("instId", ""))
-        if "SWAP" not in inst_id:
-            continue
-
-        # chỉ lấy fills đóng vị thế (reduce-only / close)
-        reduce_only = str(f.get("reduceOnly", "")).lower() == "true"
-        trade_role = str(f.get("tradeRole", ""))  # tùy OKX API
-        is_close = reduce_only or trade_role in ("3", "4")  # close long/short
-        if not is_close:
-            continue
-
-        pnl = safe_float(f.get("pnl"))
-        if pnl is None:
-            continue
-
-        # ---- cập nhật ALL ----
-        stats_all["total"] += 1
-        stats_all["pnl"] += pnl
-        if pnl > 0:
-            stats_all["tp"] += 1
-        elif pnl < 0:
-            stats_all["sl"] += 1
-        else:
-            stats_all["open"] += 1
-
-        # ---- TODAY + SESSION TODAY ----
-        if date_key == today_str:
-            stats_today["total"] += 1
-            stats_today["pnl"] += pnl
-            if pnl > 0:
-                stats_today["tp"] += 1
-            elif pnl < 0:
-                stats_today["sl"] += 1
-            else:
-                stats_today["open"] += 1
-
-            sess = classify_session_from_dt(dt_vn)
-            st = sess_today[sess]
-            st["total"] += 1
-            st["pnl"] += pnl
-            if pnl > 0:
-                st["tp"] += 1
-            elif pnl < 0:
-                st["sl"] += 1
-            else:
-                st["open"] += 1
-
-    # tính win% & pnl%
-    def _finalize(s):
-        closed = s["tp"] + s["sl"]
-        win = (s["tp"] / closed * 100.0) if closed > 0 else 0.0
-        pnl_pct = (s["pnl"] / base_equity * 100.0) if base_equity > 0 else 0.0
-        s["win"] = win
-        s["pnl_pct"] = pnl_pct
-
-    _finalize(stats_all)
-    _finalize(stats_today)
-    for s in sess_today.values():
-        _finalize(s)
-
-    return stats_all, stats_today, sess_today
+    return price_pct * FUT_LEVERAGE
         
 def run_backtest_if_needed(okx: "OKXClient"):
     """
@@ -833,29 +748,33 @@ def run_backtest_if_needed(okx: "OKXClient"):
     
         return total, tp, sl, op, win, session_stat, avg_pnl_pct, pnl_usdt_sum
 
-    # =========== REAL PNL STATS ============
-    stats_all, stats_today, sess_today = build_real_stats_from_fills(okx, BASE_EQUITY)
+
+
+    # ============ CHẠY 2 BACKTEST ============
+    total_all, tp_all, sl_all, op_all, win_all, sess_all, pnl_all_pct, pnl_all_usdt = do_backtest(trades)
+    total_today, tp_today, sl_today, op_today, win_today, sess_today, pnl_today_pct, pnl_today_usdt = do_backtest(trades_today)
     
+    # ---------- GỬI TELEGRAM ----------
     msg = (
-        f"[📊REAL ALL] total={stats_all['total']} TP={stats_all['tp']} SL={stats_all['sl']} "
-        f"OPEN={stats_all['open']} win={stats_all['win']:.1f}% "
-        f"PNL%={stats_all['pnl_pct']:+.2f}%  PNL={stats_all['pnl']:+.2f} USDT\n"
-        f"[📊REAL TODAY] total={stats_today['total']} TP={stats_today['tp']} SL={stats_today['sl']} "
-        f"OPEN={stats_today['open']} win={stats_today['win']:.1f}% "
-        f"PNL%={stats_today['pnl_pct']:+.2f}%  PNL={stats_today['pnl']:+.2f} USDT\n"
-        "\n--- SESSION TODAY ---"
+        f"[✅BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} "
+        f"win={win_all:.1f}%  PNL%={pnl_all_pct:+.2f}%  PNL={pnl_all_usdt:+.2f} USDT\n"
+        f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} "
+        f"win={win_today:.1f}%  PNL%={pnl_today_pct:+.2f}%  PNL={pnl_today_usdt:+.2f} USDT"
     )
     
-    for sess in ["0-9", "9-15", "15-20", "20-24"]:
-        st = sess_today[sess]
+    msg += "\n\n--- SESSION TODAY ---"
+    for s in ["0-9", "9-15", "15-20", "20-24"]:
+        st = sess_today[s]
+        closed_s = st["tp"] + st["sl"]
+        win_s = (st["tp"] / closed_s * 100) if closed_s > 0 else 0.0
+        # nếu muốn thêm PnL theo session thì sau này bổ sung compute_session_stats, giờ tạm để 0
         msg += (
-            f"\n[{sess}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['open']} "
-            f"win={st['win']:.1f}% PNL={st['pnl']:+.2f} USDT"
+            f"\n[{s}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['op']} "
+            f"win={win_s:.1f}%"
         )
     
     logging.info(msg)
     send_telegram_message(msg)
-
 
 
 # ========== GOOGLE SHEETS ==========
@@ -1847,7 +1766,101 @@ def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 
     atr = sum(trs[-period:]) / period
     return atr if atr > 0 else None
 
+def simulate_trade_result_with_candles(
+    okx: "OKXClient",
+    coin: str,
+    signal: str,
+    entry: float,
+    tp: float,
+    sl: float,
+    time_str: str,
+    bar: str = "5m",
+    max_limit: int = 300,
+):
+    """
+    Backtest 1 lệnh bằng nến lịch sử:
+      - coin: 'MERL-USDT' (spot) hoặc 'MERL-USDT-SWAP' (perp)
+      - signal: 'LONG' / 'SHORT'
+      - entry, tp, sl: float
+      - time_str: 'dd/mm/YYYY HH:MM' (giờ VN)
 
+    Logic:
+      - lấy ~300 nến 5m gần nhất
+      - tìm nến có ts >= thời điểm vào lệnh
+      - duyệt từng nến: kiểm tra high/low chạm TP/SL
+      - nếu cả TP & SL cùng chạm trong 1 nến -> giả định XẤU NHẤT: SL trước
+    """
+    ts_entry = parse_trade_time_to_utc_ms(time_str)
+    if ts_entry is None:
+        return "UNKNOWN"
+
+    # ƯU TIÊN BACKTEST BẰNG SWAP (Perpetual Futures)
+    # coin: 'SAHARA-USDT'
+    # swap_inst: 'SAHARA-USDT-SWAP'
+    base = coin.replace("-USDT", "")
+    swap_inst = f"{base}-USDT-SWAP"
+
+    # Thử lấy nến từ SWAP trước
+    try:
+        candles = okx.get_candles(swap_inst, bar=bar, limit=max_limit)
+        inst_id = swap_inst
+    except Exception:
+        candles = []
+
+    # Nếu SWAP thất bại → fallback SPOT
+    if not candles:
+        try:
+            candles = okx.get_candles(coin, bar=bar, limit=max_limit)
+            inst_id = coin
+        except Exception:
+            return "NO_DATA"
+
+    try:
+        candles_sorted = sorted(candles, key=lambda x: int(x[0]))
+    except Exception:
+        candles_sorted = candles
+
+    # tìm index bắt đầu từ lúc vào lệnh
+    start_idx = None
+    for i, k in enumerate(candles_sorted):
+        try:
+            ts_bar = int(k[0])
+        except Exception:
+            continue
+        if ts_bar >= ts_entry:
+            start_idx = i
+            break
+
+    if start_idx is None:
+        # lệnh quá cũ, không nằm trong khoảng nến tải về
+        return "OUT_OF_RANGE"
+
+    sig = (signal or "").upper()
+
+    for k in candles_sorted[start_idx:]:
+        try:
+            high = float(k[2])
+            low  = float(k[3])
+        except Exception:
+            continue
+
+        if sig == "LONG":
+            hit_tp = high >= tp
+            hit_sl = low  <= sl
+        else:  # SHORT
+            hit_tp = low  <= tp
+            hit_sl = high >= sl
+
+        # nếu trong 1 nến chạm cả TP & SL -> chọn kịch bản xấu: SL
+        if hit_tp and hit_sl:
+            return "SL"
+        if hit_tp:
+            return "TP"
+        if hit_sl:
+            return "SL"
+
+    # duyệt hết mà không chạm TP/SL
+    return "OPEN"
 
 # ======== PNL CALCULATIONS ========
 
@@ -2539,4 +2552,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
