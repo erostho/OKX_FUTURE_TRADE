@@ -124,7 +124,7 @@ def is_backtest_time_vn():
     
 def is_deadzone_time_vn():
     """
-    Phiên trưa 'deadzone' 10:30 - 15:30 giờ VN.
+    Phiên trưa 'deadzone' 10:30 - 15:00 giờ VN.
     Dùng cho chiến lược sideway / scalp an toàn.
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
@@ -136,9 +136,6 @@ def is_deadzone_time_vn():
         return True
     # 11:00–15:00
     if 11 <= h < 15:
-        return True
-    # 15:00–16:00
-    if h == 15 and m < 30:
         return True
 
     return False
