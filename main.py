@@ -103,11 +103,24 @@ def is_quiet_hours_vn():
     return now_vn.hour >= 23 or now_vn.hour < 6
 def is_backtest_time_vn():
     """
-    Trả về True nếu giờ VN nằm trong khoảng 22:00 - 22:25.
-    (bot chạy trong khung 25 phút đó thì sẽ chạy thêm backtest)
+    Chạy backtest theo PHIÊN:
+      - 09:05  -> tổng kết phiên 0–9
+      - 15:05  -> tổng kết phiên 9–15
+      - 20:05  -> tổng kết phiên 15–20
+      - 22:50  -> tổng kết phiên 20–24
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour == 22 and now_vn.minute <= 25
+    h = now_vn.hour
+    m = now_vn.minute
+
+    # các lần cron full bot đang chạy ở phút 5,20,35,50
+    if m == 5 and h in (9, 15, 20):
+        return True
+    if h == 22 and m == 50:
+        return True
+
+    return False
+
     
 def is_deadzone_time_vn():
     """
