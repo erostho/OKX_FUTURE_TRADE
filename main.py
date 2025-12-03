@@ -2383,7 +2383,7 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct <= -soft_sl_pct:
             # Lấy trend ngắn hạn (5m) để xem có ngược mạnh không
             try:
-                swap_id = instId + "-SWAP"
+                swap_id = instId
                 c = okx.get_candles(swap_id, bar="5m", limit=SL_DYN_LOOKBACK + 1)
                 c_sorted = sorted(c, key=lambda x: int(x[0]))
                 closes_tr = [float(k[4]) for k in c_sorted]
