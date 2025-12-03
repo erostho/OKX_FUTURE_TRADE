@@ -2195,7 +2195,6 @@ def execute_futures_trades(okx: OKXClient, trades):
             td_mode="isolated",
             lever=this_lever,
         )
-
         code = order_resp.get("code")
         if code != "0":
             msg = order_resp.get("msg", "")
@@ -2217,12 +2216,15 @@ def execute_futures_trades(okx: OKXClient, trades):
         )
         oco_code = oco_resp.get("code")
         if oco_code != "0":
+            msg = oco_resp.get("msg", "")
             logging.error(
-                "[OKX OCO RESP] Lỗi đặt TP/SL OCO cho %s: code=%s msg=%s",
-                swap_inst,
-                oco_code,
-                oco_resp.get("msg", ""),
+                f"[OKX ORDER RESP] Không đặt được OCO TP/SL cho {swap_inst}: code={code} msg={msg}. ĐÓNG LỆNH NGAY để tránh mất kiểm soát."
             )
+            try:
+                okx.close_swap_position(swap_inst, pos_side)
+            except Exception as e:
+                logging.error(f"[OKX ORDER RESP] Lỗi đóng lệnh khẩn cho {swap_inst}: {e}")
+            continue  # bỏ qua, không cho lệnh này tồn tại
 
         # 4) Lệnh đã mở thành công -> lưu vào CACHE
         trade_cache_item = {
