@@ -44,6 +44,11 @@ TP_DYN_FLAT_BARS = 2      # số nến 5m đi ngang trước khi thoát
 TP_DYN_ENGULF = True      # bật thoát khi có engulfing
 TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
+# ======== TRAILING TP CONFIG ========
+TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 5% PnL
+TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 2% từ đỉnh → chốt
+TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
+
 # ========== PUMP/DUMP PRO CONFIG ==========
 SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
 SL_DYN_SOFT_PCT_BAD  = 2.0   # thị trường xấu → cắt sớm hơn
@@ -2205,15 +2210,25 @@ def execute_futures_trades(okx: OKXClient, trades):
             continue
 
         # 3) Đặt TP/SL OCO
+        # 3) Đặt OCO chỉ dùng SL, TP để rất xa cho an toàn
+        #    → chốt lời sẽ do TP động + trailing TP xử lý.
+        HARD_TP_CAP_PCT = 50.0  # TP trần cực xa ~ +50% giá, gần như không chạm
+
+        if signal == "LONG":
+            tp_hard = entry * (1 + HARD_TP_CAP_PCT / 100.0)
+        else:  # SHORT
+            tp_hard = entry * (1 - HARD_TP_CAP_PCT / 100.0)
+
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
             pos_side=pos_side,
             side_close=side_close,
             sz=contracts,
-            tp_px=tp,
-            sl_px=sl,
+            tp_px=tp_hard,  # TP rất xa, không còn vai trò TP 1R
+            sl_px=sl,       # SL vẫn theo ATR + cap 10% như cũ
             td_mode="isolated",
         )
+
         oco_code = oco_resp.get("code")
         if oco_code != "0":
             msg = oco_resp.get("msg", "")
@@ -2258,9 +2273,7 @@ def execute_futures_trades(okx: OKXClient, trades):
 
 def run_dynamic_tp(okx: OKXClient):
     """
-    TP động cho các lệnh futures đang mở.
-    - GOOD market: dùng ngưỡng TP_DYN_MIN_PROFIT_PCT (mặc định 5% PnL)
-    - BAD market / deadzone: dùng ngưỡng 3% PnL (ăn ngắn hơn)
+    TP động + trailing TP + SL khẩn cấp cho các lệnh futures đang mở.
     """
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
 
@@ -2268,23 +2281,15 @@ def run_dynamic_tp(okx: OKXClient):
     logging.info(f"[TP-DYN] Số vị thế đang mở: {len(positions)}")
 
     if not positions:
-        logging.info("[TP-DYN] Không có vị thế futures nào đang mở.")
+        logging.info("[TP_DYN] Không có vị thế futures nào đang mở.")
         return
-
-    # --- XÁC ĐỊNH BỐI CẢNH 1 LẦN ---
-    in_deadzone = is_deadzone_time_vn()
-    try:
-        market_regime = detect_market_regime(okx)  # hàm B1 anh đã có
-    except Exception as e:
-        logging.error(f"[TP-DYN] Lỗi detect_market_regime: {e}")
-        market_regime = "UNKNOWN"
 
     for p in positions:
         try:
             instId  = p.get("instId")
             posSide = p.get("posSide")  # 'long'/'short'
-            pos     = safe_float(p.get("pos", "0"))
-            avail   = safe_float(p.get("availPos", pos))
+            pos     = safe_float(p.get("pos", "0"))            # tổng khối lượng
+            avail   = safe_float(p.get("availPos", pos))       # fallback
             sz      = avail if avail > 0 else pos
             avg_px  = safe_float(p.get("avgPx", "0"))
 
@@ -2298,7 +2303,7 @@ def run_dynamic_tp(okx: OKXClient):
 
         # --- Lấy nến 5m ---
         try:
-            c5 = okx.get_candles(instId, bar="5m", limit=30)
+            c5 = okx.get_candles(instId, bar="5m", limit=max(30, TRAIL_LOOKBACK_BARS + 5))
         except Exception as e:
             logging.warning(f"[TP-DYN] Lỗi get_candles 5m {instId}: {e}")
             continue
@@ -2308,7 +2313,7 @@ def run_dynamic_tp(okx: OKXClient):
 
         try:
             c5_sorted = sorted(c5, key=lambda x: int(x[0]))
-        except Exception:
+        except:
             c5_sorted = c5
 
         closes = [safe_float(k[4]) for k in c5_sorted]
@@ -2327,59 +2332,16 @@ def run_dynamic_tp(okx: OKXClient):
         l_prev1 = lows[-2]
         vol_now = vols[-1]
 
-        # ----- TÍNH % GIÁ & % PnL -----
+        # ===== 1) % Lãi hiện tại (Pnl% theo giá) =====
         if posSide == "long":
-            price_pct = (c_now - avg_px) / avg_px * 100.0
-        else:  # short
-            price_pct = (avg_px - c_now) / avg_px * 100.0
-        
-        pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
-        #SL DYNAMIC
-        # 1) Tính soft SL theo regime
-        regime = detect_market_regime(okx)  # đang dùng cho nhiều chỗ rồi
-        soft_sl_pct = SL_DYN_SOFT_PCT_BAD if regime == "BAD" else SL_DYN_SOFT_PCT_GOOD
-        
-        # 2) Nếu đang lỗ đủ sâu để cân nhắc soft SL
-        if pnl_pct <= -soft_sl_pct:
-            # Lấy trend ngắn hạn, ví dụ 5m/15m
-            try:
-                swap_id = instId + "-SWAP"
-                c = okx.get_candles(swap_id, bar="5m", limit=SL_DYN_LOOKBACK + 1)
-                # sort & chuyển về list close
-                c_sorted = sorted(c, key=lambda x: int(x[0]))
-                closes = [float(k[4]) for k in c_sorted]
-                if len(closes) >= SL_DYN_LOOKBACK + 1:
-                    # % thay đổi từ N cây trước đến hiện tại
-                    trend_pct = (closes[-1] - closes[-1-SL_DYN_LOOKBACK]) / closes[-1-SL_DYN_LOOKBACK] * 100.0
-                else:
-                    trend_pct = 0.0
-            except Exception as e:
-                logging.warning(f"[SL-DYN] Lỗi lấy candles cho {instId}: {e}")
-                trend_pct = 0.0
-        
-            # 3) Kiểm tra trend có đi NGƯỢC vị thế không
-            trend_against = False
-            if posSide == "long" and trend_pct <= -SL_DYN_TREND_PCT:
-                trend_against = True
-            if posSide == "short" and trend_pct >= SL_DYN_TREND_PCT:
-                trend_against = True
-        
-            # 4) Nếu trend ngược mạnh → cắt sớm, không chờ tới -5%
-            if trend_against:
-                logging.info(
-                    f"[SL-DYN] {instId} lỗ {pnl_pct:.2f}% & trend ngược {trend_pct:.2f}% → CẮT LỖ SỚM (soft SL)."
-                )
-                try:
-                    okx.close_swap_position(instId, posSide)
-                except Exception as e:
-                    logging.error(f"[SL-DYN] Lỗi đóng lệnh {instId}: {e}")
-                continue
+            profit_pct = (c_now - avg_px) / avg_px * 100.0
+        else:
+            profit_pct = (avg_px - c_now) / avg_px * 100.0
 
-        # ====== SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
-        # Ví dụ MAX_SL_PNL_PCT = 5.0 → cắt khi lỗ khoảng -5% PnL
-        if pnl_pct <= -MAX_EMERGENCY_SL_PNL_PCT:
+        # ===== 2) SL khẩn cấp theo PnL% =====
+        if profit_pct <= -MAX_SL_PNL_PCT:
             logging.info(
-                f"[TP-DYN] {instId} lỗ {pnl_pct:.2f}% <= -{MAX_EMERGENCY_SL_PNL_PCT}% PnL → CẮT LỖ KHẨN CẤP."
+                f"[TP-DYN] {instId} lỗ {profit_pct:.2f}% <= -{MAX_SL_PNL_PCT}% → CẮT LỖ KHẨN CẤP."
             )
             try:
                 okx.close_swap_position(instId, posSide)
@@ -2387,31 +2349,12 @@ def run_dynamic_tp(okx: OKXClient):
                 logging.error(f"[TP-DYN] Lỗi đóng lệnh {instId}: {e}")
             continue
 
-        # ====== CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG (tp_dyn_threshold) ======
-        if in_deadzone:
-            # Deadzone: ăn ngắn, market hay nhiễu
-            tp_dyn_threshold = 3.0
-        else:
-            if market_regime == "BAD":
-                tp_dyn_threshold = 2.5          # thị trường xấu → ăn ngắn
-            else:
-                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → dùng config (mặc định 5.0)
-
-        # Nếu chưa lãi đủ ngưỡng thì không xử lý TP động
-        if pnl_pct < tp_dyn_threshold:
-            logging.info(
-                f"[TP-DYN] {instId} lãi {pnl_pct:.2f}% < {tp_dyn_threshold}% → bỏ qua TP động"
-            )
-            continue
-
-        # ====== PHẦN DƯỚI GIỮ NGUYÊN (flat / engulf / vol / EMA) ======
-        # 1) 3 nến không tiến thêm
+        # ===== 3) TP động "thoát sớm khi yếu" (logic cũ) =====
         if posSide == "long":
             flat_move = not (c_now > c_prev1 > c_prev2)
         else:
             flat_move = not (c_now < c_prev1 < c_prev2)
 
-        # 2) Engulfing đảo chiều
         body_now  = abs(c_now - o_now)
         body_prev = abs(c_prev1 - o_prev1)
         engulfing = False
@@ -2421,12 +2364,10 @@ def run_dynamic_tp(okx: OKXClient):
         else:
             engulfing = (c_now > o_now) and (body_now > body_prev) and (c_now > h_prev1)
 
-        # 3) Volume drop
         vols_before = vols[-(TP_DYN_FLAT_BARS + 10):-1]
-        avg_vol10 = sum(vols_before) / max(1, len(vols_before))
-        vol_drop = (avg_vol10 > 0) and ((vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO)
+        avg_vol10   = sum(vols_before) / max(1, len(vols_before))
+        vol_drop    = (avg_vol10 > 0) and ((vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO)
 
-        # 4) EMA-5 break
         ema5 = calc_ema(closes[-(TP_DYN_EMA_LEN + 5):], TP_DYN_EMA_LEN)
         ema_break = False
         if ema5:
@@ -2435,15 +2376,41 @@ def run_dynamic_tp(okx: OKXClient):
             else:
                 ema_break = c_now > ema5
 
+        # Nếu chưa đạt ngưỡng kích hoạt TP động tối thiểu → bỏ qua phần flat/engulf/vol_drop/ema
+        if profit_pct < TP_DYN_MIN_PROFIT_PCT:
+            flat_move = False
+            engulfing = False
+            vol_drop  = False
+            ema_break = False
+
+        # ===== 4) TRAILING TP: ăn trend mạnh, chốt khi hồi X% từ đỉnh =====
+        # Ước lượng đỉnh/đáy tốt nhất trong N nến gần nhất
+        lookback_highs = highs[-TRAIL_LOOKBACK_BARS:] if len(highs) >= TRAIL_LOOKBACK_BARS else highs
+        lookback_lows  = lows[-TRAIL_LOOKBACK_BARS:]  if len(lows)  >= TRAIL_LOOKBACK_BARS  else lows
+
+        if posSide == "long":
+            best_price = max(lookback_highs) if lookback_highs else c_now
+            best_profit_pct = (best_price - avg_px) / avg_px * 100.0
+        else:
+            best_price = min(lookback_lows) if lookback_lows else c_now
+            best_profit_pct = (avg_px - best_price) / avg_px * 100.0
+
+        trailing_active = best_profit_pct >= TRAIL_START_PROFIT_PCT
+        giveback_pct    = best_profit_pct - profit_pct   # đã hồi lại bao nhiêu % từ đỉnh
+
+        trailing_exit = trailing_active and (giveback_pct >= TRAIL_GIVEBACK_PCT)
+
         logging.info(
-            f"[TP-DYN] {instId} profit={pnl_pct:.2f}% (thr={tp_dyn_threshold}%) | "
-            f"flat={flat_move} | engulf={engulfing} | vol_drop={vol_drop} | ema_break={ema_break}"
+            f"[TP-DYN] {instId} profit={profit_pct:.2f}% | best={best_profit_pct:.2f}% "
+            f"| giveback={giveback_pct:.2f}% | flat={flat_move} | engulf={engulfing} "
+            f"| vol_drop={vol_drop} | ema_break={ema_break} | trailing_exit={trailing_exit}"
         )
 
-        should_close = flat_move or engulfing or vol_drop or ema_break
+        # ===== 5) QUYẾT ĐỊNH ĐÓNG LỆNH =====
+        should_close = trailing_exit or flat_move or engulfing or vol_drop or ema_break
 
         if should_close:
-            logging.info(f"[TP-DYN] → ĐÓNG vị thế {instId} ({posSide}) do tín hiệu suy yếu.")
+            logging.info(f"[TP-DYN] → ĐÓNG vị thế {instId} ({posSide}) theo TP động/Trailing.")
             try:
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
@@ -2451,7 +2418,8 @@ def run_dynamic_tp(okx: OKXClient):
         else:
             logging.info(f"[TP-DYN] Giữ lệnh {instId} – chưa đến điểm thoát.")
 
-    logging.info("===== DYNAMIC TP DONE =====")
+    logging.info("===== DYNAMIC + TRAILING TP DONE =====")
+
 
 def detect_market_regime(okx: "OKXClient"):
     """
