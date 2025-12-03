@@ -41,6 +41,10 @@ TP_DYN_ENGULF = True      # bật thoát khi có engulfing
 TP_DYN_VOL_DROP = True    # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH = True   # bật thoát khi chạm EMA5
 # ========== PUMP/DUMP PRO CONFIG ==========
+SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
+SL_DYN_SOFT_PCT_BAD  = 2.0   # thị trường xấu → cắt sớm hơn
+SL_DYN_TREND_PCT = 1.0       # 1%/15m đi ngược chiều thì coi là mạnh
+SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
 # SL planned tối đa (khi đặt TP/SL ban đầu)
 MAX_PLANNED_SL_PNL_PCT = 10.0   # cho phép lỗ tối đa 10% PnL nếu chạm SL
@@ -2197,6 +2201,46 @@ def run_dynamic_tp(okx: OKXClient):
             price_pct = (avg_px - c_now) / avg_px * 100.0
         
         pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
+        #SL DYNAMIC
+        # 1) Tính soft SL theo regime
+        regime = detect_market_regime(okx)  # đang dùng cho nhiều chỗ rồi
+        soft_sl_pct = SL_DYN_SOFT_PCT_BAD if regime == "BAD" else SL_DYN_SOFT_PCT_GOOD
+        
+        # 2) Nếu đang lỗ đủ sâu để cân nhắc soft SL
+        if profit_pct <= -soft_sl_pct:
+            # Lấy trend ngắn hạn, ví dụ 5m/15m
+            try:
+                swap_id = instId + "-SWAP"
+                c = okx.get_candles(swap_id, bar="5m", limit=SL_DYN_LOOKBACK + 1)
+                # sort & chuyển về list close
+                c_sorted = sorted(c, key=lambda x: int(x[0]))
+                closes = [float(k[4]) for k in c_sorted]
+                if len(closes) >= SL_DYN_LOOKBACK + 1:
+                    # % thay đổi từ N cây trước đến hiện tại
+                    trend_pct = (closes[-1] - closes[-1-SL_DYN_LOOKBACK]) / closes[-1-SL_DYN_LOOKBACK] * 100.0
+                else:
+                    trend_pct = 0.0
+            except Exception as e:
+                logging.warning(f"[SL-DYN] Lỗi lấy candles cho {instId}: {e}")
+                trend_pct = 0.0
+        
+            # 3) Kiểm tra trend có đi NGƯỢC vị thế không
+            trend_against = False
+            if posSide == "long" and trend_pct <= -SL_DYN_TREND_PCT:
+                trend_against = True
+            if posSide == "short" and trend_pct >= SL_DYN_TREND_PCT:
+                trend_against = True
+        
+            # 4) Nếu trend ngược mạnh → cắt sớm, không chờ tới -5%
+            if trend_against:
+                logging.info(
+                    f"[SL-DYN] {instId} lỗ {profit_pct:.2f}% & trend ngược {trend_pct:.2f}% → CẮT LỖ SỚM (soft SL)."
+                )
+                try:
+                    okx.close_swap_position(instId, posSide)
+                except Exception as e:
+                    logging.error(f"[SL-DYN] Lỗi đóng lệnh {instId}: {e}")
+                continue
 
         # ====== SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
         # Ví dụ MAX_SL_PNL_PCT = 5.0 → cắt khi lỗ khoảng -5% PnL
