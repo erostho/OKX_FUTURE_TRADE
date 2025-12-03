@@ -21,7 +21,11 @@ CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
 # Trading config
 FUT_LEVERAGE = 6              # x5 isolated
 NOTIONAL_PER_TRADE = 30.0     # 30 USDT position size (ký quỹ ~5$ với x6)
-MAX_TRADES_PER_RUN = 20        # tối đa 10 lệnh / 1 lần cron
+MAX_TRADES_PER_RUN = 10        # tối đa 10 lệnh / 1 lần cron
+
+# Circuit breaker theo phiên
+SESSION_MAX_LOSS_PCT = 5.0  # Mỗi phiên lỗ tối đa -5% equity thì dừng trade
+SESSION_STATE_FILE = os.getenv("SESSION_STATE_FILE", "session_state.json")
 
 # Scanner config
 MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
@@ -252,6 +256,24 @@ def is_deadzone_time_vn():
         return True
 
     return False
+def get_current_session_vn():
+    """
+    Chia 4 phiên:
+      - 0–9   : '0-9'
+      - 9–15  : '9-15'
+      - 15–20 : '15-20'
+      - 20–24 : '20-24'
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    h = now_vn.hour
+    if h < 9:
+        return "0-9"
+    elif h < 15:
+        return "9-15"
+    elif h < 20:
+        return "15-20"
+    else:
+        return "20-24"
 
 # ========== OKX REST CLIENT ==========
 
@@ -503,6 +525,115 @@ def load_trade_cache():
         return []
     except Exception:
         return []
+
+def load_session_state():
+    """
+    Đọc trạng thái circuit breaker theo phiên từ file JSON.
+    {
+      "date": "2025-12-03",
+      "session": "0-9",
+      "start_equity": 100.0,
+      "blocked": false
+    }
+    """
+    if not os.path.exists(SESSION_STATE_FILE):
+        return None
+    try:
+        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_session_state(state: dict):
+    try:
+        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception as e:
+        logging.error("[SESSION] Lỗi lưu session_state: %s", e)
+
+
+def check_session_circuit_breaker(okx: "OKXClient") -> bool:
+    """
+    Trả về True  -> được phép mở lệnh mới trong phiên hiện tại.
+            False -> phiên đã chạm -SESSION_MAX_LOSS_PCT%, không mở lệnh nữa.
+    """
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today = now_vn.strftime("%Y-%m-%d")
+    session = get_current_session_vn()
+
+    state = load_session_state() or {}
+    st_date = state.get("date")
+    st_session = state.get("session")
+    blocked = bool(state.get("blocked", False))
+    start_equity = float(state.get("start_equity", 0) or 0)
+
+    # ⬇️ Nếu sang ngày mới hoặc sang phiên mới -> reset
+    if st_date != today or st_session != session:
+        equity = okx.get_usdt_balance()
+        state = {
+            "date": today,
+            "session": session,
+            "start_equity": equity,
+            "blocked": False,
+        }
+        save_session_state(state)
+        logging.info(
+            "[SESSION] Reset state cho ngày %s phiên %s (start_equity=%.4f)",
+            today,
+            session,
+            equity,
+        )
+        return True
+
+    # ⬇️ Nếu đã bị block thì không cho trade nữa
+    if blocked:
+        logging.warning(
+            "[SESSION] Phiên %s đã bị khóa do lỗ quá %g%%, bỏ qua mở lệnh mới.",
+            session,
+            SESSION_MAX_LOSS_PCT,
+        )
+        return False
+
+    # Nếu chưa có start_equity hợp lệ -> set luôn
+    if start_equity <= 0:
+        equity = okx.get_usdt_balance()
+        state["start_equity"] = equity
+        save_session_state(state)
+        logging.info(
+            "[SESSION] Chưa có start_equity, set mới = %.4f cho phiên %s",
+            equity,
+            session,
+        )
+        return True
+
+    # ⬇️ Tính PnL% của riêng phiên
+    equity_now = okx.get_usdt_balance()
+    pnl_pct = (equity_now - start_equity) / start_equity * 100.0
+
+    logging.info(
+        "[SESSION] Phiên %s PnL=%.2f%% (start=%.4f, now=%.4f)",
+        session,
+        pnl_pct,
+        start_equity,
+        equity_now,
+    )
+
+    if pnl_pct <= -SESSION_MAX_LOSS_PCT:
+        logging.warning(
+            "[SESSION] Phiên %s lỗ %.2f%% <= -%.2f%% → KHÓA PHIÊN, dừng mở lệnh mới.",
+            session,
+            pnl_pct,
+            SESSION_MAX_LOSS_PCT,
+        )
+        state["blocked"] = True
+        save_session_state(state)
+        return False
+
+    # Chưa chạm ngưỡng → vẫn trade bình thường
+    save_session_state(state)
+    return True
+
 def load_trades_for_backtest():
     """
     Load lịch sử lệnh cho backtest:
@@ -2399,6 +2530,11 @@ def run_full_bot(okx):
         )
 
     okx = OKXClient(api_key, api_secret, passphrase, simulated_trading=simulated)
+    # 0) Circuit breaker theo phiên: nếu lỗ quá -SESSION_MAX_LOSS_PCT% thì dừng mở lệnh mới
+    if not check_session_circuit_breaker(okx):
+        logging.info("[BOT] Circuit breaker kích hoạt → KHÔNG SCAN/MỞ LỆNH mới phiên này.")
+        return
+
     regime = detect_market_regime(okx)
     logging.info(f"[REGIME] Thị trường hiện tại: {regime}")
     
