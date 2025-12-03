@@ -2338,7 +2338,7 @@ def run_dynamic_tp(okx: OKXClient):
         soft_sl_pct = SL_DYN_SOFT_PCT_BAD if regime == "BAD" else SL_DYN_SOFT_PCT_GOOD
         
         # 2) Nếu đang lỗ đủ sâu để cân nhắc soft SL
-        if profit_pct <= -soft_sl_pct:
+        if pnl_pct <= -soft_sl_pct:
             # Lấy trend ngắn hạn, ví dụ 5m/15m
             try:
                 swap_id = instId + "-SWAP"
@@ -2365,7 +2365,7 @@ def run_dynamic_tp(okx: OKXClient):
             # 4) Nếu trend ngược mạnh → cắt sớm, không chờ tới -5%
             if trend_against:
                 logging.info(
-                    f"[SL-DYN] {instId} lỗ {profit_pct:.2f}% & trend ngược {trend_pct:.2f}% → CẮT LỖ SỚM (soft SL)."
+                    f"[SL-DYN] {instId} lỗ {pnl_pct:.2f}% & trend ngược {trend_pct:.2f}% → CẮT LỖ SỚM (soft SL)."
                 )
                 try:
                     okx.close_swap_position(instId, posSide)
