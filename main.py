@@ -430,16 +430,15 @@ class OKXClient:
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
         
-    def get_positions_history(self, inst_type: str = "SWAP", limit: int = 100):
+    def get_positions_history(self, limit: int = 500):
         """
-        Lấy lịch sử position (đã đóng / thay đổi) từ OKX, dùng cho backtest REAL.
+        Lấy lịch sử vị thế (positions-history) cho SWAP.
+        Dùng để backtest REAL theo PnL từ OKX.
         """
-        path = "/api/v5/account/positions-history"
-        params = {
-            "instType": inst_type,
-            "limit": str(limit),
-        }
-        data = self._request("GET", path, params=params)
+        # NHỚ: query string để luôn trong path, params=None
+        path = f"/api/v5/account/positions-history?instType=SWAP&limit={int(limit)}"
+    
+        data = self._request("GET", path, params=None)
         return data.get("data", [])
 
         
@@ -724,17 +723,128 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
 
 
 def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
+    """
+    Lấy danh sách closed positions REAL từ OKX để backtest thống kê.
+    """
     try:
-        trades = okx.get_positions_history(inst_type="SWAP", limit=500)
+        trades = okx.get_positions_history(limit=500)
+        logging.info("[BACKTEST] Lấy được %d closed positions từ OKX.", len(trades))
+        return trades
     except Exception as e:
         logging.error("[BACKTEST] Lỗi get_positions_history: %s", e)
         return []
-    logging.info("[BACKTEST] positions-history rows: %d", len(trades))
-    return trades
 
-def load_trades_for_backtest():
+    from datetime import datetime, timedelta
+
+def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
-    Load lịch sử lệnh cho backtest:
+    Trả về 3 đoạn text:
+      - msg_all     : [BT ALL] ...
+      - msg_today   : [BT TODAY] ...
+      - msg_session : --- SESSION TODAY --- + 4 dòng [0-9], [9-15], [15-20], [20-24]
+    Dựa trên PnL REAL từ OKX (field 'pnl').
+    """
+    # Không có trade nào
+    if not trades:
+        msg_all = "[BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        msg_today = "[BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        msg_session = (
+            "--- SESSION TODAY ---\n"
+            "[0-9]   total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[9-15]  total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[15-20] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[20-24] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        )
+        return msg_all, msg_today, msg_session
+
+    # ---- helper chung ----
+    def classify(filtered: list[dict]):
+        total = len(filtered)
+        tp = sl = even = 0
+        pnl_sum = 0.0
+
+        for t in filtered:
+            try:
+                pnl = float(t.get("pnl", "0"))
+            except Exception:
+                pnl = 0.0
+
+            pnl_sum += pnl
+            if pnl > 0:
+                tp += 1
+            elif pnl < 0:
+                sl += 1
+            else:
+                even += 1
+
+        win = (tp / total * 100.0) if total > 0 else 0.0
+        return total, tp, sl, even, pnl_sum, win
+
+    # Chuyển cTime/uTime -> datetime VN
+    def get_vn_dt(t: dict):
+        ctime_str = t.get("cTime") or t.get("uTime")
+        if not ctime_str:
+            return None
+        try:
+            ts = int(ctime_str) / 1000.0
+            dt_utc = datetime.utcfromtimestamp(ts)
+            return dt_utc + timedelta(hours=7)
+        except Exception:
+            return None
+
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today_date = now_vn.date()
+
+    # Lọc trades đóng trong ngày VN hôm nay
+    trades_today: list[tuple[dict, datetime]] = []
+    for t in trades:
+        dt_vn = get_vn_dt(t)
+        if dt_vn is None:
+            continue
+        if dt_vn.date() == today_date:
+            trades_today.append((t, dt_vn))
+
+    # ==================== ALL ====================
+    total, tp, sl, even, pnl_sum, win = classify(trades)
+    msg_all = (
+        f"[BT ALL] total={total} TP={tp} SL={sl} OPEN={even} "
+        f"win={win:.1f}% PNL={pnl_sum:+.2f} USDT"
+    )
+
+    # ==================== TODAY ====================
+    only_today = [t for (t, _dt) in trades_today]
+    t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
+    msg_today = (
+        f"[BT TODAY] total={t_total} TP={t_tp} SL={t_sl} OPEN={t_even} "
+        f"win={t_win:.1f}% PNL={t_pnl_sum:+.2f} USDT"
+    )
+
+    # ==================== SESSION TODAY ====================
+    # 4 phiên: [0-9], [9-15], [15-20], [20-24] (giống circuit breaker)
+    sessions = [
+        ("0-9",   0, 9),
+        ("9-15",  9, 15),
+        ("15-20", 15, 20),
+        ("20-24", 20, 24),
+    ]
+
+    session_lines = ["--- SESSION TODAY ---"]
+    for label, h_start, h_end in sessions:
+        sess_trades = [
+            t for (t, dt_vn) in trades_today
+            if h_start <= dt_vn.hour < h_end
+        ]
+        s_total, s_tp, s_sl, s_even, s_pnl_sum, s_win = classify(sess_trades)
+        line = (
+            f"[{label}] total={s_total} TP={s_tp} SL={s_sl} OPEN={s_even} "
+            f"win={s_win:.1f}% PNL={s_pnl_sum:+.2f} USDT"
+        )
+        session_lines.append(line)
+
+    msg_session = "\n".join(session_lines)
+
+    return msg_all, msg_today, msg_session
+
     1) Ưu tiên dùng Drive CSV (history lâu dài)
     2) Nếu không có → fallback về JSON local cache
     """
@@ -982,66 +1092,21 @@ def calc_real_backtest_stats(okx: "OKXClient", trades: list):
 
 def run_backtest_if_needed(okx: "OKXClient"):
     """
-    Backtest REAL bằng dữ liệu PnL thực tế từ OKX:
-      - Dùng /account/closed-position để lấy realizedPnl.
-      - Gửi 2 block:
-        + [BT ALL]
-        + [BT TODAY] + thống kê theo phiên hôm nay.
+    Backtest REAL bằng lịch sử vị thế đã đóng trên OKX.
+    Gửi 3 block:
+      1) BT ALL
+      2) BT TODAY
+      3) SESSION TODAY (4 phiên)
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
     if not is_backtest_time_vn():
-        logging.info("[BACKTEST] Không phải giờ backtest, bỏ qua.")
         return
 
     trades = load_real_trades_for_backtest(okx)
-    if not trades:
-        logging.info("[BACKTEST] Không có closed position nào để thống kê.")
-        send_telegram_message(
-            "✅ [BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
-            "✅ [BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
-            "--- SESSION TODAY ---\n"
-            "[0-9] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
-            "[9-15] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
-            "[15-20] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
-            "[20-24] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
-        )
-        return
+    msg_all, msg_today, msg_session = summarize_real_backtest(trades)
 
-    stats = calc_real_backtest_stats(okx, trades)
-
-    all_s = stats["all"]
-    today_s = stats["today"]
-    sess = stats["sessions"]
-
-    msg_lines = []
-
-    msg_lines.append(
-        "✅ [BT ALL] total={total} TP={tp} SL={sl} OPEN={open} "
-        "win={win:.1f}% PNL={pnl:+.2f} USDT".format(**all_s)
-    )
-    msg_lines.append(
-        "✅ [BT TODAY] total={total} TP={tp} SL={sl} OPEN={open} "
-        "win={win:.1f}% PNL={pnl:+.2f} USDT".format(**today_s)
-    )
-    msg_lines.append("\n--- SESSION TODAY ---")
-
-    for sess_key in ["0-9", "9-15", "15-20", "20-24"]:
-        s = sess.get(sess_key, {"total": 0, "tp": 0, "sl": 0, "pnl": 0.0, "win": 0.0})
-        msg_lines.append(
-            "[{name}] total={total} TP={tp} SL={sl} OPEN=0 win={win:.1f}% PNL={pnl:+.2f} USDT".format(
-                name=sess_key,
-                total=s["total"],
-                tp=s["tp"],
-                sl=s["sl"],
-                win=s["win"],
-                pnl=s["pnl"],
-            )
-        )
-
-    full_msg = "\n".join(msg_lines)
-    logging.info("[BACKTEST] Summary message:\n%s", full_msg)
-    send_telegram_message(full_msg)
+    send_telegram_message(msg_all + "\n" + msg_today + "\n\n" + msg_session)
 
 
 # ========== GOOGLE SHEETS ==========
