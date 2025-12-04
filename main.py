@@ -533,30 +533,72 @@ def load_trade_cache():
 
 def load_session_state():
     """
-    Đọc trạng thái circuit breaker theo phiên từ file JSON.
-    {
-      "date": "2025-12-03",
-      "session": "0-9",
-      "start_equity": 100.0,
-      "blocked": false
-    }
+    Đọc trạng thái circuit breaker theo phiên từ Google Sheet.
+
+    Dạng dữ liệu:
+    date, session, start_equity, blocked
+    2025-12-04, 0-9, 18.5300, FALSE
     """
-    if not os.path.exists(SESSION_STATE_FILE):
-        return None
     try:
-        with open(SESSION_STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+        ws = get_session_worksheet()
+        if ws is None:
+            return None
 
+        records = ws.get_all_records()  # list[dict]
+        if not records:
+            return None
 
-def save_session_state(state: dict):
-    try:
-        with open(SESSION_STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, ensure_ascii=False)
+        # Lấy dòng mới nhất
+        last = records[-1]
+
+        state = {
+            "date": str(last.get("date") or ""),
+            "session": str(last.get("session") or ""),
+            "start_equity": float(last.get("start_equity") or 0),
+            "blocked": bool(last.get("blocked")),
+        }
+
+        logging.info(
+            "[SESSION] Load state từ sheet: date=%s, session=%s, blocked=%s, start_equity=%.4f",
+            state["date"],
+            state["session"],
+            state["blocked"],
+            state["start_equity"],
+        )
+
+        return state
+
     except Exception as e:
-        logging.error("[SESSION] Lỗi lưu session_state: %s", e)
+        logging.error("[SESSION] Lỗi load_session_state từ sheet: %s", e)
+        return None
+def save_session_state(state: dict):
+    """
+    Ghi thêm 1 dòng trạng thái mới vào Google Sheet.
+    Mỗi lần cập nhật sẽ append 1 dòng, load luôn lấy dòng cuối cùng.
+    """
+    try:
+        ws = get_session_worksheet()
+        if ws is None:
+            return
 
+        row = [
+            state.get("date", ""),
+            state.get("session", ""),
+            float(state.get("start_equity", 0) or 0),
+            bool(state.get("blocked", False)),
+        ]
+
+        ws.append_row(row)
+        logging.info(
+            "[SESSION] Save state vào sheet: date=%s, session=%s, start_equity=%.4f, blocked=%s",
+            row[0],
+            row[1],
+            row[2],
+            row[3],
+        )
+
+    except Exception as e:
+        logging.error("[SESSION] Lỗi save_session_state vào sheet: %s", e)
 
 def check_session_circuit_breaker(okx: "OKXClient") -> bool:
     """
@@ -1059,6 +1101,51 @@ def append_trade_to_drive(trade: dict):
     except Exception as e:
         logging.error("[DRIVE] Lỗi upload CSV lên Drive: %s", e)
 
+import gspread
+from google.oauth2.service_account import Credentials
+
+# Sheet dùng để lưu trạng thái circuit breaker
+SESSION_SHEET_KEY = os.getenv("GSHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
+SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
+
+
+def get_session_worksheet():
+    """
+    Mở (hoặc tạo) worksheet SESSION_STATE trong Google Sheet để lưu trạng thái phiên.
+    """
+    try:
+        sa_info = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+        if not sa_info:
+            logging.error("[SESSION] GOOGLE_SERVICE_ACCOUNT_JSON chưa cấu hình.")
+            return None
+
+        sa_info_json = json.loads(sa_info)
+
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(sa_info_json, scopes=scopes)
+        gc = gspread.authorize(creds)
+
+        if not SESSION_SHEET_KEY:
+            logging.error("[SESSION] GSHEET_KEY chưa cấu hình.")
+            return None
+
+        sh = gc.open_by_key(SESSION_SHEET_KEY)
+
+        try:
+            ws = sh.worksheet(SESSION_STATE_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            # Chưa có sheet → tạo mới + header
+            ws = sh.add_worksheet(title=SESSION_STATE_SHEET_NAME, rows=10, cols=10)
+            ws.append_row(["date", "session", "start_equity", "blocked"])
+
+        return ws
+
+    except Exception as e:
+        logging.error("[SESSION] Lỗi get_session_worksheet: %s", e)
+        return None
 
 # ========== TELEGRAM ==========
 
