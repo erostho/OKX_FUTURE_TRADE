@@ -845,9 +845,6 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     return msg_all, msg_today, msg_session
 
-    1) Ưu tiên dùng Drive CSV (history lâu dài)
-    2) Nếu không có → fallback về JSON local cache
-    """
     # 1) Ưu tiên: Drive CSV
     try:
         trades_drive = load_history_from_drive()   # ✅ gọi đúng tên hàm
