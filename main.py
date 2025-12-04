@@ -967,7 +967,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     # Format message BT ALL (dùng số cộng dồn trong sheet)
     msg_all = (
-        f"[BT ALL] total={bt_all['total']} | "
+        f"[✅BT ALL] total={bt_all['total']} | "
         f"TP={bt_all['tp']} SL={bt_all['sl']} OPEN={bt_all['open']} | "
         f"win={ (bt_all['tp']*100/bt_all['total']) if bt_all['total'] else 0:.1f}% | "
         f"PNL={bt_all['pnl_usdt']:+.2f} USDT"
@@ -975,7 +975,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     # Format message BT TODAY (chỉ riêng hôm nay)
     msg_today = (
-        f"[BT TODAY] total={bt_today['total']} | "
+        f"[✅BT TODAY] total={bt_today['total']} | "
         f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
         f"win={ (bt_today['tp']*100/bt_today['total']) if bt_today['total'] else 0:.1f}% | "
         f"PNL={bt_today['pnl_usdt']:+.2f} USDT"
