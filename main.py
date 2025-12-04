@@ -236,7 +236,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 17, 20) and 5 <= m <= 59:
+    if h in (9, 15, 19) and 5 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -279,6 +279,24 @@ def get_current_session_vn():
         return "15-20"
     else:
         return "20-24"
+
+def get_session_from_hour_vn(hour: int) -> str:
+    """
+    Map giờ VN (0–23) sang phiên:
+      - 0–9   : '0-9'
+      - 9–15  : '9-15'
+      - 15–20 : '15-20'
+      - 20–24 : '20-24'
+    """
+    if hour < 9:
+        return "0-9"
+    elif hour < 15:
+        return "9-15"
+    elif hour < 20:
+        return "15-20"
+    else:
+        return "20-24"
+
 
 # ========== OKX REST CLIENT ==========
 
@@ -411,6 +429,24 @@ class OKXClient:
         path = "/api/v5/account/positions?instType=SWAP"  # path gồm luôn query
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
+        
+    def get_closed_positions(self, inst_type: str = "SWAP", limit: int = 100):
+        """
+        Lấy lịch sử các vị thế đã đóng (closed position) từ OKX.
+        Dùng để tính PnL thực tế.
+
+        NOTE:
+        - inst_type = "SWAP" cho futures perpetual USDT.
+        - limit tối đa 100 record mỗi lần gọi.
+        """
+        path = "/api/v5/account/closed-position"
+        params = {
+            "instType": inst_type,
+            "limit": str(limit),
+        }
+        data = self._request("GET", path, params=params)
+        return data.get("data", [])
+
         
     def get_usdt_balance(self):
         # NOTE: path bao gồm luôn query string để ký chính xác
@@ -691,6 +727,17 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
     save_session_state(state)
     return True
 
+def load_real_trades_for_backtest(okx: "OKXClient"):
+    """
+    Dùng REAL data từ OKX:
+      - Lấy tối đa 100 closed positions gần nhất (SWAP).
+      - Đây là các lệnh đã đóng, có realizedPnl chính xác.
+
+    Trả về list dict các trade.
+    """
+    trades = okx.get_closed_positions(inst_type="SWAP", limit=100)
+    logging.info("[BT] Loaded %d closed positions from OKX", len(trades))
+    return trades
 
 def load_trades_for_backtest():
     """
@@ -814,123 +861,195 @@ def get_session_from_time(time_s: str) -> str | None:
         return "15-20"
     else:
         return "20-24"
+
+def calc_real_backtest_stats(okx: "OKXClient", trades: list):
+    """
+    Tính thống kê backtest từ REAL closed positions.
+
+    - TP: số lệnh có realizedPnl > 0
+    - SL: số lệnh có realizedPnl < 0
+    - PNL_USDT: tổng realizedPnl (đơn vị USDT)
+    - Chia theo:
+        + ALL
+        + TODAY
+        + từng SESSION (0-9, 9-15, 15-20, 20-24)
+    """
+    # Thời gian VN hôm nay
+    now_utc = datetime.utcnow()
+    now_vn = now_utc + timedelta(hours=7)
+    today_str = now_vn.strftime("%Y-%m-%d")
+
+    def empty_stat():
+        return {
+            "total": 0,
+            "tp": 0,
+            "sl": 0,
+            "pnl": 0.0,  # USDT
+        }
+
+    stats_all = empty_stat()
+    stats_today = empty_stat()
+    session_stats = {
+        "0-9": empty_stat(),
+        "9-15": empty_stat(),
+        "15-20": empty_stat(),
+        "20-24": empty_stat(),
+    }
+
+    for t in trades:
+        try:
+            pnl = float(t.get("realizedPnl", "0"))  # PnL thực tế
+        except Exception:
+            pnl = 0.0
+
+        # Close time (ms)
+        ctime_ms = int(t.get("cTime", t.get("uTime", "0")) or 0)
+        if ctime_ms == 0:
+            continue
+
+        dt_utc = datetime.utcfromtimestamp(ctime_ms / 1000.0)
+        dt_vn = dt_utc + timedelta(hours=7)
+        date_vn = dt_vn.strftime("%Y-%m-%d")
+        hour_vn = dt_vn.hour
+        sess = get_session_from_hour_vn(hour_vn)
+
+        # ALL
+        stats_all["total"] += 1
+        stats_all["pnl"] += pnl
+        if pnl > 0:
+            stats_all["tp"] += 1
+        elif pnl < 0:
+            stats_all["sl"] += 1
+
+        # TODAY
+        if date_vn == today_str:
+            s = stats_today
+            s["total"] += 1
+            s["pnl"] += pnl
+            if pnl > 0:
+                s["tp"] += 1
+            elif pnl < 0:
+                s["sl"] += 1
+
+            # SESSION TODAY
+            ss = session_stats.get(sess)
+            if ss is not None:
+                ss["total"] += 1
+                ss["pnl"] += pnl
+                if pnl > 0:
+                    ss["tp"] += 1
+                elif pnl < 0:
+                    ss["sl"] += 1
+
+    # Đếm OPEN hiện tại (đang mở) để show cho đẹp
+    open_positions = okx.get_open_positions()
+    open_count = len(open_positions)
+
+    # Tính win%
+    def finalize(stat: dict, open_extra: int = 0):
+        total_closed = stat["tp"] + stat["sl"]
+        total_all = stat["tp"] + stat["sl"] + open_extra
+        win_pct = (stat["tp"] / total_closed * 100.0) if total_closed > 0 else 0.0
+        return total_all, win_pct
+
+    all_total, all_win = finalize(stats_all, open_extra=open_count)
+    today_total, today_win = finalize(stats_today, open_extra=open_count)
+
+    sess_final = {}
+    for k, v in session_stats.items():
+        total, win = finalize(v, open_extra=0)  # OPEN tính chung, không chia phiên
+        sess_final[k] = {
+            "total": total,
+            "tp": v["tp"],
+            "sl": v["sl"],
+            "pnl": v["pnl"],
+            "win": win,
+        }
+
+    result = {
+        "all": {
+            "total": all_total,
+            "tp": stats_all["tp"],
+            "sl": stats_all["sl"],
+            "open": open_count,
+            "win": all_win,
+            "pnl": stats_all["pnl"],
+        },
+        "today": {
+            "total": today_total,
+            "tp": stats_today["tp"],
+            "sl": stats_today["sl"],
+            "open": open_count,
+            "win": today_win,
+            "pnl": stats_today["pnl"],
+        },
+        "sessions": sess_final,
+    }
+    return result
+
 def run_backtest_if_needed(okx: "OKXClient"):
     """
-    Backtest thật bằng nến lịch sử:
-      - Tính 2 dòng:
-            1) BT ALL
-            2) BT TODAY
+    Backtest REAL bằng dữ liệu PnL thực tế từ OKX:
+      - Dùng /account/closed-position để lấy realizedPnl.
+      - Gửi 2 block:
+        + [BT ALL]
+        + [BT TODAY] + thống kê theo phiên hôm nay.
     """
-    logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST ==========")
+    logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
+
     if not is_backtest_time_vn():
+        logging.info("[BACKTEST] Không phải giờ backtest, bỏ qua.")
         return
 
-    trades = load_trades_for_backtest()
+    trades = load_real_trades_for_backtest(okx)
     if not trades:
-        logging.info("[BACKTEST] Cache trống.")
-        send_telegram_message("[BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0%\n"
-                              "[BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0%")
+        logging.info("[BACKTEST] Không có closed position nào để thống kê.")
+        send_telegram_message(
+            "✅ [BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "✅ [BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "--- SESSION TODAY ---\n"
+            "[0-9] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[9-15] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[15-20] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
+            "[20-24] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        )
         return
 
-    # ========== TÁCH LỆNH HÔM NAY ==========
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    today_str = now_vn.strftime("%d/%m/%Y")
+    stats = calc_real_backtest_stats(okx, trades)
 
-    trades_today = []
-    for t in trades:
-        ts = str(t.get("time", ""))
-        if today_str in ts:
-            trades_today.append(t)
+    all_s = stats["all"]
+    today_s = stats["today"]
+    sess = stats["sessions"]
 
-# ======= HÀM BACKTEST 1 DANH SÁCH =======
-    def do_backtest(trades):
-        """
-        Backtest từ list trades (lệnh thật từ OKX):
-        - Đếm total / TP / SL / OPEN
-        - Tính win%
-        - Thống kê theo session
-        - Cộng luôn PnL USDT (toàn bộ + từng session)
-        """
-        sessions = ["0-9", "9-15", "15-20", "20-24"]
-    
-        # tổng toàn bộ
-        total = tp = sl = op = 0
-        closed = 0
-        total_pnl_usdt = 0.0
-    
-        # thống kê theo phiên
-        session_stat = {
-            s: {"total": 0, "tp": 0, "sl": 0, "open": 0, "pnl_usdt": 0.0}
-            for s in sessions
-        }
-    
-        for t in trades:
-            # --- đọc thông tin cơ bản ---
-            status = (t.get("result") or t.get("status") or "").upper()   # TP/SL/OPEN
-            # PnL thực tế theo USDT (tuỳ field của bạn, thường là "pnl")
-            pnl_usdt = safe_float(t.get("pnl", "0"))
-            total_pnl_usdt += pnl_usdt
-    
-            total += 1
-            if status == "TP":
-                tp += 1
-                closed += 1
-            elif status == "SL":
-                sl += 1
-                closed += 1
-            else:
-                op += 1
-    
-            # --- xác định phiên của lệnh này (giống logic cũ) ---
-            # giả sử bạn có trường thời gian ms: "cTime" hoặc "fillTime"
-            ts_ms = int(t.get("cTime") or t.get("fillTime") or 0)
-            session = get_session_from_time(ts_ms)  # hàm cũ bạn đang dùng
-    
-            if session not in session_stat:
-                session = sessions[0]  # fallback: 0-9
-    
-            s = session_stat[session]
-            s["total"] += 1
-            if status == "TP":
-                s["tp"] += 1
-            elif status == "SL":
-                s["sl"] += 1
-            else:
-                s["open"] += 1
-            s["pnl_usdt"] += pnl_usdt
-    
-        win = (tp / closed * 100) if closed > 0 else 0.0
-        return total, tp, sl, op, win, session_stat, total_pnl_usdt
+    msg_lines = []
 
-
-
-    # ============ CHẠY 2 BACKTEST ============
-    total_all, tp_all, sl_all, op_all, win_all, sess_all, pnl_all = do_backtest(trades)
-    total_today, tp_today, sl_today, op_today, win_today, sess_today, pnl_today = do_backtest(trades_today)
-
-
-
-    # ============ GỬI TELEGRAM ============
-    msg = (
-        f"✅[ BT ALL] total={total_all} TP={tp_all} SL={sl_all} "
-        f"OPEN={op_all} win={win_all:.1f}% PNL={pnl_all:+.2f} USDT\n"
-        f"✅[ BT TODAY] total={total_today} TP={tp_today} SL={sl_today} "
-        f"OPEN={op_today} win={win_today:.1f}% PNL={pnl_today:+.2f} USDT\n"
+    msg_lines.append(
+        "✅ [BT ALL] total={total} TP={tp} SL={sl} OPEN={open} "
+        "win={win:.1f}% PNL={pnl:+.2f} USDT".format(**all_s)
     )
+    msg_lines.append(
+        "✅ [BT TODAY] total={total} TP={tp} SL={sl} OPEN={open} "
+        "win={win:.1f}% PNL={pnl:+.2f} USDT".format(**today_s)
+    )
+    msg_lines.append("\n--- SESSION TODAY ---")
 
-    msg += "\n--- SESSION TODAY ---\n"
-    for sess_label in ["0-9", "9-15", "15-20", "20-24"]:
-        s = sess_today.get(sess_label, {"total":0, "tp":0, "sl":0, "open":0, "pnl_usdt":0.0})
-        closed = s["tp"] + s["sl"]
-        win_sess = (s["tp"] / closed * 100) if closed > 0 else 0.0
-        msg += (
-            f"[{sess_label}] total={s['total']} TP={s['tp']} SL={s['sl']} OPEN={s['open']} "
-            f"win={win_sess:.1f}% PNL={s['pnl_usdt']:+.2f} USDT\n"
+    for sess_key in ["0-9", "9-15", "15-20", "20-24"]:
+        s = sess.get(sess_key, {"total": 0, "tp": 0, "sl": 0, "pnl": 0.0, "win": 0.0})
+        msg_lines.append(
+            "[{name}] total={total} TP={tp} SL={sl} OPEN=0 win={win:.1f}% PNL={pnl:+.2f} USDT".format(
+                name=sess_key,
+                total=s["total"],
+                tp=s["tp"],
+                sl=s["sl"],
+                win=s["win"],
+                pnl=s["pnl"],
+            )
         )
-    
-    logging.info(msg)
-    logging.info("========== [BACKTEST] KẾT THÚC BACKTEST ==========")
-    send_telegram_message(msg)
+
+    full_msg = "\n".join(msg_lines)
+    logging.info("[BACKTEST] Summary message:\n%s", full_msg)
+    send_telegram_message(full_msg)
+
 
 # ========== GOOGLE SHEETS ==========
 
