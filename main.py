@@ -546,7 +546,13 @@ def load_session_state():
 
         records = ws.get_all_records()  # list[dict]
         if not records:
-            return None
+            return {}   # sheet rỗng -> chưa có state
+
+        return records[0]  # state hợp lệ
+    except Exception as e:
+        logging.error("[SESSION] Lỗi load_session_state (API/GSHEET): %s", e)
+        # Trả về state đặc biệt báo lỗi, để circuit breaker FAIL-SAFE
+        return {"error": True}
 
         # Lấy dòng mới nhất
         last = records[-1]
@@ -616,6 +622,14 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
     logging.info(f"[SESSION] Thời gian VN: {now_vn}, phiên hiện tại: {session}")
 
     state = load_session_state() or {}
+
+    # Nếu GSHEET lỗi -> KHÔNG MỞ LỆNH MỚI (fail-safe)
+    if state.get("error"):
+        logging.warning(
+            "[SESSION] Không đọc được session_state do lỗi API -> FAIL-SAFE, KHÔNG mở lệnh mới."
+        )
+        return False
+
     st_date = state.get("date")
     st_session = state.get("session")
     blocked = bool(state.get("blocked", False))
