@@ -821,7 +821,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
             1) BT ALL
             2) BT TODAY
     """
-
+    logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST ==========")
     if not is_backtest_time_vn():
         return
 
@@ -927,8 +927,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
             f"[{sess_label}] total={s['total']} TP={s['tp']} SL={s['sl']} OPEN={s['open']} "
             f"win={win_sess:.1f}% PNL={s['pnl_usdt']:+.2f} USDT\n"
         )
-
+    
     logging.info(msg)
+    logging.info("========== [BACKTEST] KẾT THÚC BACKTEST ==========")
     send_telegram_message(msg)
 
 # ========== GOOGLE SHEETS ==========
