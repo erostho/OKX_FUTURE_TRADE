@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
 import numpy as np
-
+from google.oauth2.service_account import Credentials
 import gspread
 from google.oauth2 import service_account
 
@@ -71,7 +71,146 @@ PUMP_VOL_SPIKE_RATIO    = 0.1       # vol 15m hiện tại phải > 1x vol avg 1
 PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng quá yếu)
 PUMP_MAX_CHANGE_1H      = 100.0      # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT = 0.2   # ví dụ: 0.4%/5m trở lên mới chơi
+
 # ================== HELPERS CHUNG ==================
+# =========================
+#  BT ALL CACHE -> GOOGLE SHEETS
+#  - Dùng env: GOOGLE_SERVICE_ACCOUNT_JSON, BT_SHEET_ID
+#  - Lưu 1 dòng duy nhất BT_ALL (cộng dồn)
+# =========================
+
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
+
+
+def _get_gspread_client():
+    """Khởi tạo client gspread từ GOOGLE_SERVICE_ACCOUNT_JSON (env trên Render)."""
+    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
+    info = json.loads(raw_json)
+    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    return client
+
+
+def _open_bt_cache_sheet():
+    """
+    Mở sheet BT_CACHE trong file có id = BT_SHEET_ID.
+    Nếu chưa có thì tạo mới + set header.
+    """
+    sheet_id = os.environ["BT_SHEET_ID"]  # <--- env mới, bạn đã nói OK
+    client = _get_gspread_client()
+    doc = client.open_by_key(sheet_id)
+
+    try:
+        ws = doc.worksheet("BT_CACHE")
+    except gspread.WorksheetNotFound:
+        ws = doc.add_worksheet(title="BT_CACHE", rows=1000, cols=8)
+        ws.update(
+            "A1:H1",
+            [[
+                "date",
+                "total",
+                "tp",
+                "sl",
+                "open",
+                "win_pct",
+                "pnl_usdt",
+                "note",
+            ]],
+        )
+    return ws
+
+
+def load_bt_all_from_sheet() -> dict:
+    """
+    Đọc dòng BT_ALL (note='BT_ALL') từ sheet BT_CACHE.
+    Nếu chưa có -> trả về số 0 hết.
+    """
+    ws = _open_bt_cache_sheet()
+    data = ws.get_all_records()  # list[dict]
+
+    for row in data:
+        if str(row.get("note", "")).strip().upper() == "BT_ALL":
+            return {
+                "total": int(row.get("total", 0)),
+                "tp": int(row.get("tp", 0)),
+                "sl": int(row.get("sl", 0)),
+                "open": int(row.get("open", 0)),
+                "win_pct": float(row.get("win_pct", 0.0)),
+                "pnl_usdt": float(row.get("pnl_usdt", 0.0)),
+            }
+
+    # chưa có BT_ALL
+    return {"total": 0, "tp": 0, "sl": 0, "open": 0, "win_pct": 0.0, "pnl_usdt": 0.0}
+
+
+def save_bt_all_to_sheet(stats: dict) -> None:
+    """
+    Ghi / update dòng BT_ALL vào sheet BT_CACHE.
+    stats yêu cầu: total, tp, sl, open, pnl_usdt
+    """
+    ws = _open_bt_cache_sheet()
+    data = ws.get_all_records()
+
+    bt_all_row_index = None  # index trong sheet (2 = dòng thứ 2, vì 1 là header)
+    for idx, row in enumerate(data, start=2):
+        if str(row.get("note", "")).strip().upper() == "BT_ALL":
+            bt_all_row_index = idx
+            break
+
+    total = int(stats.get("total", 0))
+    tp = int(stats.get("tp", 0))
+    if total > 0:
+        win_pct = tp * 100.0 / total
+    else:
+        win_pct = 0.0
+
+    values = [
+        datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        total,
+        tp,
+        int(stats.get("sl", 0)),
+        int(stats.get("open", 0)),
+        win_pct,
+        float(stats.get("pnl_usdt", 0.0)),
+        "BT_ALL",
+    ]
+
+    if bt_all_row_index is None:
+        # chưa có -> append xuống cuối
+        ws.append_row(values)
+    else:
+        # update dòng cũ
+        ws.update(f"A{bt_all_row_index}:H{bt_all_row_index}", [values])
+
+
+def accumulate_bt_all_with_today(bt_today: dict) -> dict:
+    """
+    Cộng dồn BT_TODAY vào BT_ALL & lưu lên sheet.
+
+    bt_today dạng:
+    {
+        "total": ...,
+        "tp": ...,
+        "sl": ...,
+        "open": ...,
+        "pnl_usdt": ...
+    }
+    """
+    current = load_bt_all_from_sheet()
+
+    new_stats = {
+        "total": current["total"] + int(bt_today.get("total", 0)),
+        "tp": current["tp"] + int(bt_today.get("tp", 0)),
+        "sl": current["sl"] + int(bt_today.get("sl", 0)),
+        "open": current["open"] + int(bt_today.get("open", 0)),
+        "pnl_usdt": current["pnl_usdt"] + float(bt_today.get("pnl_usdt", 0.0)),
+    }
+
+    save_bt_all_to_sheet(new_stats)
+    return new_stats
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -236,9 +375,9 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 15, 21) and 5 <= m <= 59:
+    if h in (9, 15, 20) and 5 <= m <= 9:
         return True
-    if h == 22 and 50 <= m <= 59:
+    if h == 22 and 5 <= m <= 59:
         return True
 
     return False
@@ -812,11 +951,35 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     )
 
     # ==================== TODAY ====================
-    only_today = [t for (t, _dt) in trades_today]
+    only_today = [(t, dt) for (t, dt) in trades_today]
     t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
+    
+    # 👉 THÊM ĐOẠN NÀY
+    bt_today = {
+        "total":   t_total,
+        "tp":      t_tp,
+        "sl":      t_sl,
+        "open":    t_even,          # nếu OPEN đang = số lệnh hòa, tạm reuse
+        "pnl_usdt": round(t_pnl_sum, 2),
+    }
+    bt_all = accumulate_bt_all_with_today(bt_today)
+    # 👈 HẾT ĐOẠN THÊM
+    msg_bt_today = (
+        f"[BT TODAY] total={bt_today['total']} | "
+        f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
+        f"PNL={bt_today['pnl_usdt']:.2f} USDT"
+    )
+    
+    msg_bt_all = (
+        f"[BT ALL] total={bt_all['total']} | "
+        f"TP={bt_all['tp']} SL={bt_all['sl']} OPEN={bt_all['open']} | "
+        f"win={ (bt_all['tp']*100/bt_all['total']) if bt_all['total'] else 0:.1f}% | "
+        f"PNL={bt_all['pnl_usdt']:.2f} USDT"
+    )
+
     msg_today = (
         f"[BT TODAY] total={t_total} TP={t_tp} SL={t_sl} OPEN={t_even} "
-        f"win={t_win:.1f}% PNL={t_pnl_sum:+.2f} USDT"
+        f"win={t_win:.1%} PNL={t_pnl_sum:+.2f} USDT"
     )
 
     # ==================== SESSION TODAY ====================
@@ -843,7 +1006,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     msg_session = "\n".join(session_lines)
 
-    return msg_all, msg_today, msg_session
+    return msg_bt_all, msg_bt_today, msg_session
 
     # 1) Ưu tiên: Drive CSV
     try:
@@ -1101,9 +1264,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
         return
 
     trades = load_real_trades_for_backtest(okx)
-    msg_all, msg_today, msg_session = summarize_real_backtest(trades)
+    msg_bt_all, msg_bt_today, msg_session = summarize_real_backtest(trades)
 
-    send_telegram_message(msg_all + "\n" + msg_today + "\n\n" + msg_session)
+    send_telegram_message(msg_bt_all + "\n" + msg_bt_today + "\n\n" + msg_session)
 
 
 # ========== GOOGLE SHEETS ==========
