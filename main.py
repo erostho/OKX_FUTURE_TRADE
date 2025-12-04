@@ -430,16 +430,11 @@ class OKXClient:
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
         
-    def get_closed_positions(self, inst_type: str = "SWAP", limit: int = 100):
+    def get_positions_history(self, inst_type: str = "SWAP", limit: int = 100):
         """
-        Lấy lịch sử các vị thế đã đóng (closed position) từ OKX.
-        Dùng để tính PnL thực tế.
-
-        NOTE:
-        - inst_type = "SWAP" cho futures perpetual USDT.
-        - limit tối đa 100 record mỗi lần gọi.
+        Lấy lịch sử position (đã đóng / thay đổi) từ OKX, dùng cho backtest REAL.
         """
-        path = "/api/v5/account/closed-position"
+        path = "/api/v5/account/positions-history"
         params = {
             "instType": inst_type,
             "limit": str(limit),
@@ -727,16 +722,14 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
     save_session_state(state)
     return True
 
-def load_real_trades_for_backtest(okx: "OKXClient"):
-    """
-    Dùng REAL data từ OKX:
-      - Lấy tối đa 100 closed positions gần nhất (SWAP).
-      - Đây là các lệnh đã đóng, có realizedPnl chính xác.
 
-    Trả về list dict các trade.
-    """
-    trades = okx.get_closed_positions(inst_type="SWAP", limit=100)
-    logging.info("[BT] Loaded %d closed positions from OKX", len(trades))
+def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
+    try:
+        trades = okx.get_positions_history(inst_type="SWAP", limit=500)
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi get_positions_history: %s", e)
+        return []
+    logging.info("[BACKTEST] positions-history rows: %d", len(trades))
     return trades
 
 def load_trades_for_backtest():
