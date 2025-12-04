@@ -569,7 +569,7 @@ class OKXClient:
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
         
-    def get_positions_history(self, limit: int = 500):
+    def get_positions_history(self, limit: int = 1000):
         """
         Lấy lịch sử vị thế (positions-history) cho SWAP.
         Dùng để backtest REAL theo PnL từ OKX.
@@ -866,7 +866,7 @@ def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
     Lấy danh sách closed positions REAL từ OKX để backtest thống kê.
     """
     try:
-        trades = okx.get_positions_history(limit=500)
+        trades = okx.get_positions_history(limit=1000)
         logging.info("[BACKTEST] Lấy được %d closed positions từ OKX.", len(trades))
         return trades
     except Exception as e:
@@ -878,15 +878,15 @@ def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
     Trả về 3 đoạn text:
-      - msg_all     : [BT ALL] ...
-      - msg_today   : [BT TODAY] ...
+      - msg_all     : [✅BT ALL] ...
+      - msg_today   : [✅BT TODAY] ...
       - msg_session : --- SESSION TODAY --- + 4 dòng [0-9], [9-15], [15-20], [20-24]
     Dựa trên PnL REAL từ OKX (field 'pnl').
     """
     # Không có trade nào
     if not trades:
-        msg_all = "[BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
-        msg_today = "[BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        msg_all = "[✅BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
+        msg_today = "[✅BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
         msg_session = (
             "--- SESSION TODAY ---\n"
             "[0-9]   total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
@@ -894,7 +894,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
             "[15-20] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
             "[20-24] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
         )
-        return msg_all, msg_today, msg_session
+        return msg_bt_all, msg_bt_today, msg_session
 
     # ---- helper chung ----
     def classify(filtered: list[dict]):
@@ -943,27 +943,26 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         if dt_vn.date() == today_date:
             trades_today.append((t, dt_vn))
 
-    # ==================== ALL ====================
+    # ==================   ALL   ==================
     total, tp, sl, even, pnl_sum, win = classify(trades)
-    msg_all = (
-        f"[BT ALL] total={total} TP={tp} SL={sl} OPEN={even} "
-        f"win={win:.1f}% PNL={pnl_sum:+.2f} USDT"
-    )
-
-    # ==================== TODAY ====================
+    
+    # ==================  TODAY  ==================
     only_today = [(t, dt) for (t, dt) in trades_today]
     t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
     
-    # 👉 THÊM ĐOẠN NÀY
+    # ------ build bt_today dict để lưu + cộng dồn ------
     bt_today = {
-        "total":   t_total,
-        "tp":      t_tp,
-        "sl":      t_sl,
-        "open":    t_even,          # nếu OPEN đang = số lệnh hòa, tạm reuse
-        "pnl_usdt": round(t_pnl_sum, 2),
+        "total": t_total,
+        "tp": t_tp,
+        "sl": t_sl,
+        "open": t_even,
+        "pnl_usdt": t_pnl_sum,
     }
+    
+    # cộng dồn BT_ALL từ sheet + hôm nay
     bt_all = accumulate_bt_all_with_today(bt_today)
-    # 👈 HẾT ĐOẠN THÊM
+    
+    # ------ 2 dòng message mới ------
     msg_bt_today = (
         f"[BT TODAY] total={bt_today['total']} | "
         f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
@@ -973,13 +972,8 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     msg_bt_all = (
         f"[BT ALL] total={bt_all['total']} | "
         f"TP={bt_all['tp']} SL={bt_all['sl']} OPEN={bt_all['open']} | "
-        f"win={ (bt_all['tp']*100/bt_all['total']) if bt_all['total'] else 0:.1f}% | "
+        f"win={ (bt_all['tp'] * 100 / bt_all['total']) if bt_all['total'] else 0:.1f}% | "
         f"PNL={bt_all['pnl_usdt']:.2f} USDT"
-    )
-
-    msg_today = (
-        f"[BT TODAY] total={t_total} TP={t_tp} SL={t_sl} OPEN={t_even} "
-        f"win={t_win:.1%} PNL={t_pnl_sum:+.2f} USDT"
     )
 
     # ==================== SESSION TODAY ====================
