@@ -1265,7 +1265,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
     trades = load_real_trades_for_backtest(okx)
     msg_all, msg_today, msg_session = summarize_real_backtest(trades)
 
-    send_telegram_message(msg_bt_all + "\n" + msg_bt_today + "\n\n" + msg_session)
+    send_telegram_message(msg_all + "\n" + bt_today + "\n\n" + msg_session)
 
 
 # ========== GOOGLE SHEETS ==========
