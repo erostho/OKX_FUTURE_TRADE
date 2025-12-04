@@ -236,7 +236,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 15, 20) and 5 <= m <= 9:
+    if h in (9, 16, 20) and 5 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -843,84 +843,90 @@ def run_backtest_if_needed(okx: "OKXClient"):
             trades_today.append(t)
 
 # ======= HÀM BACKTEST 1 DANH SÁCH =======
-    def do_backtest(trade_list):
-        total = tp = sl = op = other = 0
-        # session stats
+    def do_backtest(trades):
+        """
+        Backtest từ list trades (lệnh thật từ OKX):
+        - Đếm total / TP / SL / OPEN
+        - Tính win%
+        - Thống kê theo session
+        - Cộng luôn PnL USDT (toàn bộ + từng session)
+        """
+        sessions = ["0-9", "9-15", "15-20", "20-24"]
+    
+        # tổng toàn bộ
+        total = tp = sl = op = 0
+        closed = 0
+        total_pnl_usdt = 0.0
+    
+        # thống kê theo phiên
         session_stat = {
-            "0-9":  {"total":0, "tp":0, "sl":0, "op":0},
-            "9-15": {"total":0, "tp":0, "sl":0, "op":0},
-            "15-20":{"total":0, "tp":0, "sl":0, "op":0},
-            "20-24":{"total":0, "tp":0, "sl":0, "op":0},
+            s: {"total": 0, "tp": 0, "sl": 0, "open": 0, "pnl_usdt": 0.0}
+            for s in sessions
         }
-
-        for t in trade_list:
-            try:
-                coin   = t.get("coin")
-                signal = t.get("signal")
-                entry  = float(t.get("entry") or 0)
-                tp_v   = float(t.get("tp") or 0)
-                sl_v   = float(t.get("sl") or 0)
-                time_s = str(t.get("time") or "")
-            except:
-                continue
-
-            if not coin or entry <= 0 or tp_v <= 0 or sl_v <= 0:
-                continue
-
+    
+        for t in trades:
+            # --- đọc thông tin cơ bản ---
+            status = (t.get("result") or t.get("status") or "").upper()   # TP/SL/OPEN
+            # PnL thực tế theo USDT (tuỳ field của bạn, thường là "pnl")
+            pnl_usdt = safe_float(t.get("pnl", "0"))
+            total_pnl_usdt += pnl_usdt
+    
             total += 1
-            res = simulate_trade_result_with_candles(
-                okx=okx,
-                coin=coin,        # SPOT backtest
-                signal=signal,
-                entry=entry,
-                tp=tp_v,
-                sl=sl_v,
-                time_str=time_s,
-                bar="5m",
-                max_limit=300,
-            )
-            # session
-            sess = get_session_from_time(time_s)
-            if sess:
-                session_stat[sess]["total"] += 1
-                if res == "TP":
-                    session_stat[sess]["tp"] += 1
-                elif res == "SL":
-                    session_stat[sess]["sl"] += 1
-                elif res == "OPEN":
-                    session_stat[sess]["op"] += 1
-
-            if res == "TP":
+            if status == "TP":
                 tp += 1
-            elif res == "SL":
+                closed += 1
+            elif status == "SL":
                 sl += 1
-            elif res == "OPEN":
-                op += 1
+                closed += 1
             else:
-                other += 1
+                op += 1
+    
+            # --- xác định phiên của lệnh này (giống logic cũ) ---
+            # giả sử bạn có trường thời gian ms: "cTime" hoặc "fillTime"
+            ts_ms = int(t.get("cTime") or t.get("fillTime") or 0)
+            session = get_session_from_time(ts_ms)  # hàm cũ bạn đang dùng
+    
+            if session not in session_stat:
+                session = sessions[0]  # fallback: 0-9
+    
+            s = session_stat[session]
+            s["total"] += 1
+            if status == "TP":
+                s["tp"] += 1
+            elif status == "SL":
+                s["sl"] += 1
+            else:
+                s["open"] += 1
+            s["pnl_usdt"] += pnl_usdt
+    
+        win = (tp / closed * 100) if closed > 0 else 0.0
+        return total, tp, sl, op, win, session_stat, total_pnl_usdt
 
-        closed = tp + sl
-        win = (tp / closed * 100) if closed > 0 else 0
-        return total, tp, sl, op, win, session_stat
 
 
     # ============ CHẠY 2 BACKTEST ============
-    total_all, tp_all, sl_all, op_all, win_all, sess_all = do_backtest(trades)
-    total_today, tp_today, sl_today, op_today, win_today, sess_today = do_backtest(trades_today)
+    total_all, tp_all, sl_all, op_all, win_all, sess_all, pnl_all = do_backtest(trades)
+    total_today, tp_today, sl_today, op_today, win_today, sess_today, pnl_today = do_backtest(trades_today)
+
 
 
     # ============ GỬI TELEGRAM ============
     msg = (
-        f"[✅BT ALL] total={total_all} TP={tp_all} SL={sl_all} OPEN={op_all} win={win_all:.1f}%\n"
-        f"[✅BT TODAY] total={total_today} TP={tp_today} SL={sl_today} OPEN={op_today} win={win_today:.1f}%"
+        f"✅[ BT ALL] total={total_all} TP={tp_all} SL={sl_all} "
+        f"OPEN={op_all} win={win_all:.1f}% PNL={pnl_all:+.2f} USDT\n"
+        f"✅[ BT TODAY] total={total_today} TP={tp_today} SL={sl_today} "
+        f"OPEN={op_today} win={win_today:.1f}% PNL={pnl_today:+.2f} USDT\n"
     )
-    msg += "\n\n--- SESSION TODAY ---"
-    for s in ["0-9","9-15","15-20","20-24"]:
-        st = sess_today[s]
-        closed = st["tp"] + st["sl"]
-        win = (st["tp"] / closed * 100) if closed > 0 else 0
-        msg += f"\n[{s}] total={st['total']} TP={st['tp']} SL={st['sl']} OPEN={st['op']} win={win:.1f}%"
 
+    msg += "\n--- SESSION TODAY ---\n"
+    for sess_label in ["0-9", "9-15", "15-20", "20-24"]:
+        s = sess_today.get(sess_label, {"total":0, "tp":0, "sl":0, "open":0, "pnl_usdt":0.0})
+        closed = s["tp"] + s["sl"]
+        win_sess = (s["tp"] / closed * 100) if closed > 0 else 0.0
+        msg += (
+            f"[{sess_label}] total={s['total']} TP={s['tp']} SL={s['sl']} OPEN={s['open']} "
+            f"win={win_sess:.1f}% PNL={s['pnl_usdt']:+.2f} USDT\n"
+        )
 
     logging.info(msg)
     send_telegram_message(msg)
