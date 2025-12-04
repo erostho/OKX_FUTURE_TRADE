@@ -894,7 +894,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
             "[15-20] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT\n"
             "[20-24] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
         )
-        return msg_bt_all, msg_bt_today, msg_session
+        return msg_all, msg_today, msg_session
 
     # ---- helper chung ----
     def classify(filtered: list[dict]):
@@ -944,36 +944,41 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
             trades_today.append((t, dt_vn))
 
     # ==================   ALL   ==================
+    # ============== ALL ==================
+    # trades: list các lệnh đã đóng (đang có sẵn)
     total, tp, sl, even, pnl_sum, win = classify(trades)
-    
-    # ==================  TODAY  ==================
-    only_today = [(t, dt) for (t, dt) in trades_today]
+
+    # ============== TODAY ==================
+    # trades_today: list[(t, dt_vn)], mình chỉ lấy phần t ra để classify
+    only_today = [t for (t, _dt) in trades_today]
     t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
-    
-    # ------ build bt_today dict để lưu + cộng dồn ------
+
+    # Build bt_today từ kết quả classify
     bt_today = {
-        "total": t_total,
-        "tp": t_tp,
-        "sl": t_sl,
-        "open": t_even,
-        "pnl_usdt": t_pnl_sum,
+        "total":   t_total,
+        "tp":      t_tp,
+        "sl":      t_sl,
+        "open":    t_even,
+        "pnl_usdt": t_pnl_sum,   # PnL hôm nay
     }
-    
-    # cộng dồn BT_ALL từ sheet + hôm nay
+
+    # Cộng dồn BT_TODAY vào BT_ALL & lưu lên Google Sheet
     bt_all = accumulate_bt_all_with_today(bt_today)
-    
-    # ------ 2 dòng message mới ------
-    msg_bt_today = (
-        f"[BT TODAY] total={bt_today['total']} | "
-        f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
-        f"PNL={bt_today['pnl_usdt']:.2f} USDT"
-    )
-    
-    msg_bt_all = (
+
+    # Format message BT ALL (dùng số cộng dồn trong sheet)
+    msg_all = (
         f"[BT ALL] total={bt_all['total']} | "
         f"TP={bt_all['tp']} SL={bt_all['sl']} OPEN={bt_all['open']} | "
-        f"win={ (bt_all['tp'] * 100 / bt_all['total']) if bt_all['total'] else 0:.1f}% | "
-        f"PNL={bt_all['pnl_usdt']:.2f} USDT"
+        f"win={ (bt_all['tp']*100/bt_all['total']) if bt_all['total'] else 0:.1f}% | "
+        f"PNL={bt_all['pnl_usdt']:+.2f} USDT"
+    )
+
+    # Format message BT TODAY (chỉ riêng hôm nay)
+    msg_today = (
+        f"[BT TODAY] total={bt_today['total']} | "
+        f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
+        f"win={ (bt_today['tp']*100/bt_today['total']) if bt_today['total'] else 0:.1f}% | "
+        f"PNL={bt_today['pnl_usdt']:+.2f} USDT"
     )
 
     # ==================== SESSION TODAY ====================
@@ -1000,7 +1005,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     msg_session = "\n".join(session_lines)
 
-    return msg_bt_all, msg_bt_today, msg_session
+    return msg_all, msg_today, msg_session
 
     # 1) Ưu tiên: Drive CSV
     try:
@@ -1258,7 +1263,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
         return
 
     trades = load_real_trades_for_backtest(okx)
-    msg_bt_all, msg_bt_today, msg_session = summarize_real_backtest(trades)
+    msg_all, msg_today, msg_session = summarize_real_backtest(trades)
 
     send_telegram_message(msg_bt_all + "\n" + msg_bt_today + "\n\n" + msg_session)
 
