@@ -3122,8 +3122,7 @@ def main():
     apply_risk_config(okx)
 
     # 1) TP động luôn chạy trước (dùng config mới)
-    #run_dynamic_tp(okx)
-    run_backtest_if_needed(okx)
+    run_dynamic_tp(okx)
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     if minute % 15 == 5:
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
