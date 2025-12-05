@@ -579,7 +579,7 @@ class OKXClient:
     
         data = self._request("GET", path, params=None)
         return data.get("data", [])
-
+    
         
     def get_usdt_balance(self):
         # NOTE: path bao gồm luôn query string để ký chính xác
@@ -600,6 +600,28 @@ class OKXClient:
     
         logging.info("[INFO] USDT khả dụng: %.8f", avail)
         return avail
+    def get_total_equity_usdt(self) -> float:
+        """
+        Lấy tổng equity USDT (bao gồm cả vị thế đang mở + PnL chưa chốt).
+        Dùng field 'eq' của OKX.
+        """
+        path = "/api/v5/account/balance?ccy=USDT"
+        data = self._request("GET", path, params=None)
+    
+        details = data.get("data", [])
+        if not details:
+            return 0.0
+    
+        detail = details[0]
+    
+        # Cấu trúc OKX: data[0]["details"][0]["eq"] hoặc data[0]["eq"]
+        if "details" in detail and detail["details"]:
+            eq = float(detail["details"][0].get("eq", "0"))
+        else:
+            eq = float(detail.get("eq", "0"))
+    
+        logging.info("[INFO] Tổng equity USDT (eq): %.8f", eq)
+        return eq
 
     def set_leverage(self, inst_id, lever=FUT_LEVERAGE, pos_side=None, mgn_mode="isolated"):
         """
@@ -803,7 +825,7 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
 
     # 2) Nếu đã sang NGÀY MỚI hoặc PHIÊN MỚI -> reset state, lấy equity ĐẦU PHIÊN
     if st_date != today or st_session != session or start_equity <= 0:
-        equity = okx.get_usdt_balance()      # equity = tiền nhàn rỗi + margin lệnh đang chạy
+        equity = okx.get_total_equity_usdt()     # equity = tiền nhàn rỗi + margin lệnh đang chạy
         state = {
             "date": today,
             "session": session,
@@ -828,7 +850,7 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
         return False
 
     # 4) Tính PnL% của RIÊNG PHIÊN hiện tại so với start_equity đầu phiên
-    equity_now = okx.get_usdt_balance()
+    equity_now = okx.get_total_equity_usdt()
     pnl_pct = (equity_now - start_equity) / start_equity * 100.0
 
     logging.info(
