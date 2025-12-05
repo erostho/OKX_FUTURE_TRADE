@@ -3120,7 +3120,7 @@ def main():
 
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
-
+    run_backtest_if_needed(okx)
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
