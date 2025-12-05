@@ -375,7 +375,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 15, 20) and 5 <= m <= 9:
+    if h in (9, 15, 20) and 5 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
