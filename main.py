@@ -375,7 +375,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 15, 20) and 5 <= m <= 59:
+    if h in (11, 15, 20) and 5 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -3073,8 +3073,10 @@ def run_full_bot(okx):
         )
 
     okx = OKXClient(api_key, api_secret, passphrase, simulated_trading=simulated)
+    # 0) chạy backtest
+    run_backtest_if_needed(okx)
 
-    # 0) Circuit breaker theo phiên: nếu lỗ quá -SESSION_MAX_LOSS_PCT% thì dừng mở lệnh mới
+    # 1) Circuit breaker theo phiên: nếu lỗ quá -SESSION_MAX_LOSS_PCT% thì dừng mở lệnh mới
     logging.info("[BOT] Gọi check_session_circuit_breaker()...")
     if not check_session_circuit_breaker(okx):
         logging.info("[BOT] Circuit breaker kích hoạt → KHÔNG SCAN/MỞ LỆNH mới phiên này.")
@@ -3082,13 +3084,11 @@ def run_full_bot(okx):
     logging.info("[BOT] Circuit breaker OK → tiếp tục chạy bot.")
     regime = detect_market_regime(okx)
     logging.info(f"[REGIME] Thị trường hiện tại: {regime}")
-    
     if regime == "GOOD":
         current_notional = 30
     else:
         current_notional = 10
-
-    # 1) CHỌN SCANNER THEO GIỜ
+    # 2) CHỌN SCANNER THEO GIỜ
     if is_deadzone_time_vn():
         logging.info("[MODE] 10h30–15h30 VN -> dùng scanner SIDEWAY DEADZONE.")
         df_signals = build_signals_sideway_deadzone(okx)
@@ -3102,7 +3102,7 @@ def run_full_bot(okx):
         logging.info("[INFO] Không có tín hiệu hợp lệ, dừng bot lần chạy này.")
         return
 
-    # 2) Google Sheet
+    # 3) Google Sheet
     try:
         ws = prepare_worksheet()
         #existing = get_recent_signals(ws)
@@ -3110,18 +3110,15 @@ def run_full_bot(okx):
         logging.error("[ERROR] Google Sheet prepare lỗi: %s", e)
         return
 
-    # 3) Plan trades
+    # 4) Plan trades
     planned_trades = plan_trades_from_signals(df_signals, okx)
 
-    # 4) Append sheet
+    # 5) Append sheet
     append_signals(ws, planned_trades)
 
-    # 5) Futures + Telegram
+    # 6) Futures + Telegram
     execute_futures_trades(okx, planned_trades)
     
-    # 6) chạy backtest
-    run_backtest_if_needed(okx)
-
 def main():
     setup_logging()
     now_utc = datetime.now(timezone.utc)
