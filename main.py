@@ -806,7 +806,7 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
 
     now_vn = datetime.utcnow() + timedelta(hours=7)
     today = now_vn.strftime("%Y-%m-%d")
-    session = get_current_session_vn(now_vn)
+    session = get_current_session_vn()
 
     logging.info("========== [SESSION] KIỂM TRA CIRCUIT BREAKER ==========")
     logging.info("[SESSION] Thời gian VN: %s, phiên hiện tại: %s", now_vn, session)
