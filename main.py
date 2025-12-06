@@ -38,6 +38,7 @@ TOP_N_BY_CHANGE = 300          # universe: top 300 theo độ biến động
 
 # Google Sheet headers
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
+BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
 TP_DYN_MIN_PROFIT_PCT   = 2.5   # chỉ bật TP động khi lãi >= 2.5%
@@ -583,6 +584,47 @@ class OKXClient:
     
         data = self._request("GET", path, params=None)
         return data.get("data", [])
+
+    def get_positions_history(self, inst_type="SWAP", after=None, limit=100):
+        """
+        Lấy lịch sử vị thế đã đóng (real) từ OKX để backtest.
+        - inst_type: SWAP
+        - after: cTime (ms) của record mới nhất đã có trong cache (nếu có)
+        """
+        path = "/api/v5/account/positions-history"
+        params = {
+            "instType": inst_type,
+            "limit": str(limit),
+        }
+        if after:
+            # theo docs OKX: after = cursor thời gian
+            params["after"] = str(after)
+
+        all_data = []
+        cursor = after
+        max_loops = 10  # tránh loop vô hạn
+
+        for _ in range(max_loops):
+            data = self._request("GET", path, params=params)
+            items = data.get("data", [])
+            if not items:
+                break
+
+            all_data.extend(items)
+
+            # nếu số record < limit => không còn trang tiếp
+            if len(items) < limit:
+                break
+
+            # ngược lại, chuẩn bị after mới = cTime cuối cùng
+            cursor = items[-1].get("cTime")
+            if not cursor:
+                break
+            params["after"] = str(cursor)
+
+        logging.info("[OKX] positions-history lấy được %d records (after=%s).",
+                     len(all_data), str(after))
+        return all_data
     
         
     def get_usdt_balance(self):
@@ -771,6 +813,99 @@ def get_session_worksheet():
     except Exception as e:
         logging.error("[SESSION] Lỗi get_session_worksheet: %s", e)
         return None
+def get_bt_cache_worksheet():
+    """
+    Lấy worksheet chứa cache các lệnh futures đã đóng để backtest.
+    Nếu chưa có thì tạo mới + header.
+    """
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    sa_info_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not sa_info_json:
+        logging.error("[BT-CACHE] GOOGLE_SERVICE_ACCOUNT_JSON chưa cấu hình.")
+        return None
+
+    creds = Credentials.from_service_account_info(json.loads(sa_info_json), scopes=scopes)
+    gc = gspread.authorize(creds)
+
+    sheet_id = os.getenv("BT_SHEET_ID")
+    if not sheet_id:
+        logging.error("[BT-CACHE] BT_SHEET_ID chưa cấu hình.")
+        return None
+
+    sh = gc.open_by_key(sheet_id)
+
+    try:
+        ws = sh.worksheet(BT_CACHE_SHEET_NAME)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=BT_CACHE_SHEET_NAME, rows=10, cols=10)
+        ws.append_row(["posId", "instId", "side", "sz",
+                       "openPx", "closePx", "pnl", "cTime"])
+        logging.info("[BT-CACHE] Tạo sheet %s mới.", BT_CACHE_SHEET_NAME)
+
+    return ws
+
+
+def load_bt_cache():
+    """
+    Đọc toàn bộ cache trades từ sheet BT_TRADES_CACHE.
+    Trả về list[dict].
+    """
+    ws = get_bt_cache_worksheet()
+    if not ws:
+        return []
+
+    rows = ws.get_all_records()
+    trades = []
+    for r in rows:
+        if not r.get("posId"):
+            continue
+        try:
+            trades.append({
+                "posId": str(r.get("posId", "")),
+                "instId": r.get("instId", ""),
+                "side": r.get("side", ""),
+                "sz": float(r.get("sz", 0) or 0),
+                "openAvgPx": float(r.get("openPx", 0) or 0),
+                "closeAvgPx": float(r.get("closePx", 0) or 0),
+                "pnl": float(r.get("pnl", 0) or 0),
+                "cTime": int(r.get("cTime", 0) or 0),
+            })
+        except Exception as e:
+            logging.error("[BT-CACHE] Lỗi parse row %s: %s", r, e)
+    logging.info("[BT-CACHE] Load cache: %d trades.", len(trades))
+    return trades
+
+
+def append_bt_cache(new_trades):
+    """
+    Append thêm các lệnh mới vào sheet cache.
+    """
+    if not new_trades:
+        return
+
+    ws = get_bt_cache_worksheet()
+    if not ws:
+        return
+
+    rows = []
+    for t in new_trades:
+        rows.append([
+            t.get("posId", ""),
+            t.get("instId", ""),
+            t.get("side", ""),
+            t.get("sz", ""),
+            t.get("openAvgPx", ""),
+            t.get("closeAvgPx", ""),
+            t.get("pnl", ""),
+            t.get("cTime", ""),
+        ])
+
+    ws.append_rows(rows, value_input_option="RAW")
+    logging.info("[BT-CACHE] Append %d trades mới vào cache.", len(rows))
 
 def load_session_state(today: str, session: str):
     """
@@ -920,20 +1055,47 @@ def check_session_circuit_breaker(okx) -> bool:
     return True
 
 
-
-def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
+def load_real_trades_for_backtest(okx):
     """
-    Lấy danh sách closed positions REAL từ OKX để backtest thống kê.
+    Dùng real history:
+    - Lần 1: load tất cả từ OKX, lưu cache (sheet BT_TRADES_CACHE).
+    - Các lần sau: chỉ lấy thêm các lệnh mới đóng sau cTime cuối cùng trong cache.
     """
-    try:
-        trades = okx.get_positions_history(limit=1000)
-        logging.info("[BACKTEST] Lấy được %d closed positions từ OKX.", len(trades))
-        return trades
-    except Exception as e:
-        logging.error("[BACKTEST] Lỗi get_positions_history: %s", e)
-        return []
+    # 1) lấy cache cũ
+    cached = load_bt_cache()
+    last_c_time = max((t["cTime"] for t in cached), default=0)
+    logging.info("[BACKTEST] Cache hiện tại: %d trades, last_c_time=%s",
+                 len(cached), last_c_time or "None")
 
-    from datetime import datetime, timedelta
+    # 2) gọi OKX lấy thêm lịch sử sau last_c_time
+    new_raw = okx.get_positions_history(inst_type="SWAP", after=last_c_time, limit=100)
+    new_trades = []
+
+    for d in new_raw:
+        try:
+            new_trades.append({
+                "posId": d.get("posId"),
+                "instId": d.get("instId"),
+                "side": d.get("side"),              # long / short
+                "sz": float(d.get("sz", 0) or 0),
+                "openAvgPx": float(d.get("openAvgPx", 0) or 0),
+                "closeAvgPx": float(d.get("closeAvgPx", 0) or 0),
+                "pnl": float(d.get("pnl", 0) or 0),  # PNL USDT real
+                "cTime": int(d.get("cTime", 0) or 0),
+            })
+        except Exception as e:
+            logging.error("[BACKTEST] Lỗi parse history item %s: %s", d, e)
+
+    logging.info("[BACKTEST] Lịch sử mới lấy từ OKX: %d trades.", len(new_trades))
+
+    # 3) lưu thêm vào cache
+    append_bt_cache(new_trades)
+
+    # 4) dữ liệu đầy đủ để backtest = cache cũ + trade mới
+    all_trades = cached + new_trades
+    logging.info("[BACKTEST] Tổng số trades dùng để BT ALL: %d", len(all_trades))
+    return all_trades
+
 
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
