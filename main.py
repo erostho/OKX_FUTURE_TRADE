@@ -380,7 +380,7 @@ def is_backtest_time_vn():
     m = now_vn.minute
 
     # các lần cron full bot đang chạy ở phút 5,20,35,50
-    if h in (9, 15, 20) and 5 <= m <= 9:
+    if h in (9, 16, 20) and 5 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -3304,10 +3304,4 @@ def main():
         logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
-    okx = OKXClient(
-        api_key=os.getenv("OKX_API_KEY"),
-        api_secret=os.getenv("OKX_API_SECRET"),
-        passphrase=os.getenv("OKX_API_PASSPHRASE")
-    )
-    run_backtest_if_needed(okx)
     main()
