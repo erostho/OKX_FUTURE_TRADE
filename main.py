@@ -407,7 +407,7 @@ def get_session_from_hour_vn(hour: int) -> str:
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
-    def safe_get_positions_history(self, inst_type="SWAP", after=None, limit=100, retries=5):
+    def safe_get_positions_history(self, inst_type="SWAP", after=None, limit=str(limit), retries=5):
         for i in range(retries):
             try:
                 return self.get_positions_history(inst_type=inst_type, after=after, limit=limit)
@@ -421,6 +421,7 @@ class OKXClient:
                 raise
         logging.error("[OKX-RETRY] Thử %d lần vẫn lỗi.", retries)
         return []
+        
     def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
         self.api_secret = api_secret
@@ -965,7 +966,7 @@ def check_session_circuit_breaker(okx) -> bool:
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
 def fetch_closed_positions_last_ndays(okx: "OKXClient", days: int = 7,
-                                      page_limit: int = 100,
+                                      page_limit: int = 50,
                                       max_pages: int = 30):
     """
     Kéo toàn bộ lịch sử vị thế đã ĐÓNG trên OKX trong N ngày gần nhất (mặc định 7 ngày).
