@@ -574,57 +574,16 @@ class OKXClient:
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
         
-    #def get_positions_history(self, limit: int = 1000):
-        #"""
-        #Lấy lịch sử vị thế (positions-history) cho SWAP.
-        #Dùng để backtest REAL theo PnL từ OKX.
-        #"""
-        ## NHỚ: query string để luôn trong path, params=None
-        #path = f"/api/v5/account/positions-history?instType=SWAP&limit={int(limit)}"
+    def get_positions_history(self, limit: int = 1000):
+        """
+        Lấy lịch sử vị thế (positions-history) cho SWAP.
+        Dùng để backtest REAL theo PnL từ OKX.
+        """
+        # NHỚ: query string để luôn trong path, params=None
+        path = f"/api/v5/account/positions-history?instType=SWAP&limit={int(limit)}"
     
-        #data = self._request("GET", path, params=None)
-        #return data.get("data", [])
-
-    def get_positions_history(self, inst_type="SWAP", after=None, limit=100):
-        """
-        Lấy lịch sử vị thế đã đóng (real) từ OKX để backtest.
-        - inst_type: SWAP
-        - after: cTime (ms) của record mới nhất đã có trong cache (nếu có)
-        """
-        path = "/api/v5/account/positions-history"
-        params = {
-            "instType": inst_type,
-            "limit": str(limit),
-        }
-        if after:
-            # theo docs OKX: after = cursor thời gian
-            params["after"] = str(after)
-
-        all_data = []
-        cursor = after
-        max_loops = 10  # tránh loop vô hạn
-
-        for _ in range(max_loops):
-            data = self._request("GET", path, params=params)
-            items = data.get("data", [])
-            if not items:
-                break
-
-            all_data.extend(items)
-
-            # nếu số record < limit => không còn trang tiếp
-            if len(items) < limit:
-                break
-
-            # ngược lại, chuẩn bị after mới = cTime cuối cùng
-            cursor = items[-1].get("cTime")
-            if not cursor:
-                break
-            params["after"] = str(cursor)
-
-        logging.info("[OKX] positions-history lấy được %d records (after=%s).",
-                     len(all_data), str(after))
-        return all_data
+        data = self._request("GET", path, params=None)
+        return data.get("data", [])
     
         
     def get_usdt_balance(self):
