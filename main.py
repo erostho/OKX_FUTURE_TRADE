@@ -1484,9 +1484,9 @@ def append_trade_to_drive(trade: dict):
 
 def send_telegram_message(text):
     # 1. Tắt thông báo trong khung giờ 22h–06h (giờ VN)
-    if is_quiet_hours_vn():
-        logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
-        return
+    #if is_quiet_hours_vn():
+        #logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
+        #return
 
     # 2. Gửi như bình thường ngoài khung giờ trên
     token = os.getenv("TELEGRAM_BOT_TOKEN")
