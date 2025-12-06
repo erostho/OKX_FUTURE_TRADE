@@ -954,63 +954,74 @@ def check_session_circuit_breaker(okx) -> bool:
 
 def load_real_trades_for_backtest(okx):
     """
-    Dùng REAL closed positions cho backtest:
+    Dùng REAL closed positions cho backtest.
 
-    - Mỗi lần chạy luôn kéo cửa sổ ~1000 lệnh mới nhất từ OKX
-      (không dùng after=cTime nữa để tránh miss lệnh do API delay).
-    - Retry tối đa 3 lần, mỗi lần cách nhau 10s để chờ OKX cập nhật.
-    - Hợp nhất với cache BT_TRADES_CACHE, loại trùng theo posId.
+    - Mỗi lần chạy luôn kéo cửa sổ ~1000 lệnh mới nhất từ OKX (positions-history).
+    - Hợp nhất với cache BT_TRADES_CACHE, chỉ bỏ TRÙNG Y HỆT (cùng posId & cùng cTime).
     """
+
     # 1) Load cache cũ từ Google Sheets
     cached = load_bt_cache()          # list[dict]
-    cached_ids = {t.get("posId") for t in cached if t.get("posId")}
+    # key duy nhất = posId|cTime  (đảm bảo 1 lệnh đóng = 1 dòng)
+    existing_keys = set()
+
+    for t in cached:
+        pid = str(t.get("posId") or "").strip()
+        try:
+            ctime = int(t.get("cTime") or 0)
+        except Exception:
+            ctime = 0
+
+        if pid and ctime:
+            existing_keys.add(f"{pid}|{ctime}")
+
     logging.info(
-        "[BACKTEST] Cache hiện tại: %d trades, distinct posId=%d",
+        "[BACKTEST] Cache hiện tại: %d records, distinct keys=%d",
         len(cached),
-        len(cached_ids),
+        len(existing_keys),
     )
 
-    # 2) Kéo cửa sổ history mới nhất từ OKX, retry nhiều lần
-    all_raw_by_id = {}  # posId -> raw item mới nhất
+    # 2) Kéo history mới nhất từ OKX, retry nhiều lần
+    all_raw_by_key = {}   # key = f"{posId}|{cTime}" -> raw dict
     max_attempts = 3
     delay_sec = 10
 
     for attempt in range(1, max_attempts + 1):
         try:
             raw = okx.get_positions_history(
-                inst_type="SWAP",
-                after=None,    # ❗ KHÔNG dùng last_c_time nữa
-                limit=100,     # giới hạn OKX (thường max=100)
+                instType="SWAP",
+                after=None,          # KHÔNG dùng last_c_time nữa
+                limit=100,           # giới hạn mặc định ~100
             )
         except Exception as e:
             logging.error(
                 "[BACKTEST] Lỗi get_positions_history (attempt %d/%d): %s",
-                attempt,
-                max_attempts,
-                e,
+                attempt, max_attempts, e,
             )
             raw = []
 
         if raw:
             logging.info(
                 "[BACKTEST] Lần %d lấy được %d dòng history từ OKX.",
-                attempt,
-                len(raw),
+                attempt, len(raw),
             )
             for d in raw:
                 pid = d.get("posId")
                 if not pid:
                     continue
-                # nếu cùng posId, giữ bản có cTime mới hơn
                 try:
-                    ctime_new = int(d.get("cTime", 0) or 0)
-                    ctime_old = int(all_raw_by_id.get(pid, {}).get("cTime", 0) or 0)
+                    ctime = int(d.get("cTime") or 0)
                 except Exception:
-                    ctime_new = int(d.get("cTime", 0) or 0)
-                    ctime_old = int(all_raw_by_id.get(pid, {}).get("cTime", 0) or 0)
+                    ctime = 0
 
-                if (pid not in all_raw_by_id) or (ctime_new >= ctime_old):
-                    all_raw_by_id[pid] = d
+                if not ctime:
+                    continue
+
+                key = f"{pid}|{ctime}"
+
+                # nếu trùng key y hệt (cùng posId + cTime) trong lần fetch này thì giữ bản mới nhất
+                all_raw_by_key[key] = d
+
         else:
             logging.info(
                 "[BACKTEST] Lần %d không nhận được dữ liệu history từ OKX.",
@@ -1020,23 +1031,22 @@ def load_real_trades_for_backtest(okx):
         if attempt < max_attempts:
             logging.info(
                 "[BACKTEST] Chờ %ds rồi retry get_positions_history (attempt %d/%d)...",
-                delay_sec,
-                attempt + 1,
-                max_attempts,
+                delay_sec, attempt + 1, max_attempts,
             )
             time.sleep(delay_sec)
 
     logging.info(
-        "[BACKTEST] Sau %d lần gọi API, gom được %d posId khác nhau.",
-        max_attempts,
-        len(all_raw_by_id),
+        "[BACKTEST] Tổng số history raw (distinct posId|cTime) lấy được: %d",
+        len(all_raw_by_key),
     )
 
-    # 3) Parse thành trades mới, chỉ lấy những posId chưa có trong cache
+    # 3) Parse thành trades mới, CHỈ bỏ những lệnh đã có trong cache
     new_trades = []
-    for pid, d in all_raw_by_id.items():
-        if pid in cached_ids:
-            continue  # đã có trong BT_TRADES_CACHE rồi
+    for key, d in all_raw_by_key.items():
+        if key in existing_keys:
+            continue  # lệnh này đã có trong BT_TRADES_CACHE rồi
+
+        pid = d.get("posId")
 
         try:
             new_trades.append(
@@ -1044,25 +1054,25 @@ def load_real_trades_for_backtest(okx):
                     "posId": pid,
                     "instId": d.get("instId"),
                     "side": d.get("side"),  # long / short
-                    "sz": float(d.get("sz", 0) or 0),
-                    "openAvgPx": float(d.get("openAvgPx", 0) or 0),
-                    "closeAvgPx": float(d.get("closeAvgPx", 0) or 0),
-                    "pnl": float(d.get("pnl", 0) or 0),  # PnL USDT real
-                    "cTime": int(d.get("cTime", 0) or 0),
+                    "sz": float(d.get("sz") or 0) or 0,
+                    "openAvgPx": float(d.get("openAvgPx") or 0) or 0,
+                    "closePx": float(d.get("closeAvgPx") or d.get("closePx") or 0) or 0,
+                    "pnl": float(d.get("pnl") or 0) or 0,
+                    "cTime": int(d.get("cTime") or 0) or 0,
                 }
             )
         except Exception as e:
             logging.error("[BACKTEST] Lỗi parse history item %s: %s", d, e)
 
     logging.info(
-        "[BACKTEST] new_trades sau khi loại trùng posId: %d",
+        "[BACKTEST] new_trades sau khi loại trùng posId|cTime: %d",
         len(new_trades),
     )
 
-    # 4) lưu thêm vào sheet cache
+    # 4) Lưu thêm vào sheet cache
     append_bt_cache(new_trades)
 
-    # 5) dữ liệu đầy đủ để backtest = cache cũ + trade mới
+    # 5) Dữ liệu đầy đủ để backtest = cache cũ + trade mới
     all_trades = cached + new_trades
     logging.info(
         "[BACKTEST] Tổng số trades dùng để BT ALL (cache + mới): %d",
@@ -1278,18 +1288,55 @@ def run_backtest_if_needed(okx: "OKXClient"):
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
-    if not is_backtest_time_vn():
-        logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
-        return
+    #if not is_backtest_time_vn():
+        #logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
+        #return
 
-    trades = load_real_trades_for_backtest(okx)
-    msg_all, msg_today, msg_session = summarize_real_backtest(trades)
-
-    send_telegram_message(msg_all + "\n" + msg_today + "\n\n" + msg_session)
+    # ============ BACKTEST FROM CACHE (KHÔNG DÙNG LỊCH SỬ OKX) ============
+    def backtest_from_cache():
+        trades = load_bt_trades_cache()   # mỗi phần tử là 1 lệnh FULL, đã đóng
+    
+        # ---- BT ALL ----
+        total_all = len(trades)
+        tp_all = sum(1 for t in trades if float(t.get("pnl", 0)) > 0)
+        sl_all = sum(1 for t in trades if float(t.get("pnl", 0)) < 0)
+        pnl_all = sum(float(t.get("pnl", 0)) for t in trades)
+        win_all = (tp_all / total_all) if total_all else 0
+    
+        # ---- BT TODAY ----
+        now_vn = datetime.utcnow() + timedelta(hours=7)
+        today = now_vn.strftime("%Y-%m-%d")
+        today_start = datetime.strptime(today + " 00:00:00", "%Y-%m-%d %H:%M:%S")
+        today_end = today_start + timedelta(days=1)
+    
+        trades_today = [
+            t for t in trades
+            if today_start.timestamp() * 1000 <= int(t.get("cTime", 0)) < today_end.timestamp() * 1000
+        ]
+    
+        total_today = len(trades_today)
+        tp_today = sum(1 for t in trades_today if float(t.get("pnl", 0)) > 0)
+        sl_today = sum(1 for t in trades_today if float(t.get("pnl", 0)) < 0)
+        pnl_today = sum(float(t.get("pnl", 0)) for t in trades_today)
+        win_today = (tp_today / total_today) if total_today else 0
+    
+        # FORMAT thông báo Telegram
+        msg_all = (
+            f"☑️ BT ALL | total={total_all} | TP={tp_all} SL={sl_all} | "
+            f"win={win_all*100:.1f}% | PNL={pnl_all:.2f} USDT"
+        )
+        msg_today = (
+            f"☑️ BT TODAY | total={total_today} | TP={tp_today} SL={sl_today} | "
+            f"win={win_today*100:.1f}% | PNL={pnl_today:.2f} USDT"
+        )
+        return msg_all, msg_today
+    # ==== THAY THẾ TRONG run_backtest_if_needed() ====
+    
+    msg_all, msg_today = backtest_from_cache()
+    send_telegram_message(msg_all + "\n" + msg_today)
 
 
 # ================= GOOGLE SHEETS KHÁC, DRIVE, TELEGRAM, SCANNER, TP DYNAMIC, v.v.
-# ========== GOOGLE SHEETS ==========
 
 def get_gsheet_client():
     json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
@@ -1484,9 +1531,9 @@ def append_trade_to_drive(trade: dict):
 
 def send_telegram_message(text):
     # 1. Tắt thông báo trong khung giờ 22h–06h (giờ VN)
-    if is_quiet_hours_vn():
-        logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
-        return
+    #if is_quiet_hours_vn():
+        #logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
+        #return
 
     # 2. Gửi như bình thường ngoài khung giờ trên
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -3096,15 +3143,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute % 15 == 5:
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute % 15 == 5:
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
