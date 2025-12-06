@@ -722,110 +722,113 @@ def load_trade_cache():
     except Exception:
         return []
 
-def load_session_state():
+def get_session_worksheet():
     """
-    Đọc trạng thái circuit breaker theo phiên từ Google Sheet.
-
-    Dạng dữ liệu:
-    date, session, start_equity, blocked
-    2025-12-04, 0-9, 18.5300, FALSE
+    Lấy worksheet lưu state circuit breaker.
+    Nếu chưa có thì tạo mới + header: date, session, start_equity, blocked
     """
     try:
-        ws = get_session_worksheet()
-        if ws is None:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = Credentials.from_service_account_info(sa_info_json, scopes=scopes)
+        gc = gspread.authorize(creds)
+
+        if not SESSION_SHEET_KEY:
+            logging.error("[SESSION] GSheet key chưa cấu hình.")
             return None
 
-        records = ws.get_all_records()  # list[dict]
-        if not records:
-            return {}   # sheet rỗng -> chưa có state
+        sh = gc.open_by_key(SESSION_SHEET_KEY)
 
-        return records[0]  # state hợp lệ
-    except Exception as e:
-        logging.error("[SESSION] Lỗi load_session_state (API/GSHEET): %s", e)
-        # Trả về state đặc biệt báo lỗi, để circuit breaker FAIL-SAFE
-        return {"error": True}
+        try:
+            ws = sh.worksheet(SESSION_STATE_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=SESSION_STATE_SHEET_NAME, rows=1000, cols=4)
+            ws.append_row(["date", "session", "start_equity", "blocked"])
 
-        # Lấy dòng mới nhất
-        last = records[-1]
-
-        state = {
-            "date": str(last.get("date") or ""),
-            "session": str(last.get("session") or ""),
-            "start_equity": float(last.get("start_equity") or 0),
-            "blocked": bool(last.get("blocked")),
-        }
-
-        logging.info(
-            "[SESSION] Load state từ sheet: date=%s, session=%s, blocked=%s, start_equity=%.4f",
-            state["date"],
-            state["session"],
-            state["blocked"],
-            state["start_equity"],
-        )
-
-        return state
+        return ws
 
     except Exception as e:
-        logging.error("[SESSION] Lỗi load_session_state từ sheet: %s", e)
+        logging.error("[SESSION] Lỗi get_session_worksheet: %s", e)
         return None
+
+
+def load_session_state(today: str, session: str):
+    """
+    Lấy state gần nhất cho (today, session).
+    Nếu chưa có thì trả về None.
+    """
+    ws = get_session_worksheet()
+    if ws is None:
+        return None
+
+    try:
+        records = ws.get_all_records()  # list[dict]
+    except Exception as e:
+        logging.error("[SESSION] Lỗi load_session_state: %s", e)
+        return None
+
+    # Lọc đúng ngày + phiên
+    filtered = [r for r in records
+                if str(r.get("date")) == today and str(r.get("session")) == session]
+
+    if not filtered:
+        return None
+
+    # Lấy dòng cuối cùng (trường hợp có nhiều dòng cùng ngày/phiên)
+    return filtered[-1]
+
+
 def save_session_state(state: dict):
     """
-    Ghi thêm 1 dòng trạng thái mới vào Google Sheet.
-    Mỗi lần cập nhật sẽ append 1 dòng, load luôn lấy dòng cuối cùng.
+    Ghi thêm 1 dòng state xuống sheet.
+    Dùng cho:
+    - Lần đầu vào phiên -> snapshot start_equity
+    - Khi chuyển sang trạng thái blocked=True
     """
+    ws = get_session_worksheet()
+    if ws is None:
+        return
+
     try:
-        ws = get_session_worksheet()
-        if ws is None:
-            return
-
-        row = [
-            state.get("date", ""),
-            state.get("session", ""),
-            float(state.get("start_equity", 0) or 0),
-            bool(state.get("blocked", False)),
-        ]
-
-        ws.append_row(row)
-        logging.info(
-            "[SESSION] Save state vào sheet: date=%s, session=%s, start_equity=%.4f, blocked=%s",
-            row[0],
-            row[1],
-            row[2],
-            row[3],
+        ws.append_row(
+            [
+                state.get("date"),
+                state.get("session"),
+                float(state.get("start_equity", 0)),
+                bool(state.get("blocked", False)),
+            ]
         )
-
     except Exception as e:
-        logging.error("[SESSION] Lỗi save_session_state vào sheet: %s", e)
+        logging.error("[SESSION] Lỗi save_session_state: %s", e)
 
-def check_session_circuit_breaker(okx: "OKXClient") -> bool:
-    """
-    Trả về:
-        True  -> ĐƯỢC phép mở lệnh mới trong PHIÊN hiện tại
-        False -> PHIÊN đã chạm -SESSION_MAX_LOSS_PCT%, KHÔNG mở lệnh mới.
-    """
 
+def check_session_circuit_breaker(okx) -> bool:
+    """
+    Kiểm tra circuit breaker theo PHIÊN.
+    - Mỗi phiên (0-9, 9-15, ...) chỉ chụp start_equity 1 lần lúc vào phiên.
+    - Nếu lỗ quá SESSION_MAX_LOSS_PCT so với start_equity -> blocked=True, KHÔNG mở lệnh mới.
+    - Khi blocked rồi thì vẫn cho chạy backtest, nhưng không vào lệnh.
+    """
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    today = now_vn.strftime("%Y-%m-%d")
-    session = get_current_session_vn()
+    today = now_vn.date().isoformat()
+    session = get_current_session_vn(now_vn)
 
-    logging.info("========== [SESSION] KIỂM TRA CIRCUIT BREAKER ==========")
-    logging.info("[SESSION] Thời gian VN: %s, phiên hiện tại: %s", now_vn, session)
+    # equity = tiền nhàn rỗi + margin lệnh đang chạy
+    equity = okx.get_total_equity_usdt()
 
-    # 1) Load state hiện tại từ Google Sheet
-    state = load_session_state() or {}
-    st_date = state.get("date")
-    st_session = state.get("session")
-    blocked = bool(state.get("blocked", False))
-    start_equity = float(state.get("start_equity") or 0.0)
+    max_loss_pct = float(os.getenv("SESSION_MAX_LOSS_PCT", "5"))  # ví dụ -5%
 
     logging.info(
-        "[SESSION] State hiện tại: date=%s, session=%s, blocked=%s, start_equity=%.4f",
-        st_date, st_session, blocked, start_equity
+        "[SESSION] Thời gian VN: %s, phiên hiện tại: %s | equity=%.4f",
+        now_vn, session, equity
     )
 
-    # 2) Nếu đã sang NGÀY MỚI hoặc PHIÊN MỚI -> reset state, lấy equity ĐẦU PHIÊN
-    if st_date != today or st_session != session or start_equity <= 0:
-        equity = okx.get_total_equity_usdt()     # equity = tiền nhàn rỗi + margin lệnh đang chạy
+    state = load_session_state(today, session)
+
+    # 1) CHƯA CÓ state cho phiên này -> chụp snapshot ĐẦU PHIÊN
+    if state is None:
         state = {
             "date": today,
             "session": session,
@@ -833,48 +836,71 @@ def check_session_circuit_breaker(okx: "OKXClient") -> bool:
             "blocked": False,
         }
         save_session_state(state)
-
         logging.warning(
             "[SESSION] RESET state cho ngày %s - phiên %s (start_equity=%.4f)",
             today, session, equity
         )
-        # Vừa sang phiên mới -> chưa lỗ gì, cho phép trade
-        return True
+        return True  # vừa vào phiên -> cho phép trade
 
-    # 3) Nếu đã bị khóa từ trước -> không cần tính lại, chặn luôn
+    # 2) ĐÃ CÓ state -> dùng đúng start_equity ĐẦU PHIÊN
+    start_equity = float(state.get("start_equity", 0) or 0)
+    blocked = str(state.get("blocked", "")).upper() == "TRUE"
+
+    logging.info(
+        "[SESSION] State hiện tại: date=%s, session=%s, blocked=%s, start_equity=%.4f",
+        state.get("date"), state.get("session"), blocked, start_equity
+    )
+
+    # Nếu đã bị khóa rồi thì không mở lệnh nữa
     if blocked:
         logging.warning(
-            "[SESSION] Phiên %s đang BỊ KHÓA (đã lỗ quá %.1f%%). Bỏ qua mở lệnh mới.",
-            session, SESSION_MAX_LOSS_PCT
+            "[SESSION] Phiên %s đang BỊ KHÓA (đã lỗ quá %.1f%%). Không mở lệnh mới!",
+            session, max_loss_pct
         )
         return False
 
-    # 4) Tính PnL% của RIÊNG PHIÊN hiện tại so với start_equity đầu phiên
-    equity_now = okx.get_total_equity_usdt()
-    pnl_pct = (equity_now - start_equity) / start_equity * 100.0
-
-    logging.info(
-        "[SESSION] Phiên %s PnL=%.2f%% (start=%.4f, now=%.4f)",
-        session, pnl_pct, start_equity, equity_now
-    )
-
-    # 5) Nếu lỗ vượt quá ngưỡng -> set blocked=True và CHẶN mở lệnh mới
-    if pnl_pct <= -SESSION_MAX_LOSS_PCT:
-        state["blocked"] = True
+    # Nếu vì lý do gì start_equity <= 0 thì coi như lỗi dữ liệu -> đặt lại bằng equity hiện tại
+    if start_equity <= 0:
+        start_equity = equity
+        state = {
+            "date": today,
+            "session": session,
+            "start_equity": start_equity,
+            "blocked": False,
+        }
         save_session_state(state)
-
         logging.warning(
-            "[SESSION] Phiên %s lỗ %.2f%% <= -%.2f%% → KHÓA PHIÊN, dừng mở lệnh mới.",
-            session, pnl_pct, SESSION_MAX_LOSS_PCT
+            "[SESSION] start_equity <= 0 -> đặt lại bằng equity=%.4f cho phiên %s",
+            equity, session
+        )
+        return True
+
+    # 3) Tính PnL% phiên hiện tại SO VỚI ĐẦU PHIÊN (không so với lần cron trước)
+    pnl_pct = (equity - start_equity) / start_equity * 100.0
+
+    logging.info(
+        "[SESSION] PnL phiên %s: %.2f%% (equity=%.4f, start_equity=%.4f, max_loss=%.1f%%)",
+        session, pnl_pct, equity, start_equity, max_loss_pct
+    )
+
+    # Nếu lỗ quá ngưỡng -> KHÓA PHIÊN
+    if pnl_pct <= -max_loss_pct:
+        state = {
+            "date": today,
+            "session": session,
+            "start_equity": start_equity,  # giữ nguyên equity đầu phiên
+            "blocked": True,
+        }
+        save_session_state(state)
+        logging.warning(
+            "[SESSION] Phiên %s BỊ KHÓA do lỗ %.2f%% (ngưỡng=%.1f%%). Không mở lệnh mới!",
+            session, pnl_pct, max_loss_pct
         )
         return False
 
-    # 6) Ngược lại vẫn trong ngưỡng an toàn -> cho phép trade tiếp
-    logging.info(
-        "[SESSION] Phiên %s vẫn trong ngưỡng an toàn (PnL=%.2f%% > -%.2f%%) → TIẾP TỤC TRADE.",
-        session, pnl_pct, SESSION_MAX_LOSS_PCT
-    )
+    logging.info("[SESSION] Circuit breaker OK -> tiếp tục cho phép mở lệnh.")
     return True
+
 
 
 def load_real_trades_for_backtest(okx: "OKXClient") -> list[dict]:
@@ -1480,45 +1506,6 @@ from google.oauth2.service_account import Credentials
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("GSHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
 SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
-
-
-def get_session_worksheet():
-    """
-    Mở (hoặc tạo) worksheet SESSION_STATE trong Google Sheet để lưu trạng thái phiên.
-    """
-    try:
-        sa_info = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-        if not sa_info:
-            logging.error("[SESSION] GOOGLE_SERVICE_ACCOUNT_JSON chưa cấu hình.")
-            return None
-
-        sa_info_json = json.loads(sa_info)
-
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_info(sa_info_json, scopes=scopes)
-        gc = gspread.authorize(creds)
-
-        if not SESSION_SHEET_KEY:
-            logging.error("[SESSION] GSHEET_KEY chưa cấu hình.")
-            return None
-
-        sh = gc.open_by_key(SESSION_SHEET_KEY)
-
-        try:
-            ws = sh.worksheet(SESSION_STATE_SHEET_NAME)
-        except gspread.WorksheetNotFound:
-            # Chưa có sheet → tạo mới + header
-            ws = sh.add_worksheet(title=SESSION_STATE_SHEET_NAME, rows=10, cols=10)
-            ws.append_row(["date", "session", "start_equity", "blocked"])
-
-        return ws
-
-    except Exception as e:
-        logging.error("[SESSION] Lỗi get_session_worksheet: %s", e)
-        return None
 
 # ========== TELEGRAM ==========
 
