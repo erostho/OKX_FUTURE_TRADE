@@ -2910,7 +2910,8 @@ def run_dynamic_tp(okx: "OKXClient"):
     """
 
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
-
+    # 0) chạy backtest
+    run_backtest_if_needed(okx)
     positions = okx.get_open_positions()
     logging.info("[TP-DYN] Số vị thế đang mở: %d", len(positions))
 
@@ -3305,4 +3306,5 @@ def main():
         logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
+    run_backtest_if_needed(okx)
     main()
