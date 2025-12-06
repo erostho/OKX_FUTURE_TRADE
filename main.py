@@ -813,7 +813,7 @@ def check_session_circuit_breaker(okx) -> bool:
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
     today = now_vn.date().isoformat()
-    session = get_current_session_vn(now_vn)
+    session = get_current_session_vn()
 
     # equity = tiền nhàn rỗi + margin lệnh đang chạy
     equity = okx.get_total_equity_usdt()
