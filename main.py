@@ -725,29 +725,59 @@ def load_bt_cache():
     """
     Đọc toàn bộ cache trades từ sheet BT_TRADES_CACHE.
     Trả về list[dict].
+
+    Fix: dùng expected_headers để tránh lỗi header trống / trùng trong sheet.
     """
     ws = get_bt_cache_worksheet()
     if not ws:
         return []
 
-    rows = ws.get_all_records()
+    try:
+        # Ép header chuẩn, bỏ qua mấy cột trống phía sau
+        rows = ws.get_all_records(
+            expected_headers=["posId", "instId", "side", "sz",
+                              "openPx", "closePx", "pnl", "cTime"]
+        )
+    except Exception as e:
+        logging.error("[BT-CACHE] Lỗi get_all_records: %s", e)
+        # Fallback: đọc raw values rồi tự map
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return []
+        data_rows = values[1:]  # bỏ dòng header
+        rows = []
+        for r in data_rows:
+            # pad cho đủ 8 cột
+            r = (r + [""] * 8)[:8]
+            rows.append({
+                "posId":   r[0],
+                "instId":  r[1],
+                "side":    r[2],
+                "sz":      r[3],
+                "openPx":  r[4],
+                "closePx": r[5],
+                "pnl":     r[6],
+                "cTime":   r[7],
+            })
+
     trades = []
     for r in rows:
         if not r.get("posId"):
             continue
         try:
             trades.append({
-                "posId": str(r.get("posId", "")),
-                "instId": r.get("instId", ""),
-                "side": r.get("side", ""),
-                "sz": float(r.get("sz", 0) or 0),
-                "openAvgPx": float(r.get("openPx", 0) or 0),
+                "posId":      str(r.get("posId", "")),
+                "instId":     r.get("instId", ""),
+                "side":       r.get("side", ""),
+                "sz":         float(r.get("sz", 0) or 0),
+                "openAvgPx":  float(r.get("openPx", 0) or 0),
                 "closeAvgPx": float(r.get("closePx", 0) or 0),
-                "pnl": float(r.get("pnl", 0) or 0),
-                "cTime": int(r.get("cTime", 0) or 0),
+                "pnl":        float(r.get("pnl", 0) or 0),
+                "cTime":      int(r.get("cTime", 0) or 0),
             })
         except Exception as e:
             logging.error("[BT-CACHE] Lỗi parse row %s: %s", r, e)
+
     logging.info("[BT-CACHE] Load cache: %d trades.", len(trades))
     return trades
 
