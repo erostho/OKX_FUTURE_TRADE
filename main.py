@@ -3102,15 +3102,6 @@ def main():
     else:
         logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
-#if __name__ == "__main__":
-    #main()
 if __name__ == "__main__":
-    setup_logging()
-    okx = OKXClient(
-        api_key=os.getenv("OKX_API_KEY"),
-        api_secret=os.getenv("OKX_API_SECRET"),
-        passphrase=os.getenv("OKX_API_PASSPHRASE"),
-        simulated_trading=(os.getenv("OKX_SIMULATED_TRADING", "1") == "1"),
-    )
+    main()
 
-    run_backtest_if_needed(okx)
