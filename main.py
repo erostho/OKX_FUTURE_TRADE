@@ -3241,4 +3241,4 @@ if __name__ == "__main__":
     )
 
     # 🔥 ONE-SHOT: rebuild cache 7 ngày gần nhất
-    rebuild_bt_cache_last_7d(okx, days=7)
+    fetch_closed_positions_last_ndays(okx, days=7)
