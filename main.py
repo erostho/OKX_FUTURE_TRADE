@@ -574,16 +574,16 @@ class OKXClient:
         data = self._request("GET", path, params=None)    # KHÔNG dùng params
         return data.get("data", [])
         
-    def get_positions_history(self, limit: int = 1000):
-        """
-        Lấy lịch sử vị thế (positions-history) cho SWAP.
-        Dùng để backtest REAL theo PnL từ OKX.
-        """
-        # NHỚ: query string để luôn trong path, params=None
-        path = f"/api/v5/account/positions-history?instType=SWAP&limit={int(limit)}"
+    #def get_positions_history(self, limit: int = 1000):
+        #"""
+        #Lấy lịch sử vị thế (positions-history) cho SWAP.
+        #Dùng để backtest REAL theo PnL từ OKX.
+        #"""
+        ## NHỚ: query string để luôn trong path, params=None
+        #path = f"/api/v5/account/positions-history?instType=SWAP&limit={int(limit)}"
     
-        data = self._request("GET", path, params=None)
-        return data.get("data", [])
+        #data = self._request("GET", path, params=None)
+        #return data.get("data", [])
 
     def get_positions_history(self, inst_type="SWAP", after=None, limit=100):
         """
