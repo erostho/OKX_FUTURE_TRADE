@@ -3306,5 +3306,4 @@ def main():
         logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
-    run_backtest_if_needed(okx)
     main()
