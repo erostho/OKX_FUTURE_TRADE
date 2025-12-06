@@ -358,9 +358,9 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 15, 21) and 5 <= m <= 59:
+    if h in (9, 15, 20) and 5 <= m <= 9:
         return True
-    if h == 22 and 50 <= m <= 59:
+    if h == 22 and 5 <= m <= 59:
         return True
     return False
 
@@ -993,11 +993,13 @@ def load_real_trades_for_backtest(okx):
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
     Trả về 3 đoạn text:
-      - msg_all
-      - msg_today
-      - msg_session
-    Dựa trên PnL REAL từ OKX (field 'pnl') + BT_ALL cộng dồn trong sheet BT_CACHE.
+      - msg_all     : [✅BT ALL] ...   -> ĐẾM TẤT CẢ LỆNH CÓ TRONG BT_TRADES_CACHE
+      - msg_today   : [✅BT TODAY] ... -> Chỉ lệnh đóng trong ngày hôm nay (giờ VN)
+      - msg_session : --- SESSION TODAY --- + 4 dòng [0-9], [9-15], [15-20], [20-24]
+    Dựa trên PnL REAL từ OKX (field 'pnl' trong BT_TRADES_CACHE).
     """
+
+    # Không có trade nào
     if not trades:
         msg_all = "[✅BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
         msg_today = "[✅BT TODAY] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
@@ -1010,15 +1012,18 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         )
         return msg_all, msg_today, msg_session
 
+    # ---- helper chung ----
     def classify(filtered: list[dict]):
         total = len(filtered)
         tp = sl = even = 0
         pnl_sum = 0.0
+
         for t in filtered:
             try:
                 pnl = float(t.get("pnl", "0"))
             except Exception:
                 pnl = 0.0
+
             pnl_sum += pnl
             if pnl > 0:
                 tp += 1
@@ -1026,11 +1031,13 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
                 sl += 1
             else:
                 even += 1
+
         win = (tp / total * 100.0) if total > 0 else 0.0
         return total, tp, sl, even, pnl_sum, win
 
+    # Chuyển cTime/uTime -> datetime VN
     def get_vn_dt(t: dict):
-        ctime_str = t.get("cTime")
+        ctime_str = t.get("cTime") or t.get("uTime")
         if not ctime_str:
             return None
         try:
@@ -1043,6 +1050,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     now_vn = datetime.utcnow() + timedelta(hours=7)
     today_date = now_vn.date()
 
+    # Lọc trades đóng trong ngày VN hôm nay
     trades_today: list[tuple[dict, datetime]] = []
     for t in trades:
         dt_vn = get_vn_dt(t)
@@ -1051,41 +1059,31 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         if dt_vn.date() == today_date:
             trades_today.append((t, dt_vn))
 
-    # ALL
+    # ============== ALL (TẤT CẢ LỆNH) ==================
     total, tp, sl, even, pnl_sum, win = classify(trades)
 
-    # TODAY
+    msg_all = (
+        f"[✅BT ALL] total={total} | "
+        f"TP={tp} SL={sl} OPEN={even} | "
+        f"win={win:.1f}% | "
+        f"PNL={pnl_sum:+.2f} USDT"
+    )
+
+    # ============== TODAY (CHỈ NGÀY HÔM NAY) ==================
     only_today = [t for (t, _dt) in trades_today]
     t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
 
-    bt_today = {
-        "total": t_total,
-        "tp": t_tp,
-        "sl": t_sl,
-        "open": t_even,
-        "pnl_usdt": t_pnl_sum,
-    }
-
-    # cộng dồn vào BT_ALL
-    bt_all = accumulate_bt_all_with_today(bt_today)
-
-    msg_all = (
-        f"[✅BT ALL] total={bt_all['total']} | "
-        f"TP={bt_all['tp']} SL={bt_all['sl']} OPEN={bt_all['open']} | "
-        f"win={(bt_all['tp'] * 100 / bt_all['total']) if bt_all['total'] else 0:.1f}% | "
-        f"PNL={bt_all['pnl_usdt']:+.2f} USDT"
-    )
-
     msg_today = (
-        f"[✅BT TODAY] total={bt_today['total']} | "
-        f"TP={bt_today['tp']} SL={bt_today['sl']} OPEN={bt_today['open']} | "
-        f"win={(bt_today['tp'] * 100 / bt_today['total']) if bt_today['total'] else 0:.1f}% | "
-        f"PNL={bt_today['pnl_usdt']:+.2f} USDT"
+        f"[✅BT TODAY] total={t_total} | "
+        f"TP={t_tp} SL={t_sl} OPEN={t_even} | "
+        f"win={t_win:.1f}% | "
+        f"PNL={t_pnl_sum:+.2f} USDT"
     )
 
+    # ==================== SESSION TODAY ====================
     sessions = [
-        ("0-9", 0, 9),
-        ("9-15", 9, 15),
+        ("0-9",   0, 9),
+        ("9-15",  9, 15),
         ("15-20", 15, 20),
         ("20-24", 20, 24),
     ]
@@ -1104,8 +1102,8 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         session_lines.append(line)
 
     msg_session = "\n".join(session_lines)
-
     return msg_all, msg_today, msg_session
+
 
 
 # (phần cũ load_history_from_drive / trade_cache vẫn giữ nguyên cho bot khác nếu cần)
