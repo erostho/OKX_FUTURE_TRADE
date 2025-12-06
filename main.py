@@ -1001,14 +1001,14 @@ def fetch_closed_positions_last_ndays(okx: "OKXClient", days: int = 7,
     while page < max_pages:
         page += 1
         try:
-            raw = okx.safe_positions_history(
+            raw = okx.safe_get_positions_history(
                 inst_type="SWAP",
                 after=after_cursor,
                 limit=page_limit,
             )
         except Exception as e:
             logging.error(
-                "[BT-FULL] Lỗi get_positions_history page %d (after=%s): %s",
+                "[BT-FULL] Lỗi safe_get_positions_history page %d (after=%s): %s",
                 page,
                 after_cursor,
                 e,
