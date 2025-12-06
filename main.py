@@ -14,6 +14,10 @@ from google.oauth2.service_account import Credentials
 import gspread
 from google.oauth2 import service_account
 
+# Sheet dùng để lưu trạng thái circuit breaker
+SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
+SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
+
 # ========== CONFIG ==========
 OKX_BASE_URL = "https://www.okx.com"
 CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
@@ -1514,12 +1518,6 @@ def append_trade_to_drive(trade: dict):
     except Exception as e:
         logging.error("[DRIVE] Lỗi upload CSV lên Drive: %s", e)
 
-import gspread
-from google.oauth2.service_account import Credentials
-
-# Sheet dùng để lưu trạng thái circuit breaker
-SESSION_SHEET_KEY = os.getenv("GSHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
-SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
 
 # ========== TELEGRAM ==========
 
