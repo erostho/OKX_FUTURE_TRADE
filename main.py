@@ -343,7 +343,7 @@ def parse_trade_time_to_utc_ms(time_str: str) -> int | None:
 
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 1 or now_vn.hour < 6
+    return now_vn.hour >= 22 or now_vn.hour < 6
 
 
 def is_backtest_time_vn():
@@ -1278,9 +1278,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
-    if not is_backtest_time_vn():
-        logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
-        return
+    #if not is_backtest_time_vn():
+        #logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
+        #return
 
     trades = load_real_trades_for_backtest(okx)
     msg_all, msg_today, msg_session = summarize_real_backtest(trades)
