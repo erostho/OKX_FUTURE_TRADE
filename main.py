@@ -112,7 +112,7 @@ def _open_bt_cache_sheet():
     try:
         ws = doc.worksheet("BT_CACHE")
     except gspread.WorksheetNotFound:
-        ws = doc.add_worksheet(title="BT_CACHE", rows=1000, cols=8)
+        ws = doc.add_worksheet(title="BT_CACHE", rows=100, cols=8)
         ws.update(
             "A1:H1",
             [[
@@ -951,7 +951,7 @@ def check_session_circuit_breaker(okx) -> bool:
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
 def fetch_closed_positions_last_ndays(okx: "OKXClient", days: int = 7,
-                                      page_limit: int = 100,
+                                      page_limit: int = 50,
                                       max_pages: int = 30):
     """
     Kéo toàn bộ lịch sử vị thế đã ĐÓNG trên OKX trong N ngày gần nhất (mặc định 7 ngày).
@@ -1107,7 +1107,7 @@ def load_real_trades_for_backtest(okx):
             raw = okx.get_positions_history(
                 inst_type="SWAP",
                 after=None,    # ❗ KHÔNG dùng last_c_time nữa
-                limit=1000,     # giới hạn OKX (thường max=100)
+                limit=100,     # giới hạn OKX (thường max=100)
             )
         except Exception as e:
             logging.error(
