@@ -723,36 +723,50 @@ def load_trade_cache():
         return []
 
 def get_session_worksheet():
-    """
-    Lấy worksheet lưu state circuit breaker.
-    Nếu chưa có thì tạo mới + header: date, session, start_equity, blocked
-    """
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    # Lấy JSON service account từ biến môi trường
+    sa_info_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not sa_info_json:
+        logging.error("[SESSION] GOOGLE_SERVICE_ACCOUNT_JSON chưa cấu hình.")
+        return None
+
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive",
-        ]
-        creds = Credentials.from_service_account_info(sa_info_json, scopes=scopes)
+        sa_info = json.loads(sa_info_json)
+    except Exception as e:
+        logging.error("[SESSION] Lỗi parse GOOGLE_SERVICE_ACCOUNT_JSON: %s", e)
+        return None
+
+    try:
+        creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
         gc = gspread.authorize(creds)
+    except Exception as e:
+        logging.error("[SESSION] Lỗi khởi tạo gspread: %s", e)
+        return None
 
-        if not SESSION_SHEET_KEY:
-            logging.error("[SESSION] GSheet key chưa cấu hình.")
-            return None
+    if not SESSION_SHEET_KEY:
+        logging.error("[SESSION] SESSION_SHEET_KEY chưa cấu hình.")
+        return None
 
+    try:
         sh = gc.open_by_key(SESSION_SHEET_KEY)
-
         try:
             ws = sh.worksheet(SESSION_STATE_SHEET_NAME)
         except gspread.WorksheetNotFound:
-            ws = sh.add_worksheet(title=SESSION_STATE_SHEET_NAME, rows=1000, cols=4)
+            # Chưa có sheet -> tạo mới + header
+            ws = sh.add_worksheet(
+                title=SESSION_STATE_SHEET_NAME,
+                rows=10,
+                cols=10
+            )
             ws.append_row(["date", "session", "start_equity", "blocked"])
-
         return ws
-
     except Exception as e:
         logging.error("[SESSION] Lỗi get_session_worksheet: %s", e)
         return None
-
 
 def load_session_state(today: str, session: str):
     """
