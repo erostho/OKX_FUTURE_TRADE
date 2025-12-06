@@ -407,20 +407,6 @@ def get_session_from_hour_vn(hour: int) -> str:
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
-    def safe_get_positions_history(self, inst_type="SWAP", after=None, limit=str(limit), retries=5):
-        for i in range(retries):
-            try:
-                return self.get_positions_history(inst_type=inst_type, after=after, limit=limit)
-            except Exception as e:
-                msg = str(e)
-                if "50026" in msg or "Internal Server Error" in msg or "500" in msg:
-                    logging.warning("[OKX-RETRY] positions-history lỗi 500/50026, thử lại (%d/%d)...",
-                                    i+1, retries)
-                    time.sleep(0.5)
-                    continue
-                raise
-        logging.error("[OKX-RETRY] Thử %d lần vẫn lỗi.", retries)
-        return []
         
     def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
@@ -533,7 +519,7 @@ class OKXClient:
         data = self._request("GET", path, params=None)
         return data.get("data", [])
 
-    def get_positions_history(self, inst_type="SWAP", after=None, limit=1000):
+    def get_positions_history(self, inst_type="SWAP", after=None, limit=100):
         qs = f"instType={inst_type}&limit={limit}"
         if after:
             qs += f"&after={after}"
@@ -1002,14 +988,14 @@ def fetch_closed_positions_last_ndays(okx: "OKXClient", days: int = 7,
     while page < max_pages:
         page += 1
         try:
-            raw = okx.safe_get_positions_history(
+            raw = okx.get_positions_history(
                 inst_type="SWAP",
                 after=after_cursor,
                 limit=page_limit,
             )
         except Exception as e:
             logging.error(
-                "[BT-FULL] Lỗi safe_get_positions_history page %d (after=%s): %s",
+                "[BT-FULL] Lỗi get_positions_history page %d (after=%s): %s",
                 page,
                 after_cursor,
                 e,
@@ -1119,7 +1105,7 @@ def load_real_trades_for_backtest(okx):
 
     for attempt in range(1, max_attempts + 1):
         try:
-            raw = okx.safe_positions_history(
+            raw = okx.get_positions_history(
                 inst_type="SWAP",
                 after=None,    # ❗ KHÔNG dùng last_c_time nữa
                 limit=100,     # giới hạn OKX (thường max=100)
