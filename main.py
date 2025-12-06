@@ -954,51 +954,77 @@ def check_session_circuit_breaker(okx) -> bool:
 def load_real_trades_for_backtest(okx):
     """
     Dùng real history:
-    - Lần 1: load tất cả từ OKX, lưu cache.
-    - Các lần sau: chỉ lấy thêm các lệnh mới đóng sau cTime cuối cùng trong cache.
+    - Đọc tất cả cache trong BT_TRADES_CACHE.
+    - Kéo thêm ~200 lệnh đã đóng gần nhất từ OKX (positions-history).
+    - Merge theo posId, tránh trùng.
+    - Ghi những lệnh mới vào BT_TRADES_CACHE.
+    - Trả về list ALL TRADES để backtest.
     """
+    # 1) đọc cache cũ từ sheet
     cached = load_bt_cache()
-    last_c_time = max((t["cTime"] for t in cached), default=0)
-    logging.info("[BACKTEST] Cache hiện tại: %d trades, last_c_time=%s",
-                 len(cached), last_c_time or "None")
+    by_id: dict[str, dict] = {}
+    for t in cached:
+        pid = str(t.get("posId", "")).strip()
+        if not pid:
+            continue
+        by_id[pid] = t
 
-    new_raw = okx.get_positions_history(inst_type="SWAP", after=last_c_time, limit=100)
-    new_trades = []
-    for d in new_raw:
-        try:
-            new_trades.append({
-                "posId": d.get("posId"),
-                "instId": d.get("instId"),
-                "side": d.get("side"),
-                "sz": float(d.get("sz", 0) or 0),
-                "openAvgPx": float(d.get("openAvgPx", 0) or 0),
-                "closeAvgPx": float(d.get("closeAvgPx", 0) or 0),
-                "pnl": float(d.get("pnl", 0) or 0),
-                "cTime": int(d.get("cTime", 0) or 0),
-            })
-        except Exception as e:
-            logging.error("[BACKTEST] Lỗi parse history item %s: %s", d, e)
+    logging.info("[BACKTEST] Cache hiện tại trong sheet: %d trades.", len(by_id))
 
-    logging.info("[BACKTEST] Lịch sử mới lấy từ OKX: %d trades.", len(new_trades))
+    # 2) kéo thêm từ OKX (không dùng after nữa, chỉ lấy N lệnh gần nhất)
+    try:
+        raw = okx.get_positions_history(inst_type="SWAP", limit=1000)
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi get_positions_history: %s", e)
+        raw = []
 
-    # lưu thêm (đã có chống trùng trong append_bt_cache)
-    append_bt_cache(new_trades)
+    new_to_append = []
+    for d in raw:
+        pid = str(d.get("posId", "")).strip()
+        if not pid:
+            continue
 
-    # load lại toàn bộ cache để chắc chắn là sạch trùng
-    all_trades = load_bt_cache()
+        t = {
+            "posId": pid,
+            "instId": d.get("instId", ""),
+            "side": d.get("side", ""),              # long / short
+            "sz": safe_float(d.get("sz", 0)),
+            "openAvgPx": safe_float(d.get("openAvgPx", 0)),
+            "closeAvgPx": safe_float(d.get("closeAvgPx", 0)),
+            "pnl": safe_float(d.get("pnl", 0)),     # realized PnL USDT
+            "cTime": int(d.get("cTime", 0) or 0),
+        }
+
+        # nếu posId chưa có trong sheet → thêm mới
+        if pid not in by_id:
+            by_id[pid] = t
+            new_to_append.append(t)
+        else:
+            # nếu đã có thì update dữ liệu mới hơn
+            by_id[pid] = t
+
+    logging.info(
+        "[BACKTEST] Lịch sử mới lấy từ OKX: %d trades (sẽ append %d trade mới vào sheet).",
+        len(raw),
+        len(new_to_append),
+    )
+
+    # 3) append các lệnh hoàn toàn mới vào sheet
+    if new_to_append:
+        append_bt_cache(new_to_append)
+
+    # 4) list ALL trades sau khi merge
+    all_trades = list(by_id.values())
     logging.info("[BACKTEST] Tổng số trades dùng để BT ALL: %d", len(all_trades))
     return all_trades
-
 
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
     Trả về 3 đoạn text:
-      - msg_all     : [✅BT ALL] ...   -> ĐẾM TẤT CẢ LỆNH CÓ TRONG BT_TRADES_CACHE
-      - msg_today   : [✅BT TODAY] ... -> Chỉ lệnh đóng trong ngày hôm nay (giờ VN)
-      - msg_session : --- SESSION TODAY --- + 4 dòng [0-9], [9-15], [15-20], [20-24]
-    Dựa trên PnL REAL từ OKX (field 'pnl' trong BT_TRADES_CACHE).
+      - msg_all     : [✅BT ALL] thống kê TẤT CẢ lệnh trong BT_TRADES_CACHE
+      - msg_today   : [✅BT TODAY] chỉ các lệnh đóng hôm nay (theo giờ VN)
+      - msg_session : --- SESSION TODAY --- 4 phiên 0-9, 9-15, 15-20, 20-24
     """
-
     # Không có trade nào
     if not trades:
         msg_all = "[✅BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
@@ -1019,11 +1045,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         pnl_sum = 0.0
 
         for t in filtered:
-            try:
-                pnl = float(t.get("pnl", "0"))
-            except Exception:
-                pnl = 0.0
-
+            pnl = safe_float(t.get("pnl", 0))
             pnl_sum += pnl
             if pnl > 0:
                 tp += 1
@@ -1035,7 +1057,6 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         win = (tp / total * 100.0) if total > 0 else 0.0
         return total, tp, sl, even, pnl_sum, win
 
-    # Chuyển cTime/uTime -> datetime VN
     def get_vn_dt(t: dict):
         ctime_str = t.get("cTime") or t.get("uTime")
         if not ctime_str:
@@ -1059,28 +1080,28 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         if dt_vn.date() == today_date:
             trades_today.append((t, dt_vn))
 
-    # ============== ALL (TẤT CẢ LỆNH) ==================
-    total, tp, sl, even, pnl_sum, win = classify(trades)
+    # ==================   ALL   ==================
+    a_total, a_tp, a_sl, a_even, a_pnl, a_win = classify(trades)
 
     msg_all = (
-        f"[✅BT ALL] total={total} | "
-        f"TP={tp} SL={sl} OPEN={even} | "
-        f"win={win:.1f}% | "
-        f"PNL={pnl_sum:+.2f} USDT"
+        f"[✅BT ALL] total={a_total} | "
+        f"TP={a_tp} SL={a_sl} OPEN={a_even} | "
+        f"win={a_win:.1f}% | "
+        f"PNL={a_pnl:+.2f} USDT"
     )
 
-    # ============== TODAY (CHỈ NGÀY HÔM NAY) ==================
+    # ================== TODAY ==================
     only_today = [t for (t, _dt) in trades_today]
-    t_total, t_tp, t_sl, t_even, t_pnl_sum, t_win = classify(only_today)
+    t_total, t_tp, t_sl, t_even, t_pnl, t_win = classify(only_today)
 
     msg_today = (
         f"[✅BT TODAY] total={t_total} | "
         f"TP={t_tp} SL={t_sl} OPEN={t_even} | "
         f"win={t_win:.1f}% | "
-        f"PNL={t_pnl_sum:+.2f} USDT"
+        f"PNL={t_pnl:+.2f} USDT"
     )
 
-    # ==================== SESSION TODAY ====================
+    # ================== SESSION TODAY ==================
     sessions = [
         ("0-9",   0, 9),
         ("9-15",  9, 15),
@@ -1094,16 +1115,15 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
             t for (t, dt_vn) in trades_today
             if h_start <= dt_vn.hour < h_end
         ]
-        s_total, s_tp, s_sl, s_even, s_pnl_sum, s_win = classify(sess_trades)
+        s_total, s_tp, s_sl, s_even, s_pnl, s_win = classify(sess_trades)
         line = (
             f"[{label}] total={s_total} TP={s_tp} SL={s_sl} OPEN={s_even} "
-            f"win={s_win:.1f}% PNL={s_pnl_sum:+.2f} USDT"
+            f"win={s_win:.1f}% PNL={s_pnl:+.2f} USDT"
         )
         session_lines.append(line)
 
     msg_session = "\n".join(session_lines)
     return msg_all, msg_today, msg_session
-
 
 
 # (phần cũ load_history_from_drive / trade_cache vẫn giữ nguyên cho bot khác nếu cần)
