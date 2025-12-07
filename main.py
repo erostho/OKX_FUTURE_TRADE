@@ -810,14 +810,13 @@ def append_bt_cache(new_trades):
         if pos_id in existing_set:
             continue  # đã có trong cache
         existing_set.add(pos_id)
-
         rows.append([
             pos_id,
             t.get("instId", ""),
             t.get("side", ""),
             t.get("sz", ""),
-            t.get("openAvgPx", ""),
-            t.get("closeAvgPx", ""),
+            t.get("openPx")  or t.get("openAvgPx", ""),
+            t.get("closePx") or t.get("closeAvgPx", ""),
             t.get("pnl", ""),
             t.get("cTime", ""),
         ])
@@ -1027,7 +1026,7 @@ def load_real_trades_for_backtest(okx):
     for attempt in range(1, max_attempts + 1):
         try:
             raw = okx.get_positions_history(
-                instType="SWAP",
+                inst_Type="SWAP",
                 # after=None,   # nếu đang để after thì giữ nguyên, không quan trọng
                 limit=100,
             )
@@ -1176,9 +1175,8 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     # ==================   ALL   ==================
     a_total, a_tp, a_sl, a_even, a_pnl, a_win = classify(trades)
-
     msg_all = (
-        f"[✅BT ALL] total={a_total} | "
+        f"☑️ BT ALL | total={a_total} | "
         f"TP={a_tp} SL={a_sl} OPEN={a_even} | "
         f"win={a_win:.1f}% | "
         f"PNL={a_pnl:+.2f} USDT"
@@ -1189,7 +1187,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     t_total, t_tp, t_sl, t_even, t_pnl, t_win = classify(only_today)
 
     msg_today = (
-        f"[✅BT TODAY] total={t_total} | "
+        f"☑️ BT TODAY | total={t_total} | "
         f"TP={t_tp} SL={t_sl} OPEN={t_even} | "
         f"win={t_win:.1f}% | "
         f"PNL={t_pnl:+.2f} USDT"
@@ -1322,48 +1320,13 @@ def run_backtest_if_needed(okx: "OKXClient"):
     #if not is_backtest_time_vn():
         #logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
         #return
+    # 1) Lấy toàn bộ trades (cache cũ + history mới từ OKX)
+    trades = load_real_trades_for_backtest(okx)
 
-    # ============ BACKTEST FROM CACHE (KHÔNG DÙNG LỊCH SỬ OKX) ============
-    def backtest_from_cache():
-        trades = load_bt_trades_cache()   # mỗi phần tử là 1 lệnh FULL, đã đóng
-    
-        # ---- BT ALL ----
-        total_all = len(trades)
-        tp_all = sum(1 for t in trades if float(t.get("pnl", 0)) > 0)
-        sl_all = sum(1 for t in trades if float(t.get("pnl", 0)) < 0)
-        pnl_all = sum(float(t.get("pnl", 0)) for t in trades)
-        win_all = (tp_all / total_all) if total_all else 0
-    
-        # ---- BT TODAY ----
-        now_vn = datetime.utcnow() + timedelta(hours=7)
-        today = now_vn.strftime("%Y-%m-%d")
-        today_start = datetime.strptime(today + " 00:00:00", "%Y-%m-%d %H:%M:%S")
-        today_end = today_start + timedelta(days=1)
-    
-        trades_today = [
-            t for t in trades
-            if today_start.timestamp() * 1000 <= int(t.get("cTime", 0)) < today_end.timestamp() * 1000
-        ]
-    
-        total_today = len(trades_today)
-        tp_today = sum(1 for t in trades_today if float(t.get("pnl", 0)) > 0)
-        sl_today = sum(1 for t in trades_today if float(t.get("pnl", 0)) < 0)
-        pnl_today = sum(float(t.get("pnl", 0)) for t in trades_today)
-        win_today = (tp_today / total_today) if total_today else 0
-    
-        # FORMAT thông báo Telegram
-        msg_all = (
-            f"☑️ BT ALL | total={total_all} | TP={tp_all} SL={sl_all} | "
-            f"win={win_all*100:.1f}% | PNL={pnl_all:.2f} USDT"
-        )
-        msg_today = (
-            f"☑️ BT TODAY | total={total_today} | TP={tp_today} SL={sl_today} | "
-            f"win={win_today*100:.1f}% | PNL={pnl_today:.2f} USDT"
-        )
-        return msg_all, msg_today
-    # ==== THAY THẾ TRONG run_backtest_if_needed() ====
-    
-    msg_all, msg_today = backtest_from_cache()
+    # 2) Tóm tắt theo ALL / TODAY / SESSION (SESSION dùng sau nếu cần)
+    msg_all, msg_today, msg_session = summarize_real_backtest(trades)
+
+    # 3) Hiện tại chỉ gửi ALL + TODAY như hình Telegram
     send_telegram_message(msg_all + "\n" + msg_today)
 
 
