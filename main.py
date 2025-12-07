@@ -1010,7 +1010,43 @@ def check_session_circuit_breaker(okx) -> bool:
 
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
+def load_bt_trades_cache() -> list[dict]:
+    """
+    Đọc toàn bộ lệnh đã lưu trong sheet BT_TRADES_CACHE.
+    Mỗi dòng = 1 lệnh đã đóng (posId + instId + side + sz + openPx + closePx + pnl + cTime)
+    """
+    ws = get_worksheet("BT_TRADES_CACHE")  # dùng đúng helper đang dùng cho các sheet khác
 
+    rows = ws.get_all_records()  # list[dict]
+    trades: list[dict] = []
+
+    for r in rows:
+        try:
+            pos_id = str(r.get("posId") or r.get("posid") or "").strip()
+            if not pos_id:
+                continue  # bỏ dòng rác
+
+            inst_id = str(r.get("instId") or r.get("instid") or "").strip()
+            side = str(r.get("side") or "").upper()
+
+            trade = {
+                "posId": pos_id,
+                "instId": inst_id,
+                "side": side,
+                "sz": safe_float(r.get("sz", 0)),
+                "openAvgPx": safe_float(r.get("openPx") or r.get("openAvgPx") or 0),
+                "closePx": safe_float(r.get("closePx") or 0),
+                "pnl": safe_float(r.get("pnl") or 0),
+                # summarize_real_backtest dùng cTime/uTime để xác định ngày/giờ VN
+                "cTime": str(r.get("cTime") or r.get("ctime") or ""),
+            }
+            trades.append(trade)
+        except Exception as e:
+            logging.error("[BACKTEST] Lỗi parse dòng BT_TRADES_CACHE: %s | row=%s", e, r)
+
+    logging.info("[BACKTEST] Đọc được %d trades từ BT_TRADES_CACHE", len(trades))
+    return trades
+    
 def load_real_trades_for_backtest(okx):
     """
     Dùng REAL closed positions cho backtest.
@@ -1018,30 +1054,25 @@ def load_real_trades_for_backtest(okx):
     - Mỗi lần chạy luôn kéo cửa sổ ~1000 lệnh mới nhất từ OKX (positions-history).
     - Hợp nhất với cache BT_TRADES_CACHE, chỉ bỏ TRÙNG Y HỆT (cùng posId & cùng cTime).
     """
-
     # 1) Load cache cũ từ Google Sheets
-    cached = load_bt_cache()          # list[dict]
-    # key duy nhất = posId|cTime  (đảm bảo 1 lệnh đóng = 1 dòng)
-    existing_keys = set()
+    cached = load_bt_cache()        # list[dict]
 
+    # KEY duy nhất = posId + cTime để 1 posId có nhiều lệnh vẫn giữ hết
+    cached_keys = set()
     for t in cached:
         pid = str(t.get("posId") or "").strip()
-        try:
-            ctime = int(t.get("cTime") or 0)
-        except Exception:
-            ctime = 0
-
+        ctime = str(t.get("cTime") or "").strip()
         if pid and ctime:
-            existing_keys.add(f"{pid}|{ctime}")
+            cached_keys.add(f"{pid}_{ctime}")
 
     logging.info(
-        "[BACKTEST] Cache hiện tại: %d records, distinct keys=%d",
+        "[BACKTEST] Cache hiện tại: %d trades, distinct key=%d",
         len(cached),
-        len(existing_keys),
+        len(cached_keys),
     )
 
-    # 2) Kéo history mới nhất từ OKX, retry nhiều lần
-    all_raw_by_key = {}   # key = f"{posId}|{cTime}" -> raw dict
+    # 2) Kéo cửa sổ history mới nhất từ OKX, retry nhiều lần
+    all_raw = []          # GIỮ HẾT mọi dòng history, không gộp theo posId
     max_attempts = 3
     delay_sec = 10
 
@@ -1049,8 +1080,8 @@ def load_real_trades_for_backtest(okx):
         try:
             raw = okx.get_positions_history(
                 instType="SWAP",
-                after=None,          # KHÔNG dùng last_c_time nữa
-                limit=100,           # giới hạn mặc định ~100
+                # after=None,   # nếu đang để after thì giữ nguyên, không quan trọng
+                limit=100,
             )
         except Exception as e:
             logging.error(
@@ -1064,23 +1095,12 @@ def load_real_trades_for_backtest(okx):
                 "[BACKTEST] Lần %d lấy được %d dòng history từ OKX.",
                 attempt, len(raw),
             )
+            # GIỮ HẾT, không gộp
             for d in raw:
                 pid = d.get("posId")
                 if not pid:
                     continue
-                try:
-                    ctime = int(d.get("cTime") or 0)
-                except Exception:
-                    ctime = 0
-
-                if not ctime:
-                    continue
-
-                key = f"{pid}|{ctime}"
-
-                # nếu trùng key y hệt (cùng posId + cTime) trong lần fetch này thì giữ bản mới nhất
-                all_raw_by_key[key] = d
-
+                all_raw.append(d)
         else:
             logging.info(
                 "[BACKTEST] Lần %d không nhận được dữ liệu history từ OKX.",
@@ -1094,37 +1114,41 @@ def load_real_trades_for_backtest(okx):
             )
             time.sleep(delay_sec)
 
-    logging.info(
-        "[BACKTEST] Tổng số history raw (distinct posId|cTime) lấy được: %d",
-        len(all_raw_by_key),
-    )
+    logging.info("[BACKTEST] Tổng %d dòng history thô lấy từ OKX.", len(all_raw))
 
-    # 3) Parse thành trades mới, CHỈ bỏ những lệnh đã có trong cache
+    # 3) Parse thành trades mới, chỉ bỏ các dòng đã có trong BT_TRADES_CACHE
     new_trades = []
-    for key, d in all_raw_by_key.items():
-        if key in existing_keys:
-            continue  # lệnh này đã có trong BT_TRADES_CACHE rồi
 
-        pid = d.get("posId")
+    for d in all_raw:
+        pid = str(d.get("posId") or "").strip()
+        ctime_str = str(d.get("cTime") or d.get("uTime") or "").strip()
+
+        if not pid or not ctime_str:
+            continue
+
+        key = f"{pid}_{ctime_str}"
+        if key in cached_keys:
+            # đã lưu lệnh này vào BT_TRADES_CACHE rồi
+            continue
 
         try:
             new_trades.append(
                 {
                     "posId": pid,
                     "instId": d.get("instId"),
-                    "side": d.get("side"),  # long / short
-                    "sz": float(d.get("sz") or 0) or 0,
-                    "openAvgPx": float(d.get("openAvgPx") or 0) or 0,
-                    "closePx": float(d.get("closeAvgPx") or d.get("closePx") or 0) or 0,
-                    "pnl": float(d.get("pnl") or 0) or 0,
-                    "cTime": int(d.get("cTime") or 0) or 0,
+                    "side": d.get("side"),
+                    "sz": float(d.get("sz") or 0),
+                    "openPx": float(d.get("openAvgPx") or d.get("avgPx") or 0),
+                    "closePx": float(d.get("closePx") or 0),
+                    "pnl": float(d.get("pnl") or 0),
+                    "cTime": ctime_str,   # dùng làm phần còn lại của key
                 }
             )
         except Exception as e:
             logging.error("[BACKTEST] Lỗi parse history item %s: %s", d, e)
 
     logging.info(
-        "[BACKTEST] new_trades sau khi loại trùng posId|cTime: %d",
+        "[BACKTEST] new_trades sau khi loại trùng key (posId+cTime): %d",
         len(new_trades),
     )
 
@@ -1134,7 +1158,7 @@ def load_real_trades_for_backtest(okx):
     # 5) Dữ liệu đầy đủ để backtest = cache cũ + trade mới
     all_trades = cached + new_trades
     logging.info(
-        "[BACKTEST] Tổng số trades dùng để BT ALL (cache + mới): %d",
+        "[BACKTEST] Tổng %d trades dùng để BT ALL (cache + mới).",
         len(all_trades),
     )
     return all_trades
