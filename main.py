@@ -41,11 +41,11 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 2.5   # chỉ bật TP động khi lãi >= 2.5%
+TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 2.5%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
-TP_DYN_VOL_DROP_RATIO   = 0.5   # vol hiện tại < 50% avg 10 nến -> yếu
-TP_DYN_EMA_LEN          = 5     # EMA-5
-TP_DYN_FLAT_BARS        = 2     # số nến 5m đi ngang trước khi thoát
+TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
+TP_DYN_EMA_LEN          = 8     # EMA-8
+TP_DYN_FLAT_BARS        = 3     # số nến 5m đi ngang trước khi thoát
 TP_DYN_ENGULF           = True  # bật thoát khi có engulfing
 TP_DYN_VOL_DROP         = True  # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH        = True  # bật thoát khi chạm EMA5
@@ -2680,10 +2680,10 @@ def run_dynamic_tp(okx: "OKXClient"):
         market_regime = "UNKNOWN"
 
     # --- CONFIG CHO TP TRAILING ---
-    # đã từng đạt PnL >= 5% mới bắt đầu trailing
-    TP_TRAIL_START_PNL_PCT = 5.0
+    # đã từng đạt PnL >= 8% mới bắt đầu trailing
+    TP_TRAIL_START_PNL_PCT = 8.0
     # nếu đã từng >=5% mà giờ tụt về <= 0% thì chốt (không cho quay lại lỗ)
-    TP_TRAIL_EXIT_PNL_PCT = 3.0
+    TP_TRAIL_EXIT_PNL_PCT = 4.0
     # dùng toàn bộ 30 nến 5m hiện tại làm cửa sổ quan sát high/low PnL
     TP_TRAIL_LOOKBACK_BARS = 30
 
