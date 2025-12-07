@@ -630,7 +630,30 @@ class OKXClient:
 
 
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
+def load_bt_trades_cache() -> list[dict]:
+    """
+    Đọc toàn bộ dữ liệu backtest từ sheet BT_TRADES_CACHE.
+    Mỗi dòng = 1 lệnh đã đóng (posId, instId, side, sz, openPx, closePx, pnl, cTime, ...)
+    """
+    ws = get_ws("BT_TRADES_CACHE")
+    rows = ws.get_all_records()   # mỗi phần tử là 1 dict
 
+    # Không cần parse phức tạp, chỉ chuẩn hóa nhẹ để summarize_real_backtest dùng được
+    trades: list[dict] = []
+    for r in rows:
+        d = dict(r)
+        # chuẩn hóa key cho chắc ăn
+        d["instId"] = d.get("instId") or d.get("instID") or ""
+        d["pnl"] = safe_float(d.get("pnl", 0))
+        # cTime là timestamp ms; nếu thiếu thì để 0
+        try:
+            d["cTime"] = int(d.get("cTime", 0))
+        except Exception:
+            d["cTime"] = 0
+        trades.append(d)
+
+    logging.info("[BT-CACHE] Đọc %d lệnh từ BT_TRADES_CACHE", len(trades))
+    return trades
 def load_trade_cache():
     if not os.path.exists(CACHE_FILE):
         return []
