@@ -632,40 +632,62 @@ class OKXClient:
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
 def load_bt_trades_cache() -> list[dict]:
     """
-    Đọc toàn bộ lệnh FULL đã backtest từ sheet BT_TRADES_CACHE.
-    Mỗi dòng = 1 lệnh đã đóng hoàn toàn (FULL), đã có pnl & cTime.
+    Đọc toàn bộ sheet BT_TRADES_CACHE.
+    Mỗi dòng = 1 lệnh FULL đã đóng (KHÔNG gộp posId).
+    Dùng cho backtest_from_cache().
     """
-    # mở file Google Sheet
-    sh = gc.open_by_key(SPREADSHEET_ID)
-    ws = sh.worksheet("BT_TRADES_CACHE")
+    logging.info("[BACKTEST] Đọc BT_TRADES_CACHE từ Google Sheets...")
 
-    rows = ws.get_all_records()  # list[dict]
+    try:
+        # Tự tạo client gspread, KHÔNG phụ thuộc biến gc ở ngoài
+        sa_info = json.loads(os.environ["GSPREAD_SERVICE_ACCOUNT"])
+        client = gspread.service_account_from_dict(sa_info)
+        sh = client.open_by_key(SPREADSHEET_ID)
+        ws = sh.worksheet("BT_TRADES_CACHE")
+    except Exception as e:
+        logging.error("[BACKTEST] Không mở được sheet BT_TRADES_CACHE: %s", e)
+        return []
 
-    trades = []
+    try:
+        rows = ws.get_all_records()  # list[dict]
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi get_all_records BT_TRADES_CACHE: %s", e)
+        return []
+
+    trades: list[dict] = []
+
     for r in rows:
         try:
-            pnl = float(r.get("pnl", 0) or 0)
-        except Exception:
-            pnl = 0.0
+            pos_id = str(r.get("posId") or r.get("posid") or "").strip()
+            inst_id = str(r.get("instId") or r.get("instid") or "").strip()
+            side = (r.get("side") or "").strip()
 
-        try:
-            close_ts = int(r.get("cTime", 0) or 0)  # mili-seconds
-        except Exception:
-            close_ts = 0
+            sz = safe_float(r.get("sz") or 0)
+            open_px = safe_float(r.get("openPx") or r.get("openAvgPx") or 0)
+            close_px = safe_float(r.get("closePx") or r.get("avgPx") or 0)
+            pnl = safe_float(r.get("pnl") or 0)
 
-        trades.append(
-            {
-                "posId": str(r.get("posId") or r.get("posId".lower()) or "").strip(),
-                "instId": str(r.get("instId") or r.get("instId".lower()) or "").strip(),
-                "side": str(r.get("side") or "").strip(),
-                "sz": float(r.get("sz", 0) or 0),
-                "openAvgPx": float(r.get("openAvgPx", 0) or 0),
-                "closePx": float(r.get("closePx", 0) or 0),
-                "pnl": pnl,
-                "cTime": close_ts,
-            }
-        )
+            try:
+                ctime = int(r.get("cTime") or r.get("ctime") or 0)
+            except Exception:
+                ctime = 0
 
+            trades.append(
+                {
+                    "posId": pos_id,
+                    "instId": inst_id,
+                    "side": side,
+                    "sz": sz,
+                    "openAvgPx": open_px,
+                    "closePx": close_px,
+                    "pnl": pnl,
+                    "cTime": ctime,  # summarize_real_backtest sẽ dùng để suy ra giờ VN
+                }
+            )
+        except Exception as e:
+            logging.error("[BACKTEST] Lỗi parse dòng BT_TRADES_CACHE %s: %s", r, e)
+
+    logging.info("[BACKTEST] Đọc xong BT_TRADES_CACHE: %d lệnh", len(trades))
     return trades
     
 def load_trade_cache():
