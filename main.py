@@ -1030,8 +1030,8 @@ def load_real_trades_for_backtest(okx):
 
     # 2) Kéo cửa sổ history mới nhất từ OKX, retry nhiều lần
     all_raw = []          # GIỮ HẾT mọi dòng history, không gộp theo posId
-    max_attempts = 10
-    delay_sec = 10
+    max_attempts = 20
+    delay_sec = 5
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1198,8 +1198,8 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     # ==================   ALL   ==================
     a_total, a_tp, a_sl, a_even, a_pnl, a_win = classify(trades)
     msg_all = (
-        f"☑️ BT ALL | total={a_total} | "
-        f"TP={a_tp} SL={a_sl} OPEN={a_even} | "
+        f"✅ BT ALL | total={a_total} | "
+        f"TP={a_tp} SL={a_sl} | "
         f"win={a_win:.1f}% | "
         f"PNL={a_pnl:+.2f} USDT"
     )
@@ -1209,8 +1209,8 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     t_total, t_tp, t_sl, t_even, t_pnl, t_win = classify(only_today)
 
     msg_today = (
-        f"☑️ BT TODAY | total={t_total} | "
-        f"TP={t_tp} SL={t_sl} OPEN={t_even} | "
+        f"✅ BT TODAY | total={t_total} | "
+        f"TP={t_tp} SL={t_sl}| "
         f"win={t_win:.1f}% | "
         f"PNL={t_pnl:+.2f} USDT"
     )
@@ -1231,7 +1231,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         ]
         s_total, s_tp, s_sl, s_even, s_pnl, s_win = classify(sess_trades)
         line = (
-            f"[{label}] total={s_total} TP={s_tp} SL={s_sl} OPEN={s_even} "
+            f"[{label}] total={s_total} TP={s_tp} SL={s_sl} "
             f"win={s_win:.1f}% PNL={s_pnl:+.2f} USDT"
         )
         session_lines.append(line)
@@ -1348,8 +1348,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
     # 2) Tóm tắt theo ALL / TODAY / SESSION (SESSION dùng sau nếu cần)
     msg_all, msg_today, msg_session = summarize_real_backtest(trades)
 
-    # 3) Hiện tại chỉ gửi ALL + TODAY như hình Telegram
-    send_telegram_message(msg_all + "\n" + msg_today)
+    # 3) Gửi 3 block như bản minh hoạ
+    text = msg_all + "\n" + msg_today + "\n\n" + msg_session
+    send_telegram_message(text)
 
 
 # ================= GOOGLE SHEETS KHÁC, DRIVE, TELEGRAM, SCANNER, TP DYNAMIC, v.v.
