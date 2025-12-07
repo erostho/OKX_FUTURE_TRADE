@@ -1030,8 +1030,8 @@ def load_real_trades_for_backtest(okx):
 
     # 2) Kéo cửa sổ history mới nhất từ OKX, retry nhiều lần
     all_raw = []          # GIỮ HẾT mọi dòng history, không gộp theo posId
-    max_attempts = 20
-    delay_sec = 5
+    max_attempts = 5
+    delay_sec = 10
 
     for attempt in range(1, max_attempts + 1):
         try:
@@ -1339,9 +1339,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
-    #if not is_backtest_time_vn():
-        #logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
-        #return
+    if not is_backtest_time_vn():
+        logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
+        return
     # 1) Lấy toàn bộ trades (cache cũ + history mới từ OKX)
     trades = load_real_trades_for_backtest(okx)
 
@@ -1548,9 +1548,9 @@ def append_trade_to_drive(trade: dict):
 
 def send_telegram_message(text):
     # 1. Tắt thông báo trong khung giờ 22h–06h (giờ VN)
-    #if is_quiet_hours_vn():
-        #logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
-        #return
+    if is_quiet_hours_vn():
+        logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
+        return
 
     # 2. Gửi như bình thường ngoài khung giờ trên
     token = os.getenv("TELEGRAM_BOT_TOKEN")
