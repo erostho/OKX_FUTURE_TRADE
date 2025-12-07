@@ -1782,15 +1782,16 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 if not (c_now < ema9_5m and c_now < ema20_15m):
                     continue
 
-        # ===== ENTRY PULLBACK: mid-body + EMA5 5m =====
+        # ===== ENTRY PULLBACK: mid-body + EMA5 5m + yêu cầu hồi tối thiểu =====
         mid_body = (o5_now + c5_now) / 2.0
         ema5_5m = calc_ema(closes_5[-8:], 5) if len(closes_5) >= 6 else None
 
+        # 1) Entry cơ bản: giống bản cũ (mid-body + EMA5)
         if ema5_5m:
             if direction == "LONG":
                 desired = max(mid_body, ema5_5m)
                 entry_pullback = min(c5_now, desired)
-            else:
+            else:  # SHORT
                 desired = min(mid_body, ema5_5m)
                 entry_pullback = max(c5_now, desired)
         else:
@@ -1800,8 +1801,49 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             else:
                 entry_pullback = max(c5_now, mid_body)
 
+        # 2) Ước lượng ATR 15m để bắt buộc pullback tối thiểu
+        atr15 = None
+        try:
+            trs = []
+            prev_close_15 = safe_float(c15_sorted[0][4])
+            for k in c15_sorted[1:]:
+                high15 = safe_float(k[2])
+                low15  = safe_float(k[3])
+                close15 = safe_float(k[4])
+                tr = max(
+                    high15 - low15,
+                    abs(high15 - prev_close_15),
+                    abs(low15 - prev_close_15),
+                )
+                trs.append(tr)
+                prev_close_15 = close15
+
+            if trs:
+                use_n = min(len(trs), ATR_PERIOD_PULLBACK)
+                atr15 = sum(trs[-use_n:]) / use_n
+        except Exception as e:
+            logging.warning("[PULLBACK] Lỗi tính ATR15 cho %s: %s", inst_id, e)
+            atr15 = None
+
+        # 3) Tính khoảng hồi tối thiểu cần thiết
+        pullback_abs_pct = PULLBACK_MIN_PCT / 100.0 * c5_now
+        pullback_abs_atr = PULLBACK_ATR_FACTOR * atr15 if atr15 and atr15 > 0 else 0.0
+        min_pullback_abs = max(pullback_abs_pct, pullback_abs_atr)
+
+        if min_pullback_abs > 0:
+            if direction == "LONG":
+                # Entry ảo phải thấp hơn close hiện tại ít nhất min_pullback_abs
+                target_entry = c5_now - min_pullback_abs
+                entry_pullback = min(entry_pullback, target_entry)
+            else:  # SHORT
+                # Entry ảo phải cao hơn close hiện tại ít nhất min_pullback_abs
+                target_entry = c5_now + min_pullback_abs
+                entry_pullback = max(entry_pullback, target_entry)
+
+        # 4) An toàn: không để entry_pullback <= 0
         if entry_pullback <= 0:
             entry_pullback = last_price
+
 
         # ===== score giống V1 (giữ nguyên) =====
         score = (
