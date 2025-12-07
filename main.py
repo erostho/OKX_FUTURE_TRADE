@@ -1026,7 +1026,7 @@ def load_real_trades_for_backtest(okx):
     for attempt in range(1, max_attempts + 1):
         try:
             raw = okx.get_positions_history(
-                inst_Type="SWAP",
+                inst_type="SWAP",
                 # after=None,   # nếu đang để after thì giữ nguyên, không quan trọng
                 limit=100,
             )
