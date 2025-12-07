@@ -630,65 +630,6 @@ class OKXClient:
 
 
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
-def load_bt_trades_cache() -> list[dict]:
-    """
-    Đọc toàn bộ sheet BT_TRADES_CACHE.
-    Mỗi dòng = 1 lệnh FULL đã đóng (KHÔNG gộp posId).
-    Dùng cho backtest_from_cache().
-    """
-    logging.info("[BACKTEST] Đọc BT_TRADES_CACHE từ Google Sheets...")
-
-    try:
-        # Tự tạo client gspread, KHÔNG phụ thuộc biến gc ở ngoài
-        sa_info = json.loads(os.environ["GSPREAD_SERVICE_ACCOUNT"])
-        client = gspread.service_account_from_dict(sa_info)
-        sh = client.open_by_key(SPREADSHEET_ID)
-        ws = sh.worksheet("BT_TRADES_CACHE")
-    except Exception as e:
-        logging.error("[BACKTEST] Không mở được sheet BT_TRADES_CACHE: %s", e)
-        return []
-
-    try:
-        rows = ws.get_all_records()  # list[dict]
-    except Exception as e:
-        logging.error("[BACKTEST] Lỗi get_all_records BT_TRADES_CACHE: %s", e)
-        return []
-
-    trades: list[dict] = []
-
-    for r in rows:
-        try:
-            pos_id = str(r.get("posId") or r.get("posid") or "").strip()
-            inst_id = str(r.get("instId") or r.get("instid") or "").strip()
-            side = (r.get("side") or "").strip()
-
-            sz = safe_float(r.get("sz") or 0)
-            open_px = safe_float(r.get("openPx") or r.get("openAvgPx") or 0)
-            close_px = safe_float(r.get("closePx") or r.get("avgPx") or 0)
-            pnl = safe_float(r.get("pnl") or 0)
-
-            try:
-                ctime = int(r.get("cTime") or r.get("ctime") or 0)
-            except Exception:
-                ctime = 0
-
-            trades.append(
-                {
-                    "posId": pos_id,
-                    "instId": inst_id,
-                    "side": side,
-                    "sz": sz,
-                    "openAvgPx": open_px,
-                    "closePx": close_px,
-                    "pnl": pnl,
-                    "cTime": ctime,  # summarize_real_backtest sẽ dùng để suy ra giờ VN
-                }
-            )
-        except Exception as e:
-            logging.error("[BACKTEST] Lỗi parse dòng BT_TRADES_CACHE %s: %s", r, e)
-
-    logging.info("[BACKTEST] Đọc xong BT_TRADES_CACHE: %d lệnh", len(trades))
-    return trades
     
 def load_trade_cache():
     if not os.path.exists(CACHE_FILE):
@@ -1008,16 +949,24 @@ def check_session_circuit_breaker(okx) -> bool:
     logging.info("[SESSION] Circuit breaker OK -> tiếp tục cho phép mở lệnh.")
     return True
 
-
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
 def load_bt_trades_cache() -> list[dict]:
     """
     Đọc toàn bộ lệnh đã lưu trong sheet BT_TRADES_CACHE.
     Mỗi dòng = 1 lệnh đã đóng (posId + instId + side + sz + openPx + closePx + pnl + cTime)
     """
-    ws = get_bt_cache_worksheet("BT_TRADES_CACHE")  # dùng đúng helper đang dùng cho các sheet khác
+    # ⚠️ get_bt_cache_worksheet KHÔNG nhận tham số -> KHÔNG truyền "BT_TRADES_CACHE" vào
+    ws = get_bt_cache_worksheet()
+    if not ws:
+        logging.error("[BACKTEST] Không lấy được worksheet BT_TRADES_CACHE.")
+        return []
 
-    rows = ws.get_all_records()  # list[dict]
+    try:
+        rows = ws.get_all_records()  # list[dict]
+    except Exception as e:
+        logging.error("[BACKTEST] Lỗi get_all_records BT_TRADES_CACHE: %s", e)
+        return []
+
     trades: list[dict] = []
 
     for r in rows:
@@ -1046,7 +995,6 @@ def load_bt_trades_cache() -> list[dict]:
 
     logging.info("[BACKTEST] Đọc được %d trades từ BT_TRADES_CACHE", len(trades))
     return trades
-    
 def load_real_trades_for_backtest(okx):
     """
     Dùng REAL closed positions cho backtest.
