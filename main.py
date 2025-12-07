@@ -632,28 +632,42 @@ class OKXClient:
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
 def load_bt_trades_cache() -> list[dict]:
     """
-    Đọc toàn bộ dữ liệu backtest từ sheet BT_TRADES_CACHE.
-    Mỗi dòng = 1 lệnh đã đóng (posId, instId, side, sz, openPx, closePx, pnl, cTime, ...)
+    Đọc toàn bộ lệnh FULL đã backtest từ sheet BT_TRADES_CACHE.
+    Mỗi dòng = 1 lệnh đã đóng hoàn toàn (FULL), đã có pnl & cTime.
     """
-    ws = get_ws("BT_TRADES_CACHE")
-    rows = ws.get_all_records()   # mỗi phần tử là 1 dict
+    # mở file Google Sheet
+    sh = gc.open_by_key(SPREADSHEET_ID)
+    ws = sh.worksheet("BT_TRADES_CACHE")
 
-    # Không cần parse phức tạp, chỉ chuẩn hóa nhẹ để summarize_real_backtest dùng được
-    trades: list[dict] = []
+    rows = ws.get_all_records()  # list[dict]
+
+    trades = []
     for r in rows:
-        d = dict(r)
-        # chuẩn hóa key cho chắc ăn
-        d["instId"] = d.get("instId") or d.get("instID") or ""
-        d["pnl"] = safe_float(d.get("pnl", 0))
-        # cTime là timestamp ms; nếu thiếu thì để 0
         try:
-            d["cTime"] = int(d.get("cTime", 0))
+            pnl = float(r.get("pnl", 0) or 0)
         except Exception:
-            d["cTime"] = 0
-        trades.append(d)
+            pnl = 0.0
 
-    logging.info("[BT-CACHE] Đọc %d lệnh từ BT_TRADES_CACHE", len(trades))
+        try:
+            close_ts = int(r.get("cTime", 0) or 0)  # mili-seconds
+        except Exception:
+            close_ts = 0
+
+        trades.append(
+            {
+                "posId": str(r.get("posId") or r.get("posId".lower()) or "").strip(),
+                "instId": str(r.get("instId") or r.get("instId".lower()) or "").strip(),
+                "side": str(r.get("side") or "").strip(),
+                "sz": float(r.get("sz", 0) or 0),
+                "openAvgPx": float(r.get("openAvgPx", 0) or 0),
+                "closePx": float(r.get("closePx", 0) or 0),
+                "pnl": pnl,
+                "cTime": close_ts,
+            }
+        )
+
     return trades
+    
 def load_trade_cache():
     if not os.path.exists(CACHE_FILE):
         return []
