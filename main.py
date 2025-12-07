@@ -1235,9 +1235,9 @@ def run_backtest_if_needed(okx: "OKXClient"):
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
-    #if not is_backtest_time_vn():
-        #logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
-        #return
+    if not is_backtest_time_vn():
+        logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
+        return
     # 1) Lấy toàn bộ trades (cache cũ + history mới từ OKX)
     trades = load_real_trades_for_backtest(okx)
 
@@ -1444,9 +1444,9 @@ def append_trade_to_drive(trade: dict):
 
 def send_telegram_message(text):
     # 1. Tắt thông báo trong khung giờ 23h–06h (giờ VN)
-    #if is_quiet_hours_vn():
-        #logging.info("[INFO] Quiet hours (23h–06h VN), skip Telegram.")
-        #return
+    if is_quiet_hours_vn():
+        logging.info("[INFO] Quiet hours (23h–06h VN), skip Telegram.")
+        return
 
     # 2. Gửi như bình thường ngoài khung giờ trên
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -3098,15 +3098,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    run_full_bot(okx)
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    #if minute % 15 == 5:
-        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        #run_full_bot(okx)
-    #else:
-        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    if minute % 15 == 5:
+        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        run_full_bot(okx)
+    else:
+        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
