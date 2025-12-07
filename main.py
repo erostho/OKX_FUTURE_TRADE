@@ -1020,7 +1020,7 @@ def load_real_trades_for_backtest(okx):
 
     # 2) Kéo cửa sổ history mới nhất từ OKX, retry nhiều lần
     all_raw = []          # GIỮ HẾT mọi dòng history, không gộp theo posId
-    max_attempts = 3
+    max_attempts = 10
     delay_sec = 10
 
     for attempt in range(1, max_attempts + 1):
