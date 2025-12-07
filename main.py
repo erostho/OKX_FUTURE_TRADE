@@ -1015,7 +1015,7 @@ def load_bt_trades_cache() -> list[dict]:
     Đọc toàn bộ lệnh đã lưu trong sheet BT_TRADES_CACHE.
     Mỗi dòng = 1 lệnh đã đóng (posId + instId + side + sz + openPx + closePx + pnl + cTime)
     """
-    ws = get_worksheet("BT_TRADES_CACHE")  # dùng đúng helper đang dùng cho các sheet khác
+    ws = get_bt_cache_worksheet("BT_TRADES_CACHE")  # dùng đúng helper đang dùng cho các sheet khác
 
     rows = ws.get_all_records()  # list[dict]
     trades: list[dict] = []
