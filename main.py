@@ -774,18 +774,17 @@ def load_bt_cache():
                 "openAvgPx":  float(r.get("openPx", 0) or 0),
                 "closeAvgPx": float(r.get("closePx", 0) or 0),
                 "pnl":        float(r.get("pnl", 0) or 0),
-                "cTime":      int(r.get("cTime", 0) or 0),
+                "cTime":      str(r.get("cTime", 0) or 0),
             })
         except Exception as e:
             logging.error("[BT-CACHE] Lỗi parse row %s: %s", r, e)
 
     logging.info("[BT-CACHE] Load cache: %d trades.", len(trades))
     return trades
-
-
 def append_bt_cache(new_trades):
     """
-    Append thêm các lệnh mới vào sheet cache, CHỐNG TRÙNG bằng posId.
+    Append thêm các lệnh mới vào sheet cache.
+    CHỐNG TRÙNG theo key (posId + cTime) đúng như logic backtest.
     """
     if not new_trades:
         return
@@ -794,22 +793,34 @@ def append_bt_cache(new_trades):
     if not ws:
         return
 
-    # lấy toàn bộ posId đã có (cột A, bỏ header)
+    # Đọc toàn bộ posId + cTime đã có trong sheet
     try:
-        existing_pos_ids = ws.col_values(1)[1:]
-    except Exception:
-        existing_pos_ids = []
-    existing_set = set(str(x) for x in existing_pos_ids if x)
+        values = ws.get_all_values()
+        existing_keys = set()
+        if values and len(values) > 1:
+            for row in values[1:]:
+                # row: [posId, instId, side, sz, openPx, closePx, pnl, cTime]
+                pos_id = (row[0] if len(row) > 0 else "").strip()
+                ctime  = (row[7] if len(row) > 7 else "").strip()
+                if pos_id and ctime:
+                    existing_keys.add(f"{pos_id}_{ctime}")
+    except Exception as e:
+        logging.error("[BT-CACHE] Lỗi đọc cache hiện có: %s", e)
+        existing_keys = set()
 
     rows = []
     added = 0
     for t in new_trades:
-        pos_id = str(t.get("posId", "") or "")
-        if not pos_id:
+        pos_id = str(t.get("posId", "") or "").strip()
+        ctime  = str(t.get("cTime", "") or "").strip()
+        if not pos_id or not ctime:
             continue
-        if pos_id in existing_set:
-            continue  # đã có trong cache
-        existing_set.add(pos_id)
+
+        key = f"{pos_id}_{ctime}"
+        if key in existing_keys:
+            continue  # đã có trong sheet
+        existing_keys.add(key)
+
         rows.append([
             pos_id,
             t.get("instId", ""),
@@ -818,14 +829,13 @@ def append_bt_cache(new_trades):
             t.get("openPx")  or t.get("openAvgPx", ""),
             t.get("closePx") or t.get("closeAvgPx", ""),
             t.get("pnl", ""),
-            t.get("cTime", ""),
+            ctime,
         ])
         added += 1
 
     if rows:
         ws.append_rows(rows, value_input_option="RAW")
     logging.info("[BT-CACHE] Append %d trades mới vào cache.", added)
-
 
 # ======= SESSION STATE (circuit breaker) TIẾP =======
 
@@ -1102,10 +1112,22 @@ def load_real_trades_for_backtest(okx):
     # 4) Lưu thêm vào sheet cache
     append_bt_cache(new_trades)
 
-    # 5) Dữ liệu đầy đủ để backtest = cache cũ + trade mới
+    # 5) Hợp nhất cache cũ + trade mới rồi LOẠI TRÙNG theo (posId+cTime)
     all_trades = cached + new_trades
+
+    unique = {}
+    for t in all_trades:
+        pid = str(t.get("posId") or "").strip()
+        ctime = str(t.get("cTime") or "").strip()
+        if not pid or not ctime:
+            continue
+        key = f"{pid}_{ctime}"
+        if key not in unique:
+            unique[key] = t
+
+    all_trades = list(unique.values())
     logging.info(
-        "[BACKTEST] Tổng %d trades dùng để BT ALL (cache + mới).",
+        "[BACKTEST] Tổng %d trades dùng để BT ALL sau khi loại trùng key (posId+cTime).",
         len(all_trades),
     )
     return all_trades
