@@ -41,7 +41,7 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 2.5%
+TP_DYN_MIN_PROFIT_PCT   = 5.0   # chỉ bật TP động khi lãi >= 2.5%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
 TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 8     # EMA-8
@@ -62,7 +62,7 @@ SL_DYN_TREND_PCT = 1.0       # 1%/15m đi ngược chiều thì coi là mạnh
 SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
 # SL planned tối đa (khi đặt TP/SL ban đầu)
-MAX_PLANNED_SL_PNL_PCT = 10.0   # cho phép lỗ tối đa 10% PnL nếu chạm SL
+MAX_PLANNED_SL_PNL_PCT = 7.0   # cho phép lỗ tối đa 7% PnL nếu chạm SL
 # SL khẩn cấp theo PnL%
 MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 
@@ -78,8 +78,13 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0     # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 
+# ==== PULLBACK ENTRY CONFIG ====
+PULLBACK_MIN_PCT      = 0.5   # yêu cầu hồi tối thiểu 0.5% giá
+PULLBACK_ATR_FACTOR   = 0.3   # hoặc 0.3 * ATR 15m, lấy max hai cái
+ATR_PERIOD_PULLBACK   = 14    # số nến 15m dùng để ước lượng ATR cho pullback
+
 # ================== HELPERS CHUNG ==================
-# =========================
+
 #  BT ALL CACHE -> GOOGLE SHEETS
 #  - Dùng env: GOOGLE_SERVICE_ACCOUNT_JSON, BT_SHEET_ID
 #  - Lưu 1 dòng duy nhất BT_ALL (cộng dồn)
@@ -2390,8 +2395,8 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     risk = 1.1 * atr
     risk_pct = risk / entry
     # kẹp risk_pct để tránh quá bé / quá to
-    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
-    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
+    MIN_RISK_PCT = 0.007   # 0.7% giá (≈ -3% PnL với x5)
+    MAX_RISK_PCT = 0.05    # 5% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
 
     risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
 
@@ -2406,7 +2411,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     if regime == "GOOD":
         RR = 2.0      # ăn dày khi thị trường đẹp
     else:
-        RR = 1.0      # thị trường xấu → scalp RR 1:1 an toàn
+        RR = 1.4      # thị trường xấu → scalp RR 1:1 an toàn
 
     if direction.upper() == "LONG":
         sl = entry - risk
@@ -2847,7 +2852,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             tp_dyn_threshold = 3.0  # deadzone: ăn ngắn
         else:
             if market_regime == "BAD":
-                tp_dyn_threshold = 2.5   # thị trường xấu → ăn ngắn hơn
+                tp_dyn_threshold = 4.0   # thị trường xấu → ăn ngắn hơn
             else:
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 5%)
 
