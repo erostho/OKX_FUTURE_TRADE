@@ -553,13 +553,14 @@ class OKXClient:
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX OCO RESP] %s", data)
         return data
+
     def get_algo_list(self, inst_id=None, ord_type=None, state=None, limit=None):
         """
-        Lấy danh sách algo order đang PENDING (bao gồm OCO TP/SL, trailing...).
+        Lấy danh sách algo order đang pending.
 
-        - inst_id: lọc theo symbol, ví dụ 'BTC-USDT-SWAP'
-        - ord_type: 'oco', 'trigger', 'move_order_stop', ...
-        - state: 'live', 'effective', ...
+        - inst_id: 'BTC-USDT-SWAP'...
+        - ord_type: 'oco', 'trigger', 'move_order_stop',...
+        - state: 'live', 'effective',...
         """
         path = "/api/v5/trade/orders-algo-pending"
 
@@ -574,11 +575,32 @@ class OKXClient:
             params["limit"] = str(limit)
 
         resp = self._request("GET", path, params)
-        # resp thường dạng {"code":"0","data":[...]}
         if isinstance(resp, dict):
             return resp.get("data", [])
         return resp
 
+    def cancel_oco_algo(self, inst_id, algo_ids):
+        """
+        Huỷ danh sách OCO TP/SL theo inst_id + algoIds.
+        """
+        if not algo_ids:
+            return
+
+        path = "/api/v5/trade/cancel-algos"
+        body = [
+            {
+                "instId": inst_id,
+                "algoId": algo_id,
+                "ordType": "oco",
+            }
+            for algo_id in algo_ids
+        ]
+
+        resp = self._request("POST", path, body)
+        logging.info("[OKX] Cancel OCO resp: %s", resp)
+        return resp
+
+    
     def place_trailing_stop(
         self,
         inst_id,
@@ -2804,14 +2826,13 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
 def cancel_oco_before_trailing(okx, inst_id, pos_side):
     """
-    Huỷ tất cả OCO (TP/SL algo) đang live cho inst_id + pos_side
-    trước khi đặt trailing.
+    Huỷ tất cả OCO TP/SL còn live của inst_id + posSide
+    trước khi đặt trailing server-side.
     """
     try:
-        # 1) Lấy toàn bộ algo đang pending cho inst_id, loại 'oco'
+        # 1) Lấy danh sách algo OCO đang pending cho symbol này
         algo_list = okx.get_algo_list(inst_id=inst_id, ord_type="oco")
 
-        # 2) Lọc thêm theo posSide ở phía Python
         algo_ids = [
             a.get("algoId")
             for a in algo_list
@@ -2821,21 +2842,28 @@ def cancel_oco_before_trailing(okx, inst_id, pos_side):
         ]
 
         if not algo_ids:
-            logging.info(f"[TP-TRAIL] Không có OCO để huỷ cho {inst_id} ({pos_side}).")
+            logging.info(
+                "[TP-TRAIL] Không có OCO để huỷ cho %s (%s).",
+                inst_id,
+                pos_side,
+            )
             return
 
-        okx.cancel_oco_algo(algo_ids)
+        okx.cancel_oco_algo(inst_id, algo_ids)
         logging.info(
-            f"[TP-TRAIL] ĐÃ huỷ {len(algo_ids)} OCO cho {inst_id} ({pos_side}) trước trailing."
+            "[TP-TRAIL] ĐÃ huỷ %d OCO cho %s (%s) trước khi đặt trailing.",
+            len(algo_ids),
+            inst_id,
+            pos_side,
         )
 
     except Exception as e:
         logging.error(
-            f"[TP-TRAIL] Lỗi khi huỷ OCO trước trailing {inst_id} ({pos_side}): {e}"
+            "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s (%s): %s",
+            inst_id,
+            pos_side,
+            e,
         )
-
-
-
 def run_dynamic_tp(okx: "OKXClient"):
     """
     TP động + SL động + TP trailing cho các lệnh futures đang mở.
