@@ -55,9 +55,12 @@ TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
 
-# ---- TRAILING STOP (SERVER) ----
-TP_TRAIL_MIN_PNL_PCT = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
-TP_TRAIL_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+# ======== TRAILING STOP (SERVER) ========
+TRAIL_SERVER_START_PNL_PCT  = 10.0  # chỉ bật trailing server khi pnl >= 10%
+TRAIL_SERVER_CALLBACK_PCT   = 7.0   # giá rút lại 7% từ đỉnh thì sàn tự cắt
+
+# Lưu trạng thái đã đặt trailing server để không đặt trùng
+TRAIL_SERVER_PLACED = set()  # key = f"{instId}|{posSide}|{posId}"
 
 # ======== TRAILING STOP SERVER-SIDE CONFIG ========
 TRAIL_SERVER_START_PNL_PCT   = 10.0  # khi lãi >= 10% PnL thì bật trailing trên sàn
@@ -3085,55 +3088,61 @@ def run_dynamic_tp(okx: "OKXClient"):
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
             continue
         # ====== 3.5) TRAILING STOP SERVER-SIDE KHI LÃI LỚN (>= 10%) ======
-        if pnl_pct >= TRAIL_SERVER_START_PNL_PCT:
+            # ================= TRAILING STOP SERVER-SIDE ================
+    global TRAIL_SERVER_PLACED
+
+    # Chỉ xử lý trailing server khi pnl đủ lớn
+    if pnl_pct >= TRAIL_SERVER_START_PNL_PCT:
+        key = f"{inst_id}|{pos_side}|{pos_id}"
+
+        # Nếu đã đặt trailing cho vị thế này rồi thì bỏ qua
+        if key in TRAIL_SERVER_PLACED:
             logging.info(
-                "[TP-TRAIL] %s %s posId=%s đang trong vùng trailing (pnl=%.2f%%) -> chuẩn bị HUỶ OCO + đặt trailing.",
-                instId, pos_side, pos_id, pnl_pct
+                "[TP-TRAIL] %s đã có trailing server (pnl=%.2f%%, callback=%.1f%%). Bỏ qua.",
+                inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
             )
-    
-            # 1) HỦY TẤT CẢ LỆNH OCO TP/SL CŨ
-            try:
-                cancel_oco_before_trailing(okx, instId, pos_side)
-            except Exception as e:
-                logging.error(
-                    "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s %s: %s",
-                    instId, pos_side, e
-                )
-    
-            # 2) ĐẶT TRAILING STOP SERVER-SIDE
-            try:
-                side_close = "sell" if pos_side == "long" else "buy"
-    
-                ok = okx.place_trailing_stop(
-                    inst_id=instId,
-                    pos_side=pos_side,
-                    side_close=side_close,
-                    sz=sz,
-                    callback_ratio_pct=TRAIL_SERVER_CALLBACK_PCT,
-                    active_px=avg_px,
-                    td_mode="isolated",
-                )
-    
-                logging.info(
-                    "[TP-TRAIL] ĐÃ đặt trailing cho %s %s posId=%s (pnl=%.2f%%, callback=%.1f%%).",
-                    instId, pos_side, pos_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
-                )
-    
-                # Đánh dấu lệnh này đã được đặt trailing trên sàn
+            return  # đã giao cho server trailing lo
+
+        # Chưa đặt -> tiến hành đặt trailing server-side
+        try:
+            side_close = "sell" if pos_side == "long" else "buy"
+
+            # 7% -> 0.07 theo yêu cầu OKX (0.001 ~ 1.0)
+            callback_ratio = TRAIL_SERVER_CALLBACK_PCT / 100.0
+
+            logging.info(
+                "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%%) -> đặt trailing callback=%.1f%%.",
+                inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
+            )
+
+            resp = okx.place_trailing_stop(
+                inst_id=inst_id,
+                pos_side=pos_side,
+                side_close=side_close,
+                sz=sz,
+                callback_ratio_pct=callback_ratio,
+                active_px=avg_px,
+                td_mode="isolated",
+            )
+
+            code = str(resp.get("code", ""))
+            if code != "0":
+                # Thất bại -> log chi tiết, KHÔNG thêm vào TRAIL_SERVER_PLACED
+                logging.error("[TP-TRAIL] Lỗi đặt trailing cho %s: resp=%s", inst_id, resp)
+            else:
                 TRAIL_SERVER_PLACED.add(key)
-    
-            except Exception as e:
-                logging.error(
-                    "[TP-TRAIL] Exception khi đặt trailing cho %s %s: %s",
-                    instId, pos_side, e
+                logging.info(
+                    "[TP-TRAIL] ĐÃ đặt trailing server cho %s (pnl=%.2f%%, callback=%.1f%%).",
+                    inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
                 )
-    
-            # RẤT QUAN TRỌNG: không cho lệnh này chạy tiếp TP DYNAMIC bên dưới
-            continue
-        # ================== HẾT PHẦN TRAILING ==================
 
+        except Exception as e:
+            logging.error("[TP-TRAIL] Exception khi đặt trailing cho %s: %s", inst_id, e)
 
-        # ================== HẾT PHẦN TRAILING ==================
+        # ĐÃ giao cho trailing server -> không dùng TP dynamic local nữa
+        return
+    # ================= HẾT PHẦN TRAILING SERVER-SIDE ================
+
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
             tp_dyn_threshold = 3.0  # deadzone: ăn ngắn
