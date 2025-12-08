@@ -55,6 +55,10 @@ TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
 
+# ---- TRAILING STOP (SERVER) ----
+TP_TRAIL_MIN_PNL_PCT = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
+TP_TRAIL_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+
 # ======== TRAILING STOP SERVER-SIDE CONFIG ========
 TRAIL_SERVER_START_PNL_PCT   = 10.0  # khi lãi >= 10% PnL thì bật trailing trên sàn
 TRAIL_SERVER_CALLBACK_PCT    = 7.0   # giá lùi 7% từ đỉnh thì sàn tự cắt
