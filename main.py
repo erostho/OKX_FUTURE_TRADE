@@ -88,6 +88,38 @@ DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 PULLBACK_MIN_PCT      = 0.5   # yêu cầu hồi tối thiểu 0.5% giá
 PULLBACK_ATR_FACTOR   = 0.3   # hoặc 0.3 * ATR 15m, lấy max hai cái
 ATR_PERIOD_PULLBACK   = 14    # số nến 15m dùng để ước lượng ATR cho pullback
+# ====== BLACKLIST FUTURES (KHÔNG TRADE) ======
+
+# Copy từ Excel: instId dạng FUTURES '-USDT-SWAP'
+BLACKLIST_SWAPS = {
+    "ALLO-USDT-SWAP",
+    "RLS-USDT-SWAP",
+    "MON-USDT-SWAP",
+    "PIPPIN-USDT-SWAP",
+}
+
+def _to_swap_inst(inst_id: str) -> str:
+    """
+    Chuẩn hóa về dạng FUTURES instId: XXX-USDT-SWAP
+    (scanner dùng 'XXX-USDT', còn trên OKX là 'XXX-USDT-SWAP')
+    """
+    if not inst_id:
+        return ""
+    s = inst_id.strip().upper()
+    if s.endswith("-USDT-SWAP"):
+        return s
+    if s.endswith("-USDT"):
+        return s.replace("-USDT", "-USDT-SWAP")
+    return s + "-USDT-SWAP"
+
+
+def is_blacklisted_inst(inst_id: str) -> bool:
+    """
+    Trả về True nếu inst_id nằm trong BLACKLIST_SWAPS.
+    Nhận cả dạng 'ABC-USDT' hoặc 'ABC-USDT-SWAP'.
+    """
+    swap_id = _to_swap_inst(inst_id)
+    return swap_id in BLACKLIST_SWAPS
 
 # ================== HELPERS CHUNG ==================
 
@@ -2219,6 +2251,10 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
         )
 
     for row in top_df.itertuples():
+        # ❌ BỎ QUA COIN TRONG BLACKLIST
+        if is_blacklisted_inst(row.instId):
+            logging.info("[BL] Bỏ qua %s vì nằm trong BLACKLIST_SWAPS.", row.instId)
+            continue
         # Nếu scanner đã tính sẵn entry_pullback thì dùng,
         # còn không thì fallback về last_price cho an toàn.
         entry = getattr(row, "entry_pullback", row.last_price)
@@ -2586,6 +2622,10 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Spot -> Perp SWAP
         swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+        # ❌ Nếu symbol thuộc blacklist thì không vào lệnh
+        if is_blacklisted_inst(swap_inst):
+            logging.info("[BL] Skip mở lệnh cho %s (blacklist).", swap_inst)
+            continue
 
         # ❗ Nếu đã có vị thế mở cùng hướng trên OKX -> bỏ qua, không mở thêm
         pos_info = open_pos_map.get(swap_inst, {"long": False, "short": False})
