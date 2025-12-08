@@ -2777,19 +2777,58 @@ def execute_futures_trades(okx: OKXClient, trades):
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
-def cancel_oco_before_trailing(okx_client, inst_id, pos_side):
+def cancel_oco_before_trailing(okx, inst_id, pos_side):
     """
     Huỷ các OCO TP/SL còn treo trước khi đặt trailing stop.
     """
     try:
-        # ví dụ: gọi API huỷ algo TP/SL
-        # tuỳ bạn đang dùng hàm nào, giữ nguyên chỉ đổi okx_client cho đúng tham số
-        okx_client.cancel_algo_oco_orders(inst_id=inst_id, pos_side=pos_side)
-        logging.info("[TP-TRAIL] Đã huỷ OCO trước trailing %s | pos_side=%s",
-                     inst_id, pos_side)
+        # giữ nguyên hàm bạn đang dùng để huỷ OCO, chỉ đổi tên biến client
+        okx.cancel_algo_oco_orders(inst_id=inst_id, pos_side=pos_side)
+        logging.info(
+            "[TP-TRAIL] Đã huỷ OCO trước trailing %s | pos_side=%s",
+            inst_id,
+            pos_side,
+        )
     except Exception as e:
-        logging.error("[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
-                      inst_id, e)
+        logging.error(
+            "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
+            inst_id,
+            e,
+        )
+def cancel_oco_before_trailing(okx, inst_id, pos_side):
+    """
+    Huỷ tất cả OCO (TP/SL algo) đang mở cho inst_id trước khi đặt trailing.
+    """
+    try:
+        # 1) Lấy danh sách algo đang active
+        algo_list = okx.get_algo_list()
+        
+        # 2) Lọc các OCO thuộc inst_id + pos_side
+        algo_ids = [
+            a["algoId"]
+            for a in algo_list
+            if a.get("instId") == inst_id
+            and a.get("posSide") == pos_side
+            and a.get("ordType") == "oco"
+            and a.get("state") in ("live", "effective")
+        ]
+
+        if not algo_ids:
+            logging.info(f"[TP-TRAIL] Không có OCO để huỷ cho {inst_id} ({pos_side}).")
+            return
+
+        # 3) GỌI ĐÚNG HÀM CỦA CLIENT
+        okx.cancel_oco_algo(algo_ids)
+
+        logging.info(
+            f"[TP-TRAIL] ĐÃ huỷ {len(algo_ids)} OCO cho {inst_id} ({pos_side}) trước trailing."
+        )
+
+    except Exception as e:
+        logging.error(
+            f"[TP-TRAIL] Lỗi khi huỷ OCO trước trailing {inst_id} ({pos_side}): {e}"
+        )
+
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -2961,8 +3000,8 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
     
             # 1) HUỶ TẤT CẢ LỆNH OCO TP/SL CŨ
-            cancel_oco_before_trailing(okx_client, inst_id, pos_side)
-    
+            cancel_oco_before_trailing(okx, inst_id, pos_side)
+
             # 2) ĐẶT TRAILING STOP SERVER-SIDE
             try:
                 side_close = "sell" if pos_side == "long" else "buy"
