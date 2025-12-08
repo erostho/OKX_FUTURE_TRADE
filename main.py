@@ -553,7 +553,32 @@ class OKXClient:
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX OCO RESP] %s", data)
         return data
-    
+    def get_algo_list(self, inst_id=None, ord_type=None, state=None, limit=None):
+        """
+        Lấy danh sách algo order đang PENDING (bao gồm OCO TP/SL, trailing...).
+
+        - inst_id: lọc theo symbol, ví dụ 'BTC-USDT-SWAP'
+        - ord_type: 'oco', 'trigger', 'move_order_stop', ...
+        - state: 'live', 'effective', ...
+        """
+        path = "/api/v5/trade/orders-algo-pending"
+
+        params = {}
+        if inst_id:
+            params["instId"] = inst_id
+        if ord_type:
+            params["ordType"] = ord_type
+        if state:
+            params["state"] = state
+        if limit:
+            params["limit"] = str(limit)
+
+        resp = self._request("GET", path, params)
+        # resp thường dạng {"code":"0","data":[...]}
+        if isinstance(resp, dict):
+            return resp.get("data", [])
+        return resp
+
     def place_trailing_stop(
         self,
         inst_id,
@@ -2779,37 +2804,19 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
 def cancel_oco_before_trailing(okx, inst_id, pos_side):
     """
-    Huỷ các OCO TP/SL còn treo trước khi đặt trailing stop.
+    Huỷ tất cả OCO (TP/SL algo) đang live cho inst_id + pos_side
+    trước khi đặt trailing.
     """
     try:
-        # giữ nguyên hàm bạn đang dùng để huỷ OCO, chỉ đổi tên biến client
-        okx.cancel_algo_oco_orders(inst_id=inst_id, pos_side=pos_side)
-        logging.info(
-            "[TP-TRAIL] Đã huỷ OCO trước trailing %s | pos_side=%s",
-            inst_id,
-            pos_side,
-        )
-    except Exception as e:
-        logging.error(
-            "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
-            inst_id,
-            e,
-        )
-def cancel_oco_before_trailing(okx, inst_id, pos_side):
-    """
-    Huỷ tất cả OCO (TP/SL algo) đang mở cho inst_id trước khi đặt trailing.
-    """
-    try:
-        # 1) Lấy danh sách algo đang active
-        algo_list = okx.get_algo_list()
-        
-        # 2) Lọc các OCO thuộc inst_id + pos_side
+        # 1) Lấy toàn bộ algo đang pending cho inst_id, loại 'oco'
+        algo_list = okx.get_algo_list(inst_id=inst_id, ord_type="oco")
+
+        # 2) Lọc thêm theo posSide ở phía Python
         algo_ids = [
-            a["algoId"]
+            a.get("algoId")
             for a in algo_list
             if a.get("instId") == inst_id
             and a.get("posSide") == pos_side
-            and a.get("ordType") == "oco"
             and a.get("state") in ("live", "effective")
         ]
 
@@ -2817,9 +2824,7 @@ def cancel_oco_before_trailing(okx, inst_id, pos_side):
             logging.info(f"[TP-TRAIL] Không có OCO để huỷ cho {inst_id} ({pos_side}).")
             return
 
-        # 3) GỌI ĐÚNG HÀM CỦA CLIENT
         okx.cancel_oco_algo(algo_ids)
-
         logging.info(
             f"[TP-TRAIL] ĐÃ huỷ {len(algo_ids)} OCO cho {inst_id} ({pos_side}) trước trailing."
         )
@@ -2828,6 +2833,7 @@ def cancel_oco_before_trailing(okx, inst_id, pos_side):
         logging.error(
             f"[TP-TRAIL] Lỗi khi huỷ OCO trước trailing {inst_id} ({pos_side}): {e}"
         )
+
 
 
 def run_dynamic_tp(okx: "OKXClient"):
@@ -3289,15 +3295,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    run_full_bot(okx)
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    #if minute % 15 == 5:
-        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        #run_full_bot(okx)
-    #else:
-        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    if minute % 15 == 5:
+        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        run_full_bot(okx)
+    else:
+        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
