@@ -41,9 +41,9 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 5.0   # chỉ bật TP động khi lãi >= 2.5%
+TP_DYN_MIN_PROFIT_PCT   = 5.0   # chỉ bật TP động khi lãi >= 5%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
-TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
+TP_DYN_VOL_DROP_RATIO   = 0.7   # vol hiện tại < 70% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 8     # EMA-8
 TP_DYN_FLAT_BARS        = 3     # số nến 5m đi ngang trước khi thoát
 TP_DYN_ENGULF           = True  # bật thoát khi có engulfing
@@ -54,6 +54,12 @@ TP_DYN_EMA_TOUCH        = True  # bật thoát khi chạm EMA5
 TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 5% PnL
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
+
+# ======== TRAILING STOP SERVER-SIDE CONFIG ========
+TRAIL_SERVER_START_PNL_PCT   = 10.0  # khi lãi >= 10% PnL thì bật trailing trên sàn
+TRAIL_SERVER_CALLBACK_PCT    = 7.0   # giá lùi 7% từ đỉnh thì sàn tự cắt
+# Lưu trạng thái lệnh nào đã đặt trailing server-side rồi (tránh đặt trùng)
+TRAIL_SERVER_PLACED = set()  # key: f"{instId}_{posSide}_{posId}"
 
 # ========== PUMP/DUMP PRO CONFIG ==========
 SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
@@ -512,6 +518,46 @@ class OKXClient:
         logging.info("Body: %s", body)
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX OCO RESP] %s", data)
+        return data
+    
+    def place_trailing_stop(
+        self,
+        inst_id,
+        pos_side,
+        side_close,
+        sz,
+        callback_ratio_pct,
+        active_px,
+        td_mode="isolated",
+    ):
+        """
+        Đặt trailing stop server-side (ordType = move_order_stop).
+
+        - inst_id:    'BTC-USDT-SWAP'
+        - pos_side:   'long' / 'short'
+        - side_close: 'sell' nếu đóng long, 'buy' nếu đóng short
+        - sz:         khối lượng vị thế cần đóng
+        - callback_ratio_pct: ví dụ 7.0 = 7%% (theo tài liệu OKX)
+        - active_px:  giá kích hoạt trailing, ví dụ entry * 1.10 (LONG)
+        """
+
+        path = "/api/v5/trade/order-algo"
+        body = {
+            "instId": inst_id,
+            "tdMode": td_mode,
+            "side": side_close,
+            "posSide": pos_side,
+            "ordType": "move_order_stop",
+            "sz": str(sz),
+            "callbackRatio": f"{callback_ratio_pct:.2f}",  # dạng % string
+            "activePx": f"{active_px:.8f}",
+            "triggerPxType": "last",
+        }
+
+        logging.info("---- PLACE TRAILING STOP (SERVER) ----")
+        logging.info("Body: %s", body)
+        data = self._request("POST", path, body_dict=body)
+        logging.info("[OKX TRAIL RESP] %s", data)
         return data
 
     def close_swap_position(self, inst_id, pos_side):
@@ -2742,12 +2788,13 @@ def run_dynamic_tp(okx: "OKXClient"):
             avail   = safe_float(p.get("availPos", pos))
             sz      = avail if avail > 0 else pos
             avg_px  = safe_float(p.get("avgPx", "0"))
+            pos_id  = str(p.get("posId") or "")  # để key trailing
 
             logging.info("[TP-DYN] -> Kiểm tra %s | posSide=%s", instId, posSide)
         except Exception as e:
             logging.error("[TP-DYN] Lỗi đọc position: %s", e)
             continue
-
+   
         if not instId or sz <= 0 or avg_px <= 0:
             continue
 
@@ -2845,6 +2892,54 @@ def run_dynamic_tp(okx: "OKXClient"):
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
+            continue
+        # ====== 3.5) TRAILING STOP SERVER-SIDE KHI LÃI LỚN (>= 10%) ======
+        if pnl_pct >= TRAIL_SERVER_START_PNL_PCT:
+            trail_key = f"{instId}_{posSide}_{pos_id or 'NA'}"
+            if trail_key not in TRAIL_SERVER_PLACED:
+                try:
+                    if posSide == "long":
+                        side_close = "sell"
+                        active_px = avg_px * (1 + TRAIL_SERVER_START_PNL_PCT / 100.0)
+                    else:  # short
+                        side_close = "buy"
+                        active_px = avg_px * (1 - TRAIL_SERVER_START_PNL_PCT / 100.0)
+
+                    resp = okx.place_trailing_stop(
+                        inst_id=instId,
+                        pos_side=posSide,
+                        side_close=side_close,
+                        sz=sz,
+                        callback_ratio_pct=TRAIL_SERVER_CALLBACK_PCT,
+                        active_px=active_px,
+                        td_mode="isolated",
+                    )
+                    code = str(resp.get("code", "0"))
+                    if code == "0":
+                        TRAIL_SERVER_PLACED.add(trail_key)
+                        logging.info(
+                            "[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (%s), activePx=%.6f, callback=%.1f%%",
+                            instId,
+                            posSide,
+                            active_px,
+                            TRAIL_SERVER_CALLBACK_PCT,
+                        )
+                    else:
+                        logging.error(
+                            "[TP-TRAIL] Lỗi đặt trailing cho %s: code=%s msg=%s",
+                            instId,
+                            code,
+                            resp.get("msg"),
+                        )
+                except Exception as e:
+                    logging.error("[TP-TRAIL] Exception place_trailing_stop %s: %s", instId, e)
+
+            # Khi đã vào vùng trailing (>=10% PnL) → KHÔNG dùng TP động local nữa
+            logging.info(
+                "[TP-TRAIL] %s đang trong vùng trailing (pnl=%.2f%%) → bỏ qua TP động local.",
+                instId,
+                pnl_pct,
+            )
             continue
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
