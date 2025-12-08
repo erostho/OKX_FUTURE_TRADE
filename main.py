@@ -575,30 +575,31 @@ class OKXClient:
         body = [{"instId": inst_id, "algoId": algo_id} for algo_id in algo_ids]
         return self._request("POST", path, json=body)
 
-    def get_algo_list(self, inst_id=None, ord_type=None, state=None, limit=None):
+    def get_algo_list(self, inst_id: str, ord_type: str = "oco"):
         """
-        Lấy danh sách algo order đang pending.
-
-        - inst_id: 'BTC-USDT-SWAP'...
-        - ord_type: 'oco', 'trigger', 'move_order_stop',...
-        - state: 'live', 'effective',...
+        Lấy danh sách lệnh algo (OCO / trailing / v.v) đang PENDING cho 1 instId.
+        Dùng chung cơ chế ký request của client nên không còn lỗi 401 Invalid Sign.
         """
         path = "/api/v5/trade/orders-algo-pending"
+        params = {
+            "instId": inst_id,
+            "ordType": ord_type,   # 'oco'
+        }
+        # giống cách self._request được gọi ở các hàm khác
+        return self._request("GET", path, params=params)
 
-        params = {}
-        if inst_id:
-            params["instId"] = inst_id
-        if ord_type:
-            params["ordType"] = ord_type
-        if state:
-            params["state"] = state
-        if limit:
-            params["limit"] = str(limit)
+    def cancel_algo_list(self, algo_ids):
+        """
+        Hủy một list algoId (ví dụ OCO TP/SL) trước khi đặt trailing.
+        """
+        if not algo_ids:
+            return None
 
-        resp = self._request("GET", path, params)
-        if isinstance(resp, dict):
-            return resp.get("data", [])
-        return resp
+        path = "/api/v5/trade/cancel-algos"
+        body = [{"algoId": algo_id} for algo_id in algo_ids]
+
+        return self._request("POST", path, json=body)
+
 
     def cancel_oco_algo(self, inst_id, algo_ids):
         """
@@ -2847,44 +2848,38 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
 def cancel_oco_before_trailing(okx, inst_id: str, pos_side: str):
     """
-    Trước khi đặt trailing: hủy hết OCO TP/SL hiện có cho inst_id & posSide đó.
-    Nếu lỗi (401, v.v.) thì log nhưng KHÔNG cho bot chết.
+    Trước khi đặt trailing cho 1 vị thế:
+      - Tìm tất cả OCO TP/SL đang pending cho instId đó
+      - Hủy hết
     """
     try:
-        res = okx.get_algo_pending(inst_id, ord_type="oco")
-        data = res.get("data", []) if isinstance(res, dict) else res
+        res = okx.get_algo_list(inst_id, ord_type="oco")
 
-        algo_ids = [
-            row.get("algoId")
-            for row in data
-            if row.get("instId") == inst_id and row.get("posSide") == pos_side
-        ]
+        # res thường là dict {'code': '0', 'data': [...]} giống các hàm OKX khác
+        data = []
+        if isinstance(res, dict):
+            data = res.get("data", []) or []
+        elif isinstance(res, list) and res:
+            data = res[0].get("data", []) or []
+
+        algo_ids = [row["algoId"] for row in data if row.get("instId") == inst_id]
 
         if not algo_ids:
-            logging.info(
-                "[TP-TRAIL] %s không có OCO pending (posSide=%s) -> không cần hủy.",
-                inst_id,
-                pos_side,
-            )
+            logging.info("[TP-TRAIL] %s không có OCO pending, bỏ qua huỷ.", inst_id)
             return
 
+        okx.cancel_algo_list(algo_ids)
         logging.info(
-            "[TP-TRAIL] Hủy %d OCO trước khi đặt trailing cho %s (posSide=%s): %s",
-            len(algo_ids),
-            inst_id,
-            pos_side,
-            ",".join(algo_ids),
+            "[TP-TRAIL] Đã huỷ %d OCO cho %s trước khi đặt trailing.",
+            len(algo_ids), inst_id
         )
-        okx.cancel_algo_orders(inst_id, algo_ids)
 
     except Exception as e:
         logging.error(
-            "[TP-TRAIL] Lỗi khi hủy OCO trước trailing %s (%s): %s",
-            inst_id,
-            pos_side,
-            e,
+            "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s (%s): %s",
+            inst_id, pos_side, e
         )
-        # không raise để cron không chết
+
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -3057,27 +3052,33 @@ def run_dynamic_tp(okx: "OKXClient"):
                 pnl_pct,
             )
     
-            # 1) Hủy OCO TP/SL cũ
+            # 1) Huỷ tất cả OCO TP/SL cũ
             cancel_oco_before_trailing(okx, inst_id, pos_side)
-    
+
             # 2) Đặt trailing stop server-side
             try:
+                side_close = "sell" if pos_side == "long" else "buy"
+
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
-                    side_close="sell" if pos_side == "long" else "buy",
+                    side_close=side_close,
                     sz=sz,
-                    callback_ratio_pct=TP_TRAIL_CALLBACK_PCT,  # ví dụ 7
-                    active_px=active_px,                       # giá kích hoạt
+                    callback_ratio_pct=TP_TRAIL_CALLBACK_PCT,
+                    active_px=avg_px,   # giá hiện tại/giá vốn, tuỳ bạn đang dùng
                 )
+
+                logging.info(
+                    "[TP-TRAIL] ĐÃ ĐẶT trailing cho %s (pnl=%.2f%%, callback=%.1f%%).",
+                    inst_id, pnl_pct, TP_TRAIL_CALLBACK_PCT
+                )
+
             except Exception as e:
                 logging.error(
                     "[TP-TRAIL] Exception khi đặt trailing cho %s: %s",
-                    inst_id,
-                    e,
+                    inst_id, e
                 )
 
-    
             # Sau khi bật trailing rồi thì KHÔNG dùng TP động local nữa
             return
         # ================== HẾT PHẦN TRAILING ==================
