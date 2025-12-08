@@ -527,6 +527,8 @@ class OKXClient:
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX ORDER RESP] %s", data)
         return data
+        # =======================
+
 
     def place_oco_tp_sl(
         self, inst_id, pos_side, side_close, sz, tp_px, sl_px, td_mode="isolated"
@@ -2934,53 +2936,95 @@ def run_dynamic_tp(okx: "OKXClient"):
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
             continue
         # ====== 3.5) TRAILING STOP SERVER-SIDE KHI LÃI LỚN (>= 10%) ======
+        # ================== TRAILING STOP SERVER-SIDE ==================
         if pnl_pct >= TRAIL_SERVER_START_PNL_PCT:
-            trail_key = f"{instId}_{posSide}_{pos_id or 'NA'}"
-            if trail_key not in TRAIL_SERVER_PLACED:
-                try:
-                    if posSide == "long":
-                        side_close = "sell"
-                        active_px = avg_px * (1 + TRAIL_SERVER_START_PNL_PCT / 100.0)
-                    else:  # short
-                        side_close = "buy"
-                        active_px = avg_px * (1 - TRAIL_SERVER_START_PNL_PCT / 100.0)
-
-                    resp = okx.place_trailing_stop(
-                        inst_id=instId,
-                        pos_side=posSide,
-                        side_close=side_close,
-                        sz=sz,
-                        callback_ratio_pct=TRAIL_SERVER_CALLBACK_PCT,
-                        active_px=active_px,
-                        td_mode="isolated",
-                    )
-                    code = str(resp.get("code", "0"))
-                    if code == "0":
-                        TRAIL_SERVER_PLACED.add(trail_key)
-                        logging.info(
-                            "[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (%s), activePx=%.6f, callback=%.1f%%",
-                            instId,
-                            posSide,
-                            active_px,
-                            TRAIL_SERVER_CALLBACK_PCT,
-                        )
-                    else:
-                        logging.error(
-                            "[TP-TRAIL] Lỗi đặt trailing cho %s: code=%s msg=%s",
-                            instId,
-                            code,
-                            resp.get("msg"),
-                        )
-                except Exception as e:
-                    logging.error("[TP-TRAIL] Exception place_trailing_stop %s: %s", instId, e)
-
-            # Khi đã vào vùng trailing (>=10% PnL) → KHÔNG dùng TP động local nữa
             logging.info(
-                "[TP-TRAIL] %s đang trong vùng trailing (pnl=%.2f%%) → bỏ qua TP động local.",
-                instId,
-                pnl_pct,
+                "[TP-TRAIL] %s đang trong vùng trailing (pnl=%.2f%%) -> chuẩn bị HUỶ OCO + đặt trailing.",
+                inst_id, pnl_pct
             )
-            continue
+    
+            # 1) HUỶ TẤT CẢ LỆNH OCO TP/SL CŨ
+            try:
+                resp = okx_client.private_get(
+                    "/api/v5/trade/orders-algo-pending",
+                    {
+                        "instType": "SWAP",
+                        "instId": inst_id,
+                        "ordType": "conditional",
+                    }
+                )
+    
+                items = resp.get("data", [])
+                cancel_list = []
+    
+                for algo in items:
+                    # Nếu có posSide thì chỉ huỷ cùng chiều với vị thế hiện tại
+                    pside = algo.get("posSide", "").lower()
+                    if pside and pside != pos_side.lower():
+                        continue
+    
+                    cancel_list.append({
+                        "algoId": algo["algoId"],
+                        "instId": inst_id,
+                        "instType": "SWAP",
+                    })
+    
+                if cancel_list:
+                    logging.info(
+                        "[TP-TRAIL] Huỷ %d OCO trước khi đặt trailing cho %s",
+                        len(cancel_list), inst_id
+                    )
+                    okx_client.private_post(
+                        "/api/v5/trade/cancel-algos",
+                        cancel_list
+                    )
+                else:
+                    logging.info(
+                        "[TP-TRAIL] Không có OCO nào để huỷ cho %s",
+                        inst_id
+                    )
+    
+            except Exception as e:
+                logging.error(
+                    "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
+                    inst_id, e
+                )
+    
+            # 2) ĐẶT TRAILING STOP SERVER-SIDE
+            try:
+                side_close = "sell" if pos_side == "long" else "buy"
+    
+                ok = okx_client.place_trailing_stop(
+                    inst_id=inst_id,
+                    pos_side=pos_side,
+                    side_close=side_close,
+                    sz=sz,
+                    callback_ratio_pct=TRAIL_CALLBACK_PCT,  # ví dụ 7.0
+                    active_px=cur_price,
+                )
+    
+                if ok:
+                    logging.info(
+                        "[TP-TRAIL] ĐÃ đặt trailing stop server-side cho %s (pnl=%.2f%%).",
+                        inst_id, pnl_pct
+                    )
+                else:
+                    logging.error(
+                        "[TP-TRAIL] ĐẶT TRAILING CHO %s THẤT BẠI (pnl=%.2f%%).",
+                        inst_id, pnl_pct
+                    )
+    
+            except Exception as e:
+                logging.error(
+                    "[TP-TRAIL] Exception khi đặt trailing cho %s: %s",
+                    inst_id, e
+                )
+    
+            # Sau khi bật trailing rồi thì KHÔNG dùng TP động local nữa
+            return
+        # ================== HẾT PHẦN TRAILING ==================
+
+
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
