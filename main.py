@@ -2777,6 +2777,19 @@ def execute_futures_trades(okx: OKXClient, trades):
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
+def cancel_oco_before_trailing(okx_client, inst_id, pos_side):
+    """
+    Huỷ các OCO TP/SL còn treo trước khi đặt trailing stop.
+    """
+    try:
+        # ví dụ: gọi API huỷ algo TP/SL
+        # tuỳ bạn đang dùng hàm nào, giữ nguyên chỉ đổi okx_client cho đúng tham số
+        okx_client.cancel_algo_oco_orders(inst_id=inst_id, pos_side=pos_side)
+        logging.info("[TP-TRAIL] Đã huỷ OCO trước trailing %s | pos_side=%s",
+                     inst_id, pos_side)
+    except Exception as e:
+        logging.error("[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
+                      inst_id, e)
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -2821,25 +2834,28 @@ def run_dynamic_tp(okx: "OKXClient"):
     TP_TRAIL_EXIT_PNL_PCT = 4.0
     # dùng toàn bộ 30 nến 5m hiện tại làm cửa sổ quan sát high/low PnL
     TP_TRAIL_LOOKBACK_BARS = 30
-
     for p in positions:
         try:
             instId  = p.get("instId")
-            inst_id = instId
-            posSide = p.get("posSide")  # 'long' / 'short'
-            pos     = safe_float(p.get("pos", "0"))
-            avail   = safe_float(p.get("availPos", pos))
-            sz      = avail if avail > 0 else pos
-            avg_px  = safe_float(p.get("avgPx", "0"))
-            pos_id  = str(p.get("posId") or "")  # để key trailing
-
+            inst_id = instId                      # alias cho phần dưới
+    
+            posSide  = p.get("posSide")           # 'long' / 'short'
+            pos_side = posSide                    # ✅ alias chuẩn tên
+    
+            pos   = safe_float(p.get("pos", "0"))
+            avail = safe_float(p.get("availPos", pos))
+            sz    = avail if avail > 0 else pos
+            avg_px = safe_float(p.get("avgPx", "0"))
+            pos_id = str(p.get("posId") or "")
+    
             logging.info("[TP-DYN] -> Kiểm tra %s | posSide=%s", instId, posSide)
         except Exception as e:
             logging.error("[TP-DYN] Lỗi đọc position: %s", e)
             continue
-   
+    
         if not instId or sz <= 0 or avg_px <= 0:
             continue
+
 
         # --- Lấy nến 5m ---
         try:
@@ -2945,51 +2961,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
     
             # 1) HUỶ TẤT CẢ LỆNH OCO TP/SL CŨ
-            try:
-                resp = okx_client.private_get(
-                    "/api/v5/trade/orders-algo-pending",
-                    {
-                        "instType": "SWAP",
-                        "instId": inst_id,
-                        "ordType": "conditional",
-                    }
-                )
-    
-                items = resp.get("data", [])
-                cancel_list = []
-    
-                for algo in items:
-                    # Nếu có posSide thì chỉ huỷ cùng chiều với vị thế hiện tại
-                    pside = algo.get("posSide", "").lower()
-                    if pside and pside != pos_side.lower():
-                        continue
-    
-                    cancel_list.append({
-                        "algoId": algo["algoId"],
-                        "instId": inst_id,
-                        "instType": "SWAP",
-                    })
-    
-                if cancel_list:
-                    logging.info(
-                        "[TP-TRAIL] Huỷ %d OCO trước khi đặt trailing cho %s",
-                        len(cancel_list), inst_id
-                    )
-                    okx_client.private_post(
-                        "/api/v5/trade/cancel-algos",
-                        cancel_list
-                    )
-                else:
-                    logging.info(
-                        "[TP-TRAIL] Không có OCO nào để huỷ cho %s",
-                        inst_id
-                    )
-    
-            except Exception as e:
-                logging.error(
-                    "[TP-TRAIL] Lỗi khi huỷ OCO trước trailing %s: %s",
-                    inst_id, e
-                )
+            cancel_oco_before_trailing(okx_client, inst_id, pos_side)
     
             # 2) ĐẶT TRAILING STOP SERVER-SIDE
             try:
