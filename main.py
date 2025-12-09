@@ -66,6 +66,14 @@ MAX_PLANNED_SL_PNL_PCT = 10.0   # cho phép lỗ tối đa 10% PnL nếu chạm 
 # SL khẩn cấp theo PnL%
 MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 
+# ======== TRAILING TP CONFIG ========
+TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
+TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
+
+# Lưu đỉnh PnL cho từng vị thế để trailing local
+# key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
+TP_TRAIL_PEAK_PNL = {}
+
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 100000     # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
@@ -2817,7 +2825,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 tp_dyn_threshold,
             )
             continue
-
+        
         # ====== 5) TÍNH PnL CAO NHẤT TRONG CỬA SỔ (để trailing) ======
         max_pnl_window = 0.0
         for close_px in closes[-TP_TRAIL_LOOKBACK_BARS:]:
@@ -2828,6 +2836,42 @@ def run_dynamic_tp(okx: "OKXClient"):
             pnl_pct_i = price_pct_i * FUT_LEVERAGE
             if pnl_pct_i > max_pnl_window:
                 max_pnl_window = pnl_pct_i
+        # ===== 5b) TRAILING LOCAL (PnL lớn thì chỉ cho chạy trailing, bỏ TP động) =====
+        if pnl_pct >= TP_TRAIL_MIN_PNL_PCT:
+            drawdown = max_pnl_window - pnl_pct
+    
+            logging.info(
+                "[TP-TRAIL-LOCAL] %s | pnl=%.2f%%, max=%.2f%%, drawdown=%.2f%% "
+                "(min_pnl=%.1f%%, callback=%.1f%%)",
+                instId,
+                pnl_pct,
+                max_pnl_window,
+                drawdown,
+                TP_TRAIL_MIN_PNL_PCT,
+                TP_TRAIL_CALLBACK_PCT,
+            )
+    
+            # Nếu giá đã lùi ≥ callback% từ đỉnh -> chốt lời
+            if drawdown >= TP_TRAIL_CALLBACK_PCT:
+                logging.info(
+                    "[TP-TRAIL-LOCAL] Giá đã lùi %.2f%% từ đỉnh (>= %.2f%%) -> CHỐT LỜI.",
+                    drawdown,
+                    TP_TRAIL_CALLBACK_PCT,
+                )
+                try:
+                    okx.close_swap_position(instId, posSide)
+                except Exception as e:
+                    logging.error("[TP-TRAIL-LOCAL] Lỗi đóng lệnh %s: %s", instId, e)
+                # đã đóng lệnh thì sang position tiếp theo
+                continue
+            else:
+                # Vẫn trong vùng trailing: KHÔNG chạy các rule TP động phía dưới
+                logging.info(
+                    "[TP-TRAIL-LOCAL] Đang trailing, giữ lệnh (pnl=%.2f%%, max=%.2f%%).",
+                    pnl_pct,
+                    max_pnl_window,
+                )
+                continue
 
         # ====== 6) 4 TÍN HIỆU TP ĐỘNG (giữ nguyên bản cũ) ======
         # 1) 3 nến không tiến thêm
