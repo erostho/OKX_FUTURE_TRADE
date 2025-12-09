@@ -3098,8 +3098,8 @@ def main():
     #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
     #run_full_bot(okx)
 
-    # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute % 15 == 5:
+    # 2) Các mốc 6 - 20 - 36 - 50 phút thì chạy thêm FULL BOT
+    if minute in (6, 20, 36, 50):
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
         run_full_bot(okx)
     else:
