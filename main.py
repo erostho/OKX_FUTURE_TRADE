@@ -2827,6 +2827,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             continue
         
         # ====== 5) TÍNH PnL CAO NHẤT TRONG CỬA SỔ (để trailing) ======
+        # 5) TÍNH PNL CAO NHẤT TRONG CỬA SỔ
         max_pnl_window = 0.0
         for close_px in closes[-TP_TRAIL_LOOKBACK_BARS:]:
             if posSide == "long":
@@ -2836,42 +2837,31 @@ def run_dynamic_tp(okx: "OKXClient"):
             pnl_pct_i = price_pct_i * FUT_LEVERAGE
             if pnl_pct_i > max_pnl_window:
                 max_pnl_window = pnl_pct_i
-        # ===== 5b) TRAILING LOCAL (PnL lớn thì chỉ cho chạy trailing, bỏ TP động) =====
-        if pnl_pct >= TP_TRAIL_MIN_PNL_PCT:
-            drawdown = max_pnl_window - pnl_pct
-    
+        
+        drawdown = max_pnl_window - pnl_pct
+        
+        # 6) TRAILING LOCAL – ƯU TIÊN HƠN TP DYNAMIC
+        if max_pnl_window >= TP_TRAIL_MIN_PNL_PCT and drawdown >= TP_TRAIL_CALLBACK_PCT:
             logging.info(
-                "[TP-TRAIL-LOCAL] %s | pnl=%.2f%%, max=%.2f%%, drawdown=%.2f%% "
-                "(min_pnl=%.1f%%, callback=%.1f%%)",
-                instId,
-                pnl_pct,
-                max_pnl_window,
-                drawdown,
-                TP_TRAIL_MIN_PNL_PCT,
-                TP_TRAIL_CALLBACK_PCT,
+                "[TP-TRAIL-LOCAL] Hit trailing -> đóng lệnh %s (pnl=%.2f%%, max=%.2f%%, drawdown=%.2f%% "
+                "(min_pnl=%.1f%%, callback=%.1f%%)).",
+                instId, pnl_pct, max_pnl_window, drawdown,
+                TP_TRAIL_MIN_PNL_PCT, TP_TRAIL_CALLBACK_PCT,
             )
-    
-            # Nếu giá đã lùi ≥ callback% từ đỉnh -> chốt lời
-            if drawdown >= TP_TRAIL_CALLBACK_PCT:
-                logging.info(
-                    "[TP-TRAIL-LOCAL] Giá đã lùi %.2f%% từ đỉnh (>= %.2f%%) -> CHỐT LỜI.",
-                    drawdown,
-                    TP_TRAIL_CALLBACK_PCT,
-                )
-                try:
-                    okx.close_swap_position(instId, posSide)
-                except Exception as e:
-                    logging.error("[TP-TRAIL-LOCAL] Lỗi đóng lệnh %s: %s", instId, e)
-                # đã đóng lệnh thì sang position tiếp theo
-                continue
-            else:
-                # Vẫn trong vùng trailing: KHÔNG chạy các rule TP động phía dưới
-                logging.info(
-                    "[TP-TRAIL-LOCAL] Đang trailing, giữ lệnh (pnl=%.2f%%, max=%.2f%%).",
-                    pnl_pct,
-                    max_pnl_window,
-                )
-                continue
+            try:
+                okx.close_swap_position(instId, posSide)
+            except Exception as e:
+                logging.error("[TP-TRAIL-LOCAL] Lỗi đóng lệnh %s: %s", instId, e)
+            continue  # ❗ bỏ qua TP DYNAMIC phía dưới
+        else:
+            logging.info(
+                "[TP-TRAIL-LOCAL] Đang trailing, giữ lệnh %s (pnl=%.2f%%, max=%.2f%%, drawdown=%.2f%% "
+                "(min_pnl=%.1f%%, callback=%.1f%%)).",
+                instId, pnl_pct, max_pnl_window, drawdown,
+                TP_TRAIL_MIN_PNL_PCT, TP_TRAIL_CALLBACK_PCT,
+            )
+
+            continue
 
         # ====== 6) 4 TÍN HIỆU TP ĐỘNG (giữ nguyên bản cũ) ======
         # 1) 3 nến không tiến thêm
