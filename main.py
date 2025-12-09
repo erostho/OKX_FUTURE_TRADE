@@ -2931,7 +2931,19 @@ def run_dynamic_tp(okx: "OKXClient"):
                 tp_dyn_threshold,
             )
             continue   
-        # 5) TRAILING LOCAL – ƯU TIÊN HƠN TP DYNAMIC
+        # 5) TÍNH PNL CAO NHẤT TRONG CỬA SỔ
+        max_pnl_window = 0.0
+        for close_px in closes[-TP_TRAIL_LOOKBACK_BARS:]:
+            if posSide == "long":
+                price_pct_i = (close_px - avg_px) / avg_px * 100.0
+            else:
+                price_pct_i = (avg_px - close_px) / avg_px * 100.0
+            pnl_pct_i = price_pct_i * FUT_LEVERAGE
+            if pnl_pct_i > max_pnl_window:
+                max_pnl_window = pnl_pct_i
+        
+        drawdown = max_pnl_window - pnl_pct
+        # 6) TRAILING LOCAL – ƯU TIÊN HƠN TP DYNAMIC
         # ===== TRAILING SERVER-SIDE KHI LÃI LỚN =====
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             logging.info(
