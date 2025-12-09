@@ -208,6 +208,65 @@ def apply_risk_config(okx: "OKXClient"):
         MAX_TRADES_PER_RUN,
     )
 
+# ========== PATCH 1: ANTI-SWEEP FILTER ==========
+
+def is_liquidity_sweep_candle(open_px: float,
+                              high_px: float,
+                              low_px: float,
+                              close_px: float,
+                              min_wick_body_ratio: float = 1.5) -> bool:
+    """
+    Phát hiện nến quét thanh khoản (liquidity sweep):
+    - Wick rất dài so với thân.
+    - Đóng cửa ngược hướng với cú quét.
+
+    Trả về:
+        True  -> nến sweep, nên tránh mở lệnh ngay sau đó.
+        False -> nến bình thường.
+    """
+    body = abs(close_px - open_px)
+    if body <= 0:
+        return False
+
+    upper_wick = high_px - max(open_px, close_px)
+    lower_wick = min(open_px, close_px) - low_px
+
+    # Sweep xuống: đâm thủng đáy mạnh rồi đóng cửa xanh
+    sweep_down = (lower_wick > body * min_wick_body_ratio) and (close_px > open_px)
+
+    # Sweep lên: đâm thủng đỉnh mạnh rồi đóng cửa đỏ
+    sweep_up = (upper_wick > body * min_wick_body_ratio) and (close_px < open_px)
+
+    return sweep_down or sweep_up
+# ========== PATCH 2: SHORT-TERM VOLATILITY DEADZONE ==========
+
+def in_short_term_vol_deadzone(closes_5m, threshold_pct: float = 1.0) -> bool:
+    """
+    Deadzone nếu:
+    - move1 (c0 -> c1) >= threshold_pct
+    - move2 (c1 -> c2) >= threshold_pct
+    - move1 và move2 ngược dấu (V-shape)
+    closes_5m: list/array các giá close 5m, mới nhất ở cuối.
+    """
+    if len(closes_5m) < 3:
+        return False
+
+    c0 = float(closes_5m[-3])
+    c1 = float(closes_5m[-2])
+    c2 = float(closes_5m[-1])
+
+    if c0 <= 0 or c1 <= 0 or c2 <= 0:
+        return False
+
+    move1 = (c1 - c0) / c0 * 100.0
+    move2 = (c2 - c1) / c1 * 100.0
+
+    if abs(move1) >= threshold_pct and abs(move2) >= threshold_pct and (move1 * move2) < 0:
+        # Biến động >1% rồi đảo chiều >1% trong 2 nến liên tiếp
+        return True
+
+    return False
+
 
 def safe_float(x, default=0.0):
     try:
@@ -1547,6 +1606,25 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         + Overextended filter (không đu quá xa high/low 15m).
         + EMA align: 5m / 15m / 1H cùng hướng.
     """
+    # ----- FILTER 1: ANTI-SWEEP (dựa trên cây nến 5m mới nhất) -----
+    o = float(last["open"])
+    h = float(last["high"])
+    l = float(last["low"])
+    c = float(last["close"])
+
+    if is_liquidity_sweep_candle(o, h, l, c):
+        logging.info("[FILTER] %s: phát hiện nến liquidity sweep -> skip mở lệnh.", inst_id)
+        continue
+    
+    # ----- FILTER 2: DEADZONE BIẾN ĐỘNG NGẮN HẠN (V-shape > 1%) -----
+    closes_5m = [float(c["close"]) for c in candles_5m]
+
+    if in_short_term_vol_deadzone(closes_5m, threshold_pct=1.0):
+        logging.info(
+            "[FILTER] %s: short-term V-shape >1%% (deadzone 10 phút logic) -> skip mở lệnh.",
+            inst_id,
+        )
+        continue
 
     # -------- B0: BTC 5m cho market filter --------
     btc_5m = None
@@ -1560,19 +1638,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     except Exception as e:
         logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
         btc_5m = None
-    # -------- B0: BTC 5m cho market filter --------
-    btc_change_5m = None
-    try:
-        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
-        if btc_c and len(btc_c) >= 2:
-            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
-            btc_o = safe_float(btc_sorted[-1][1])
-            btc_cl = safe_float(btc_sorted[-1][4])
-            if btc_o > 0:
-                btc_change_5m = (btc_cl - btc_o) / btc_o * 100.0
-    except Exception as e:
-        logging.warning("[PUMP_PRO] Lỗi get_candles BTC 5m: %s", e)
-        btc_change_5m = None
+        
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
         fut_tickers = okx.get_swap_tickers()
