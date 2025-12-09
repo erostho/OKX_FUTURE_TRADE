@@ -76,6 +76,10 @@ TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
 # Lưu đỉnh PnL cho từng vị thế để trailing local
 # key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
 TP_TRAIL_PEAK_PNL = {}
+ANTI_SWEEP_LOCK_UNTIL = None  # type: Optional[datetime.datetime]
+# ====== ANTI-SWEEP / SHORT-TERM DEADZONE CONFIG ======
+ANTI_SWEEP_MOVE_PCT = 1.0          # giá chạy >1% theo mỗi chiều tính là sweep
+ANTI_SWEEP_LOCK_MINUTES = 10       # khóa mở lệnh 10 phút sau khi phát hiện sweep
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 100000     # volume USDT 24h tối thiểu
@@ -1606,38 +1610,47 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         + Overextended filter (không đu quá xa high/low 15m).
         + EMA align: 5m / 15m / 1H cùng hướng.
     """
-    # ----- FILTER 1: ANTI-SWEEP (dựa trên cây nến 5m mới nhất) -----
-    o = float(last["open"])
-    h = float(last["high"])
-    l = float(last["low"])
-    c = float(last["close"])
-
-    if is_liquidity_sweep_candle(o, h, l, c):
-        logging.info("[FILTER] %s: phát hiện nến liquidity sweep -> skip mở lệnh.", inst_id)
-        continue
-    
-    # ----- FILTER 2: DEADZONE BIẾN ĐỘNG NGẮN HẠN (V-shape > 1%) -----
-    closes_5m = [float(c["close"]) for c in candles_5m]
-
-    if in_short_term_vol_deadzone(closes_5m, threshold_pct=1.0):
-        logging.info(
-            "[FILTER] %s: short-term V-shape >1%% (deadzone 10 phút logic) -> skip mở lệnh.",
-            inst_id,
-        )
-        continue
 
     # -------- B0: BTC 5m cho market filter --------
-    btc_5m = None
+    btc_change_5m = None
     try:
         btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
         if btc_c and len(btc_c) >= 2:
             btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
+            # OHLC nến 5m hiện tại
             btc_o = safe_float(btc_sorted[-1][1])
+            btc_h = safe_float(btc_sorted[-1][2])
+            btc_l = safe_float(btc_sorted[-1][3])
             btc_cl = safe_float(btc_sorted[-1][4])
-            btc_5m = (btc_o, btc_cl)
+
+            if btc_o > 0:
+                btc_change_5m = (btc_cl - btc_o) / btc_o * 100.0
+
+                # ===== (1) ANTI-SWEEP + DEADZONE NGẮN HẠN =====
+                # Giá đã chạy >1% lên và >1% xuống trong cùng 1 nến 5m -> quét thanh khoản
+                move_up_pct = (btc_h - btc_o) / btc_o * 100.0
+                move_down_pct = (btc_o - btc_l) / btc_o * 100.0
+
+                if (
+                    move_up_pct >= ANTI_SWEEP_MOVE_PCT
+                    and move_down_pct >= ANTI_SWEEP_MOVE_PCT
+                ):
+                    # Đặt khóa 10 phút
+                    ANTI_SWEEP_LOCK_UNTIL = now_utc + datetime.timedelta(
+                        minutes=ANTI_SWEEP_LOCK_MINUTES
+                    )
+                    logging.warning(
+                        "[ANTI-SWEEP] BTC 5m quét 2 chiều (up=%.2f%%, down=%.2f%%) -> "
+                        "khóa mở lệnh tới %s.",
+                        move_up_pct,
+                        move_down_pct,
+                        ANTI_SWEEP_LOCK_UNTIL,
+                    )
+
     except Exception as e:
         logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
-        btc_5m = None
+        btc_change_5m = None
+
         
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
