@@ -41,9 +41,9 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 5.0   # chỉ bật TP động khi lãi >= 5%
+TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 2.5%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
-TP_DYN_VOL_DROP_RATIO   = 0.7   # vol hiện tại < 70% avg 10 nến -> yếu
+TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 8     # EMA-8
 TP_DYN_FLAT_BARS        = 3     # số nến 5m đi ngang trước khi thoát
 TP_DYN_ENGULF           = True  # bật thoát khi có engulfing
@@ -55,19 +55,6 @@ TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
 
-# ======== TRAILING STOP (SERVER) ========
-TRAIL_SERVER_START_PNL_PCT  = 10.0  # chỉ bật trailing server khi pnl >= 10%
-TRAIL_SERVER_CALLBACK_PCT   = 7.0   # giá rút lại 7% từ đỉnh thì sàn tự cắt
-
-# Lưu trạng thái đã đặt trailing server để không đặt trùng
-TRAIL_SERVER_PLACED = set()  # key = f"{instId}|{posSide}|{posId}"
-
-# ======== TRAILING STOP SERVER-SIDE CONFIG ========
-TRAIL_SERVER_START_PNL_PCT   = 10.0  # khi lãi >= 10% PnL thì bật trailing trên sàn
-TRAIL_SERVER_CALLBACK_PCT    = 7.0   # giá lùi 7% từ đỉnh thì sàn tự cắt
-# Lưu trạng thái lệnh nào đã đặt trailing server-side rồi (tránh đặt trùng)
-TRAIL_SERVER_PLACED = set()  # key: f"{instId}_{posSide}_{posId}"
-
 # ========== PUMP/DUMP PRO CONFIG ==========
 SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
 SL_DYN_SOFT_PCT_BAD  = 2.0   # thị trường xấu → cắt sớm hơn
@@ -75,7 +62,7 @@ SL_DYN_TREND_PCT = 1.0       # 1%/15m đi ngược chiều thì coi là mạnh
 SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
 # SL planned tối đa (khi đặt TP/SL ban đầu)
-MAX_PLANNED_SL_PNL_PCT = 7.0   # cho phép lỗ tối đa 7% PnL nếu chạm SL
+MAX_PLANNED_SL_PNL_PCT = 10.0   # cho phép lỗ tối đa 10% PnL nếu chạm SL
 # SL khẩn cấp theo PnL%
 MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 
@@ -91,45 +78,8 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0     # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 
-# ==== PULLBACK ENTRY CONFIG ====
-PULLBACK_MIN_PCT      = 0.5   # yêu cầu hồi tối thiểu 0.5% giá
-PULLBACK_ATR_FACTOR   = 0.3   # hoặc 0.3 * ATR 15m, lấy max hai cái
-ATR_PERIOD_PULLBACK   = 14    # số nến 15m dùng để ước lượng ATR cho pullback
-# ====== BLACKLIST FUTURES (KHÔNG TRADE) ======
-
-# Copy từ Excel: instId dạng FUTURES '-USDT-SWAP'
-BLACKLIST_SWAPS = {
-    "ALLO-USDT-SWAP",
-    "RLS-USDT-SWAP",
-    "MON-USDT-SWAP",
-    "PIPPIN-USDT-SWAP",
-}
-
-def _to_swap_inst(inst_id: str) -> str:
-    """
-    Chuẩn hóa về dạng FUTURES instId: XXX-USDT-SWAP
-    (scanner dùng 'XXX-USDT', còn trên OKX là 'XXX-USDT-SWAP')
-    """
-    if not inst_id:
-        return ""
-    s = inst_id.strip().upper()
-    if s.endswith("-USDT-SWAP"):
-        return s
-    if s.endswith("-USDT"):
-        return s.replace("-USDT", "-USDT-SWAP")
-    return s + "-USDT-SWAP"
-
-
-def is_blacklisted_inst(inst_id: str) -> bool:
-    """
-    Trả về True nếu inst_id nằm trong BLACKLIST_SWAPS.
-    Nhận cả dạng 'ABC-USDT' hoặc 'ABC-USDT-SWAP'.
-    """
-    swap_id = _to_swap_inst(inst_id)
-    return swap_id in BLACKLIST_SWAPS
-
 # ================== HELPERS CHUNG ==================
-
+# =========================
 #  BT ALL CACHE -> GOOGLE SHEETS
 #  - Dùng env: GOOGLE_SERVICE_ACCOUNT_JSON, BT_SHEET_ID
 #  - Lưu 1 dòng duy nhất BT_ALL (cộng dồn)
@@ -284,7 +234,7 @@ def parse_trade_time_to_utc_ms(time_str: str) -> int | None:
 
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 23 or now_vn.hour < 6
+    return now_vn.hour >= 22 or now_vn.hour < 6
 
 
 def is_backtest_time_vn():
@@ -534,8 +484,6 @@ class OKXClient:
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX ORDER RESP] %s", data)
         return data
-        # =======================
-
 
     def place_oco_tp_sl(
         self, inst_id, pos_side, side_close, sz, tp_px, sl_px, td_mode="isolated"
@@ -559,126 +507,6 @@ class OKXClient:
         logging.info("Body: %s", body)
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX OCO RESP] %s", data)
-        return data
-        
-    def get_pending_algos(self, inst_id: str, ord_type: str | None = None):
-        """
-        Lấy danh sách lệnh algo đang pending (OCO / trailing / ...).
-        Dùng cho việc hủy OCO trước khi đặt trailing.
-        """
-        path = "/api/v5/trade/orders-algo-pending"
-        params = {"instId": inst_id}
-        if ord_type:
-            params["ordType"] = ord_type
-
-        return self._request("GET", path, params=params)
-
-    def cancel_algo_orders(self, inst_id: str, algo_ids: list[str], ord_type: str = "oco"):
-        """
-        Hủy 1 hoặc nhiều lệnh algo (ví dụ OCO TP/SL).
-        """
-        if not algo_ids:
-            return None
-
-        path = "/api/v5/trade/cancel-algos"
-        body = [
-            {
-                "instId": inst_id,
-                "algoId": algo_id,
-                "ordType": ord_type,
-            }
-            for algo_id in algo_ids
-        ]
-
-        return self._request("POST", path, body=body)
-
-
-    def get_algo_list(self, inst_id: str, ord_type: str = "oco"):
-        """
-        Lấy danh sách lệnh algo (OCO / trailing / v.v) đang PENDING cho 1 instId.
-        Dùng chung cơ chế ký request của client nên không còn lỗi 401 Invalid Sign.
-        """
-        path = "/api/v5/trade/orders-algo-pending"
-        params = {
-            "instId": inst_id,
-            "ordType": ord_type,   # 'oco'
-        }
-        # giống cách self._request được gọi ở các hàm khác
-        return self._request("GET", path, params=params)
-
-    def cancel_algo_list(self, algo_ids):
-        """
-        Hủy một list algoId (ví dụ OCO TP/SL) trước khi đặt trailing.
-        """
-        if not algo_ids:
-            return None
-
-        path = "/api/v5/trade/cancel-algos"
-        body = [{"algoId": algo_id} for algo_id in algo_ids]
-
-        return self._request("POST", path, json=body)
-
-
-    def cancel_oco_algo(self, inst_id, algo_ids):
-        """
-        Huỷ danh sách OCO TP/SL theo inst_id + algoIds.
-        """
-        if not algo_ids:
-            return
-
-        path = "/api/v5/trade/cancel-algos"
-        body = [
-            {
-                "instId": inst_id,
-                "algoId": algo_id,
-                "ordType": "oco",
-            }
-            for algo_id in algo_ids
-        ]
-
-        resp = self._request("POST", path, body)
-        logging.info("[OKX] Cancel OCO resp: %s", resp)
-        return resp
-
-    
-    def place_trailing_stop(
-        self,
-        inst_id,
-        pos_side,
-        side_close,
-        sz,
-        callback_ratio_pct,
-        active_px,
-        td_mode="isolated",
-    ):
-        """
-        Đặt trailing stop server-side (ordType = move_order_stop).
-
-        - inst_id:    'BTC-USDT-SWAP'
-        - pos_side:   'long' / 'short'
-        - side_close: 'sell' nếu đóng long, 'buy' nếu đóng short
-        - sz:         khối lượng vị thế cần đóng
-        - callback_ratio_pct: ví dụ 7.0 = 7%% (theo tài liệu OKX)
-        - active_px:  giá kích hoạt trailing, ví dụ entry * 1.10 (LONG)
-        """
-
-        path = "/api/v5/trade/order-algo"
-        body = {
-            "instId": inst_id,
-            "tdMode": td_mode,
-            "side": side_close,
-            "posSide": pos_side,
-            "ordType": "move_order_stop",
-            "sz": str(sz),
-            "callbackRatio": f"{callback_ratio_pct:.2f}",  # dạng % string
-            "activePx": f"{active_px:.8f}",
-            "triggerPxType": "last",
-        }
-
-        logging.info("---- PLACE TRAILING STOP (SERVER) ----")
-        logging.info("Body: %s", body)
-        data = self._request("POST", path, body_dict=body)
-        logging.info("[OKX TRAIL RESP] %s", data)
         return data
 
     def close_swap_position(self, inst_id, pos_side):
@@ -1610,9 +1438,9 @@ def append_trade_to_drive(trade: dict):
 # ========== TELEGRAM ==========
 
 def send_telegram_message(text):
-    # 1. Tắt thông báo trong khung giờ 23h–06h (giờ VN)
+    # 1. Tắt thông báo trong khung giờ 22h–06h (giờ VN)
     if is_quiet_hours_vn():
-        logging.info("[INFO] Quiet hours (23h–06h VN), skip Telegram.")
+        logging.info("[INFO] Quiet hours (22h–06h VN), skip Telegram.")
         return
 
     # 2. Gửi như bình thường ngoài khung giờ trên
@@ -1954,16 +1782,15 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
                 if not (c_now < ema9_5m and c_now < ema20_15m):
                     continue
 
-        # ===== ENTRY PULLBACK: mid-body + EMA5 5m + yêu cầu hồi tối thiểu =====
+        # ===== ENTRY PULLBACK: mid-body + EMA5 5m =====
         mid_body = (o5_now + c5_now) / 2.0
         ema5_5m = calc_ema(closes_5[-8:], 5) if len(closes_5) >= 6 else None
 
-        # 1) Entry cơ bản: giống bản cũ (mid-body + EMA5)
         if ema5_5m:
             if direction == "LONG":
                 desired = max(mid_body, ema5_5m)
                 entry_pullback = min(c5_now, desired)
-            else:  # SHORT
+            else:
                 desired = min(mid_body, ema5_5m)
                 entry_pullback = max(c5_now, desired)
         else:
@@ -1973,49 +1800,8 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             else:
                 entry_pullback = max(c5_now, mid_body)
 
-        # 2) Ước lượng ATR 15m để bắt buộc pullback tối thiểu
-        atr15 = None
-        try:
-            trs = []
-            prev_close_15 = safe_float(c15_sorted[0][4])
-            for k in c15_sorted[1:]:
-                high15 = safe_float(k[2])
-                low15  = safe_float(k[3])
-                close15 = safe_float(k[4])
-                tr = max(
-                    high15 - low15,
-                    abs(high15 - prev_close_15),
-                    abs(low15 - prev_close_15),
-                )
-                trs.append(tr)
-                prev_close_15 = close15
-
-            if trs:
-                use_n = min(len(trs), ATR_PERIOD_PULLBACK)
-                atr15 = sum(trs[-use_n:]) / use_n
-        except Exception as e:
-            logging.warning("[PULLBACK] Lỗi tính ATR15 cho %s: %s", inst_id, e)
-            atr15 = None
-
-        # 3) Tính khoảng hồi tối thiểu cần thiết
-        pullback_abs_pct = PULLBACK_MIN_PCT / 100.0 * c5_now
-        pullback_abs_atr = PULLBACK_ATR_FACTOR * atr15 if atr15 and atr15 > 0 else 0.0
-        min_pullback_abs = max(pullback_abs_pct, pullback_abs_atr)
-
-        if min_pullback_abs > 0:
-            if direction == "LONG":
-                # Entry ảo phải thấp hơn close hiện tại ít nhất min_pullback_abs
-                target_entry = c5_now - min_pullback_abs
-                entry_pullback = min(entry_pullback, target_entry)
-            else:  # SHORT
-                # Entry ảo phải cao hơn close hiện tại ít nhất min_pullback_abs
-                target_entry = c5_now + min_pullback_abs
-                entry_pullback = max(entry_pullback, target_entry)
-
-        # 4) An toàn: không để entry_pullback <= 0
         if entry_pullback <= 0:
             entry_pullback = last_price
-
 
         # ===== score giống V1 (giữ nguyên) =====
         score = (
@@ -2340,10 +2126,6 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
         )
 
     for row in top_df.itertuples():
-        # ❌ BỎ QUA COIN TRONG BLACKLIST
-        if is_blacklisted_inst(row.instId):
-            logging.info("[BL] Bỏ qua %s vì nằm trong BLACKLIST_SWAPS.", row.instId)
-            continue
         # Nếu scanner đã tính sẵn entry_pullback thì dùng,
         # còn không thì fallback về last_price cho an toàn.
         entry = getattr(row, "entry_pullback", row.last_price)
@@ -2566,8 +2348,8 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     risk = 1.1 * atr
     risk_pct = risk / entry
     # kẹp risk_pct để tránh quá bé / quá to
-    MIN_RISK_PCT = 0.007   # 0.7% giá (≈ -3% PnL với x5)
-    MAX_RISK_PCT = 0.05    # 5% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
+    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
+    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
 
     risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
 
@@ -2582,7 +2364,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     if regime == "GOOD":
         RR = 2.0      # ăn dày khi thị trường đẹp
     else:
-        RR = 1.4      # thị trường xấu → scalp RR 1:1 an toàn
+        RR = 1.0      # thị trường xấu → scalp RR 1:1 an toàn
 
     if direction.upper() == "LONG":
         sl = entry - risk
@@ -2711,10 +2493,6 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Spot -> Perp SWAP
         swap_inst = coin.replace("-USDT", "-USDT-SWAP")
-        # ❌ Nếu symbol thuộc blacklist thì không vào lệnh
-        if is_blacklisted_inst(swap_inst):
-            logging.info("[BL] Skip mở lệnh cho %s (blacklist).", swap_inst)
-            continue
 
         # ❗ Nếu đã có vị thế mở cùng hướng trên OKX -> bỏ qua, không mở thêm
         pos_info = open_pos_map.get(swap_inst, {"long": False, "short": False})
@@ -2864,67 +2642,6 @@ def execute_futures_trades(okx: OKXClient, trades):
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
-def cancel_oco_before_trailing(okx, inst_id: str, pos_side: str) -> None:
-    """
-    Hủy tất cả OCO TP/SL đang pending cho instId + posSide
-    trước khi đặt trailing stop server-side.
-    """
-    try:
-        resp = okx.get_pending_algos(inst_id=inst_id, ord_type="oco")
-    except Exception as e:
-        logging.error(
-            "[TP-TRAIL] Lỗi gọi orders-algo-pending %s: %s",
-            inst_id, e
-        )
-        return
-
-    # OKX trả về dạng {"code":"0","data":[...]}
-    data = []
-    if isinstance(resp, dict):
-        data = resp.get("data") or []
-    else:
-        # phòng trường hợp wrapper trả list trực tiếp
-        data = resp
-
-    algo_ids: list[str] = []
-
-    for o in data:
-        try:
-            if o.get("ordType") != "oco":
-                continue
-            if o.get("instId") != inst_id:
-                continue
-            # Nếu posSide có trong dữ liệu thì lọc cho đúng chiều
-            if o.get("posSide") and o.get("posSide") != pos_side:
-                continue
-
-            algo_id = o.get("algoId")
-            if algo_id:
-                algo_ids.append(algo_id)
-        except Exception as e:
-            logging.error(
-                "[TP-TRAIL] Lỗi duyệt OCO của %s: %s",
-                inst_id, e
-            )
-
-    if not algo_ids:
-        logging.info(
-            "[TP-TRAIL] %s (%s) không có OCO nào để hủy.",
-            inst_id, pos_side
-        )
-        return
-
-    try:
-        okx.cancel_algo_orders(inst_id=inst_id, algo_ids=algo_ids, ord_type="oco")
-        logging.info(
-            "[TP-TRAIL] Đã hủy %d OCO trước khi đặt trailing cho %s (%s).",
-            len(algo_ids), inst_id, pos_side
-        )
-    except Exception as e:
-        logging.error(
-            "[TP-TRAIL] Lỗi hủy OCO trước trailing %s (%s): %s",
-            inst_id, pos_side, e
-        )
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -2969,28 +2686,23 @@ def run_dynamic_tp(okx: "OKXClient"):
     TP_TRAIL_EXIT_PNL_PCT = 4.0
     # dùng toàn bộ 30 nến 5m hiện tại làm cửa sổ quan sát high/low PnL
     TP_TRAIL_LOOKBACK_BARS = 30
+
     for p in positions:
         try:
             instId  = p.get("instId")
-            inst_id = instId                      # alias cho phần dưới
-    
-            posSide  = p.get("posSide")           # 'long' / 'short'
-            pos_side = posSide                    # ✅ alias chuẩn tên
-    
-            pos   = safe_float(p.get("pos", "0"))
-            avail = safe_float(p.get("availPos", pos))
-            sz    = avail if avail > 0 else pos
-            avg_px = safe_float(p.get("avgPx", "0"))
-            pos_id = str(p.get("posId") or "")
-    
+            posSide = p.get("posSide")  # 'long' / 'short'
+            pos     = safe_float(p.get("pos", "0"))
+            avail   = safe_float(p.get("availPos", pos))
+            sz      = avail if avail > 0 else pos
+            avg_px  = safe_float(p.get("avgPx", "0"))
+
             logging.info("[TP-DYN] -> Kiểm tra %s | posSide=%s", instId, posSide)
         except Exception as e:
             logging.error("[TP-DYN] Lỗi đọc position: %s", e)
             continue
-    
+
         if not instId or sz <= 0 or avg_px <= 0:
             continue
-
 
         # --- Lấy nến 5m ---
         try:
@@ -3087,68 +2799,13 @@ def run_dynamic_tp(okx: "OKXClient"):
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
             continue
-        # ====== 3.5) TRAILING STOP SERVER-SIDE KHI LÃI LỚN (>= 10%) ======
-            # ================= TRAILING STOP SERVER-SIDE ================
-    global TRAIL_SERVER_PLACED
-
-    # Chỉ xử lý trailing server khi pnl đủ lớn
-    if pnl_pct >= TRAIL_SERVER_START_PNL_PCT:
-        key = f"{inst_id}|{pos_side}|{pos_id}"
-
-        # Nếu đã đặt trailing cho vị thế này rồi thì bỏ qua
-        if key in TRAIL_SERVER_PLACED:
-            logging.info(
-                "[TP-TRAIL] %s đã có trailing server (pnl=%.2f%%, callback=%.1f%%). Bỏ qua.",
-                inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
-            )
-            return  # đã giao cho server trailing lo
-
-        # Chưa đặt -> tiến hành đặt trailing server-side
-        try:
-            side_close = "sell" if pos_side == "long" else "buy"
-
-            # 7% -> 0.07 theo yêu cầu OKX (0.001 ~ 1.0)
-            callback_ratio = TRAIL_SERVER_CALLBACK_PCT / 100.0
-
-            logging.info(
-                "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%%) -> đặt trailing callback=%.1f%%.",
-                inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
-            )
-
-            resp = okx.place_trailing_stop(
-                inst_id=inst_id,
-                pos_side=pos_side,
-                side_close=side_close,
-                sz=sz,
-                callback_ratio_pct=callback_ratio,
-                active_px=avg_px,
-                td_mode="isolated",
-            )
-
-            code = str(resp.get("code", ""))
-            if code != "0":
-                # Thất bại -> log chi tiết, KHÔNG thêm vào TRAIL_SERVER_PLACED
-                logging.error("[TP-TRAIL] Lỗi đặt trailing cho %s: resp=%s", inst_id, resp)
-            else:
-                TRAIL_SERVER_PLACED.add(key)
-                logging.info(
-                    "[TP-TRAIL] ĐÃ đặt trailing server cho %s (pnl=%.2f%%, callback=%.1f%%).",
-                    inst_id, pnl_pct, TRAIL_SERVER_CALLBACK_PCT
-                )
-
-        except Exception as e:
-            logging.error("[TP-TRAIL] Exception khi đặt trailing cho %s: %s", inst_id, e)
-
-        # ĐÃ giao cho trailing server -> không dùng TP dynamic local nữa
-        return
-    # ================= HẾT PHẦN TRAILING SERVER-SIDE ================
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
             tp_dyn_threshold = 3.0  # deadzone: ăn ngắn
         else:
             if market_regime == "BAD":
-                tp_dyn_threshold = 4.0   # thị trường xấu → ăn ngắn hơn
+                tp_dyn_threshold = 2.5   # thị trường xấu → ăn ngắn hơn
             else:
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 5%)
 
