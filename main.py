@@ -245,7 +245,7 @@ def parse_trade_time_to_utc_ms(time_str: str) -> int | None:
 
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 22 or now_vn.hour < 6
+    return now_vn.hour >= 23 or now_vn.hour < 6
 
 
 def is_backtest_time_vn():
