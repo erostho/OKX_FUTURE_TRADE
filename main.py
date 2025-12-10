@@ -2284,8 +2284,8 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
     """
-    Từ df_signals, planned_trades.
-    TP/SL tính theo ATR 15m của từng cặp.
+    #Từ df_signals, planned_trades.
+    #TP/SL tính theo ATR 15m của từng cặp.
     """
     planned = []
     now_s = now_str_vn()
@@ -2607,11 +2607,11 @@ def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
 def build_open_position_map(okx: OKXClient):
     """
     #Trả về dict:
-    {
-      'BTC-USDT-SWAP': {'long': True/False, 'short': True/False},
-      ...
-    }
-    dùng để biết symbol nào đã có LONG / SHORT đang mở.
+    #{
+      #'BTC-USDT-SWAP': {'long': True/False, 'short': True/False},
+      #...
+    #}
+    #dùng để biết symbol nào đã có LONG / SHORT đang mở.
     """
     positions = okx.get_open_positions()
     pos_map = {}
