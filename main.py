@@ -779,10 +779,9 @@ def get_bt_cache_worksheet():
 
 def load_bt_cache():
     """
-    Đọc toàn bộ cache trades từ sheet BT_TRADES_CACHE.
-    Trả về list[dict].
-
-    Fix: dùng expected_headers để tránh lỗi header trống / trùng trong sheet.
+    #Đọc toàn bộ cache trades từ sheet BT_TRADES_CACHE.
+    #Trả về list[dict].
+    #Fix: dùng expected_headers để tránh lỗi header trống / trùng trong sheet.
     """
     ws = get_bt_cache_worksheet()
     if not ws:
