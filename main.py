@@ -494,13 +494,16 @@ class OKXClient:
                 r.raise_for_status()
     
             data = r.json()
-            if data.get("code") != "0":
-                logging.error(
-                    "✗ OKX RESPONSE ERROR code=%s msg=%s",
-                    data.get("code"),
-                    data.get("msg"),
-                )
+            code = data.get("code")
+            msg = data.get("msg", "")
+            
+            if code != "0":
+                logging.error("❌ OKX RESPONSE ERROR code=%s msg=%s", code, msg)
+                logging.error("Full response: %s", data)
+                raise Exception(f"OKX API error code={code} msg={msg}")
+            
             return data
+
     
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
@@ -641,38 +644,52 @@ class OKXClient:
 
     def place_trailing_stop(
         self,
-        inst_id,
-        pos_side,      # 'long' hoặc 'short'
-        side_close,    # 'sell' nếu long, 'buy' nếu short
-        sz,
-        callback_ratio_pct,
-        active_px,
-        td_mode="isolated",
+        inst_id: str,
+        pos_side: str,
+        side_close: str,
+        sz: str,
+        callback_ratio_pct: float,
+        active_px: float,
+        td_mode: str = "isolated",
     ):
-        # đổi % -> ratio cho đúng range 0.001–1
-        ratio = callback_ratio_pct / 100.0
-        # kẹp lại cho chắc
+        """
+        Đặt trailing stop server-side (ordType = move_order_stop)
+    
+        callback_ratio_pct: nhập theo % (vd 7.0) -> tự đổi sang ratio 0.07
+        OKX yêu cầu callbackRatio nằm trong [0.001, 1].
+        """
+        # 1) đổi % sang ratio
+        ratio = callback_ratio_pct / 100.0  # 7.0 -> 0.07
+    
+        # 2) kẹp trong range hợp lệ
         if ratio < 0.001:
             ratio = 0.001
-        if ratio > 1:
+        elif ratio > 1.0:
             ratio = 1.0
+    
         path = "/api/v5/trade/order-algo"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
-            "side": side_close,
-            "posSide": pos_side,
+            "side": side_close,          # 'sell' nếu đóng long, 'buy' nếu đóng short
+            "posSide": pos_side,         # 'long' hoặc 'short'
             "ordType": "move_order_stop",
-            "sz": str(sz),
-            "callbackRatio": f"{ratio:.3f}",       # 0.070 thay vì 7.00
-            "activePx": f"{active_px:.8f}",
+            "sz": sz,
+            "callbackRatio": f"{ratio:.6f}",   # ví dụ 0.050000 cho 5%
+            "activePx": f"{active_px:.6f}",    # giá kích hoạt trailing
             "triggerPxType": "last",
         }
-
-        logging.info("---- PLACE TRAILING STOP (SERVER) ----")
-        logging.info("Body: %s", body)
-
+    
+        logging.info(
+            "[TP-TRAIL] Gửi trailing server-side %s sz=%s callbackRatio=%.4f activePx=%.6f",
+            inst_id,
+            sz,
+            ratio,
+            active_px,
+        )
+    
         return self._request("POST", path, body_dict=body)
+
 
     def place_oco_tp_sl(
         self, inst_id, pos_side, side_close, sz, tp_px, sl_px, td_mode="isolated"
