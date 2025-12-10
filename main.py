@@ -72,7 +72,7 @@ MAX_PLANNED_SL_PNL_PCT = 7.0   # cho phép lỗ tối đa 7% PnL nếu chạm SL
 MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
-TP_TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
