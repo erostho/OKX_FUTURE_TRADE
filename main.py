@@ -13,6 +13,7 @@ import numpy as np
 from google.oauth2.service_account import Credentials
 import gspread
 from google.oauth2 import service_account
+from urllib.parse import urlencode
 
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
@@ -423,35 +424,62 @@ class OKXClient:
         return headers
 
     def _request(self, method, path, params=None, body_dict=None):
-        url = OKX_BASE_URL + path
-        body_str = json.dumps(body_dict) if body_dict is not None else ""
-        headers = self._headers(method, path, body_str if method == "POST" else "")
-        try:
-            if method == "GET":
-                r = requests.get(url, headers=headers, params=params, timeout=15)
+        """
+        Wrapper gọi OKX API, KÝ ĐÚNG CHUỖI cho cả GET (có query) & POST.
+    
+        - GET  : prehash = ts + method + path + '?' + query_str
+        - POST : prehash = ts + method + path + body_str
+        """
+        # Base URL thô chưa query
+        base_url = OKX_BASE_URL + path
+    
+        # Chuẩn bị query / body + chuỗi dùng để ký
+        if method.upper() == "GET":
+            # build query string (nếu có params)
+            query_str = urlencode(params or {})
+            if query_str:
+                url = f"{base_url}?{query_str}"
+                sign_path = f"{path}?{query_str}"   # cái này đem đi ký
             else:
-                r = requests.post(
-                    url, headers=headers, params=params, data=body_str, timeout=15
-                )
-
+                url = base_url
+                sign_path = path
+            body_str = ""                            # GET không có body
+        else:
+            # POST: không ký query, chỉ ký body
+            url = base_url
+            sign_path = path
+            body_str = json.dumps(body_dict) if body_dict is not None else ""
+    
+        # Headers với chuỗi sign_path & body_str đã chuẩn
+        headers = self._headers(method.upper(), sign_path, body_str)
+    
+        try:
+            if method.upper() == "GET":
+                # query đã gắn vào url, nên params=None
+                r = requests.get(url, headers=headers, timeout=15)
+            else:
+                r = requests.post(url, headers=headers, data=body_str, timeout=15)
+    
             if r.status_code != 200:
-                logging.error("❌ OKX REQUEST FAILED")
+                logging.error("✗ OKX REQUEST FAILED")
                 logging.error("URL: %s", r.url)
                 logging.error("Status Code: %s", r.status_code)
                 logging.error("Response: %s", r.text)
                 r.raise_for_status()
-
+    
             data = r.json()
             if data.get("code") != "0":
                 logging.error(
-                    "❌ OKX RESPONSE ERROR code=%s msg=%s",
+                    "✗ OKX RESPONSE ERROR code=%s msg=%s",
                     data.get("code"),
                     data.get("msg"),
                 )
             return data
+    
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
             raise
+
 
     # ---------- PUBLIC ----------
 
@@ -596,13 +624,15 @@ class OKXClient:
         td_mode="isolated",
     ):
         """
-        Đặt trailing stop server-side (ordType = move_order_stop)
-        callback_ratio_pct: nhập theo % (ví dụ 7.0) -> tự đổi sang 0.07
-        """
-        path = "/api/v5/trade/order-algo"
-
         callback_ratio = callback_ratio_pct / 100.0  # 7% -> 0.07
-
+        # đổi % -> ratio cho đúng range 0.001–1
+        ratio = callback_ratio_pct / 100.0
+        # kẹp lại cho chắc
+        if ratio < 0.001:
+            ratio = 0.001
+        if ratio > 1:
+            ratio = 1.0
+        path = "/api/v5/trade/order-algo"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
@@ -610,7 +640,7 @@ class OKXClient:
             "posSide": pos_side,
             "ordType": "move_order_stop",
             "sz": str(sz),
-            "callbackRatio": f"{callback_ratio:.4f}",  # trong khoảng 0.001–1
+            "callbackRatio": f"{ratio:.3f}",       # 0.070 thay vì 7.00
             "activePx": f"{active_px:.8f}",
             "triggerPxType": "last",
         }
