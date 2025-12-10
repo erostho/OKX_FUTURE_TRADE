@@ -1501,7 +1501,7 @@ def get_drive_service():
 
 def load_history_from_drive():
     """
-    Download file CSV từ Google Drive → trả về list[dict] trade.
+    Download file CSV từ Google Drive, trả về list[dict] trade.
     Mỗi dict có key: coin, signal, entry, tp, sl, time
     """
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
@@ -1544,7 +1544,7 @@ def load_history_from_drive():
 def append_trade_to_drive(trade: dict):
     """
     Append 1 lệnh vào file CSV trên Google Drive.
-    - Nếu DRIVE_HISTORY_RESET_ONCE=1: bỏ qua dữ liệu cũ → chỉ dùng trade mới.
+    - Nếu DRIVE_HISTORY_RESET_ONCE=1: bỏ qua dữ liệu cũ, chỉ dùng trade mới.
     - Luôn ghi lại header đầy đủ mỗi lần upload.
     """
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
