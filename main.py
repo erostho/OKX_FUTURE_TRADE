@@ -3035,8 +3035,8 @@ def run_dynamic_tp(okx: "OKXClient"):
             price_pct = (avg_px - c_now) / avg_px * 100.0
         
         # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
-        pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
-        
+        #pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
+        pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
         # 1b) FALLBACK: nếu không tính được thì dùng công thức cũ
         if pnl_pct is None:
             pnl_pct = price_pct * FUT_LEVERAGE
