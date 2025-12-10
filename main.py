@@ -2843,7 +2843,7 @@ def run_dynamic_tp(okx: "OKXClient"):
               #mà hiện tại PnL% <= TP_TRAIL_EXIT_PNL_PCT (gần hòa vốn) → đóng lệnh, coi như
               đã "kéo SL về entry" và không cho quay lại lỗ sâu nữa.
     """
-    """
+
 
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
     positions = okx.get_open_positions()
