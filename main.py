@@ -1387,10 +1387,10 @@ def get_session_from_time(time_s: str) -> str | None:
 def run_backtest_if_needed(okx: "OKXClient"):
     """
     Backtest REAL bằng lịch sử vị thế đã đóng trên OKX.
-    Gửi 3 block:
-      1) BT ALL
-      2) BT TODAY
-      3) SESSION TODAY (4 phiên)
+    #Gửi 3 block:
+      #1) BT ALL
+      #2) BT TODAY
+      #3) SESSION TODAY (4 phiên)
     """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
