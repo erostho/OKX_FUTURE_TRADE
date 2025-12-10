@@ -627,7 +627,6 @@ class OKXClient:
         active_px,
         td_mode="isolated",
     ):
-        """
         # đổi % -> ratio cho đúng range 0.001–1
         ratio = callback_ratio_pct / 100.0
         # kẹp lại cho chắc
@@ -1992,7 +1991,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
     #- Ưu tiên coin volume lớn, biến động 24h vừa phải.
     #- Tìm tín hiệu mean-reversion quanh EMA20 5m (giá lệch không quá xa EMA, có dấu hiệu quay lại).
     #- Trả về DataFrame cùng format với build_signals_pump_dump_pro:
-        columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
+        #columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
     """
 
     # Chỉ chạy đúng khung giờ deadzone, ngoài giờ thì trả DF rỗng
@@ -2305,7 +2304,7 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
 
 def build_swap_meta_map(instruments):
     """
-    Return dict: instId, {ctVal, lotSz, minSz}
+    #Return dict: instId, {ctVal, lotSz, minSz}
     """
     meta = {}
     for ins in instruments:
@@ -2468,7 +2467,7 @@ def simulate_trade_result_with_candles(
 
     # duyệt hết mà không chạm TP/SL
     return "OPEN"
-
+    
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
     #TP/SL theo ATR 15m (phiên PUMP/DUMP):
