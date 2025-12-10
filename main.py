@@ -1629,15 +1629,15 @@ def send_telegram_message(text):
 # ========== SCANNER LOGIC ==========
 def build_signals_pump_dump_pro(okx: "OKXClient"):
     """
-    PUMP/DUMP PRO V2:
-    - Giữ nguyên logic V1 (24h filter, 15m/5m momentum, vol_spike).
-    - Bổ sung thêm:
-        + Entry pullback (mid-body + EMA5 5m).
-        + BTC 5m filter (tránh LONG khi BTC đỏ nến, SHORT khi BTC xanh).
-        + Impulse 2–3 sóng (closes 5m cùng chiều).
-        + Wick filter (tránh pump-xả wick dài).
-        + Overextended filter (không đu quá xa high/low 15m).
-        + EMA align: 5m / 15m / 1H cùng hướng.
+    #PUMP/DUMP PRO V2:
+    #- Giữ nguyên logic V1 (24h filter, 15m/5m momentum, vol_spike).
+    #- Bổ sung thêm:
+        #+ Entry pullback (mid-body + EMA5 5m).
+        #+ BTC 5m filter (tránh LONG khi BTC đỏ nến, SHORT khi BTC xanh).
+        #+ Impulse 2–3 sóng (closes 5m cùng chiều).
+        #+ Wick filter (tránh pump-xả wick dài).
+        #+ Overextended filter (không đu quá xa high/low 15m).
+        #+ EMA align: 5m / 15m / 1H cùng hướng.
     """
 
     # -------- B0: BTC 5m cho market filter --------
@@ -2038,11 +2038,10 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 def build_signals_sideway_deadzone(okx: "OKXClient"):
     """
     Scanner phiên DEADZONE (10h30–15h30 VN):
-
-    - Không bắt breakout pump/dump.
-    - Ưu tiên coin volume lớn, biến động 24h vừa phải.
-    - Tìm tín hiệu mean-reversion quanh EMA20 5m (giá lệch không quá xa EMA, có dấu hiệu quay lại).
-    - Trả về DataFrame cùng format với build_signals_pump_dump_pro:
+    #- Không bắt breakout pump/dump.
+    #- Ưu tiên coin volume lớn, biến động 24h vừa phải.
+    #- Tìm tín hiệu mean-reversion quanh EMA20 5m (giá lệch không quá xa EMA, có dấu hiệu quay lại).
+    #- Trả về DataFrame cùng format với build_signals_pump_dump_pro:
         columns: instId, direction, change_pct, abs_change, last_price, vol_quote, score
     """
 
@@ -2285,7 +2284,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
 
 def plan_trades_from_signals(df, okx: "OKXClient"):
     """
-    Từ df_signals -> planned_trades.
+    Từ df_signals, planned_trades.
     TP/SL tính theo ATR 15m của từng cặp.
     """
     planned = []
@@ -2356,7 +2355,7 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
 
 def build_swap_meta_map(instruments):
     """
-    Return dict: instId -> {ctVal, lotSz, minSz}
+    Return dict: instId, {ctVal, lotSz, minSz}
     """
     meta = {}
     for ins in instruments:
@@ -2376,10 +2375,9 @@ def build_swap_meta_map(instruments):
 
 def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 30):
     """
-    Tính ATR (Average True Range) trên khung 15m cho 1 cặp.
-    Dùng ~30 nến, lấy ATR 14 nến gần nhất.
-
-    Trả về: atr (float) hoặc None nếu lỗi.
+    #Tính ATR (Average True Range) trên khung 15m cho 1 cặp.
+    #Dùng ~30 nến, lấy ATR 14 nến gần nhất.
+    #Trả về: atr (float) hoặc None nếu lỗi.
     """
     try:
         candles = okx.get_candles(inst_id, bar="15m", limit=limit)
@@ -2523,9 +2521,9 @@ def simulate_trade_result_with_candles(
 
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
-    TP/SL theo ATR 15m (phiên PUMP/DUMP):
-      - risk_pct ~ ATR/price, kẹp [1%; 4%]
-      - RR = 2 (TP ≈ 2R, SL ≈ 1R) 
+    #TP/SL theo ATR 15m (phiên PUMP/DUMP):
+      #- risk_pct ~ ATR/price, kẹp [1%; 4%]
+      #- RR = 2 (TP ≈ 2R, SL ≈ 1R) 
     """
     atr = calc_atr_15m(okx, inst_id)
     if not atr or atr <= 0:
@@ -2592,10 +2590,10 @@ def calc_ema(prices, length):
 
 def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
     """
-    price: last price
-    notional_usdt: desired position notional
-    ct_val: contract value (base coin)
-    lot_sz: minimum increment in contracts
+    #price: last price
+    #notional_usdt: desired position notional
+    #ct_val: contract value (base coin)
+    #lot_sz: minimum increment in contracts
     """
     if price <= 0 or ct_val <= 0:
         return 0.0
@@ -2608,7 +2606,7 @@ def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
 
 def build_open_position_map(okx: OKXClient):
     """
-    Trả về dict:
+    #Trả về dict:
     {
       'BTC-USDT-SWAP': {'long': True/False, 'short': True/False},
       ...
