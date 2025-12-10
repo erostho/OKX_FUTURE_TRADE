@@ -2891,7 +2891,7 @@ def run_dynamic_tp(okx: "OKXClient"):
     - Thêm:
         + TP trailing:
             * Nếu trong cửa sổ quan sát, lệnh đã từng đạt PnL% >= TP_TRAIL_START_PNL_PCT
-              mà hiện tại PnL% <= TP_TRAIL_EXIT_PNL_PCT (gần hòa vốn) → đóng lệnh, coi như
+              #mà hiện tại PnL% <= TP_TRAIL_EXIT_PNL_PCT (gần hòa vốn) → đóng lệnh, coi như
               đã "kéo SL về entry" và không cho quay lại lỗ sâu nữa.
     """
 
@@ -3180,10 +3180,10 @@ def run_dynamic_tp(okx: "OKXClient"):
 def detect_market_regime(okx: "OKXClient"):
     """
     GOOD MARKET khi:
-    - BTC 5m body đẹp (body_ratio > 0.55)
-    - Wick không quá dài
-    - Volume đều, không spike bất thường
-    - Trend 5m/15m đồng pha
+    #- BTC 5m body đẹp (body_ratio > 0.55)
+    #- Wick không quá dài
+    #- Volume đều, không spike bất thường
+    #- Trend 5m/15m đồng pha
     BAD MARKET nếu ngược lại.
     """
 
