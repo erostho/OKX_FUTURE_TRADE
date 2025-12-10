@@ -2441,11 +2441,11 @@ def simulate_trade_result_with_candles(
       - entry, tp, sl: float
       - time_str: 'dd/mm/YYYY HH:MM' (giờ VN)
 
-    Logic:
-      - lấy ~300 nến 5m gần nhất
-      - tìm nến có ts >= thời điểm vào lệnh
-      - duyệt từng nến: kiểm tra high/low chạm TP/SL
-      - nếu cả TP & SL cùng chạm trong 1 nến -> giả định XẤU NHẤT: SL trước
+    #Logic:
+      #- lấy ~300 nến 5m gần nhất
+      #- tìm nến có ts >= thời điểm vào lệnh
+      #- duyệt từng nến: kiểm tra high/low chạm TP/SL
+      #- nếu cả TP & SL cùng chạm trong 1 nến -> giả định XẤU NHẤT: SL trước
     """
     ts_entry = parse_trade_time_to_utc_ms(time_str)
     if ts_entry is None:
