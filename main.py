@@ -2037,7 +2037,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     return df
 def build_signals_sideway_deadzone(okx: "OKXClient"):
     """
-    Scanner phiên DEADZONE (10h30–15h30 VN):
+    #Scanner phiên DEADZONE (10h30–15h30 VN):
     #- Không bắt breakout pump/dump.
     #- Ưu tiên coin volume lớn, biến động 24h vừa phải.
     #- Tìm tín hiệu mean-reversion quanh EMA20 5m (giá lệch không quá xa EMA, có dấu hiệu quay lại).
