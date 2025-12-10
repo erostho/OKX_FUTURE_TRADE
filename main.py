@@ -19,6 +19,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 import io
 import csv
 import tempfile
+from typing import Optional
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
 SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
