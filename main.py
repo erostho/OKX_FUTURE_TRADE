@@ -1612,6 +1612,18 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     """
 
     # -------- B0: BTC 5m cho market filter --------
+    btc_5m = None
+    try:
+        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
+        if btc_c and len(btc_c) >= 2:
+            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
+            btc_o = safe_float(btc_sorted[-1][1])
+            btc_cl = safe_float(btc_sorted[-1][4])
+            btc_5m = (btc_o, btc_cl)
+    except Exception as e:
+        logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
+        btc_5m = None
+    # -------- B0: BTC 5m cho market filter --------
     btc_change_5m = None
     try:
         btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
