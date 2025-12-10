@@ -624,7 +624,6 @@ class OKXClient:
         td_mode="isolated",
     ):
         """
-        callback_ratio = callback_ratio_pct / 100.0  # 7% -> 0.07
         # đổi % -> ratio cho đúng range 0.001–1
         ratio = callback_ratio_pct / 100.0
         # kẹp lại cho chắc
