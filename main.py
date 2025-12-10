@@ -1191,8 +1191,8 @@ def load_real_trades_for_backtest(okx):
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
     """
     Trả về 3 đoạn text:
-      - msg_all     : [✅BT ALL] thống kê TẤT CẢ lệnh trong BT_TRADES_CACHE
-      - msg_today   : [✅BT TODAY] chỉ các lệnh đóng hôm nay (theo giờ VN)
+      - msg_all     : [BT ALL] thống kê TẤT CẢ lệnh trong BT_TRADES_CACHE
+      - msg_today   : [BT TODAY] chỉ các lệnh đóng hôm nay (theo giờ VN)
       - msg_session : --- SESSION TODAY --- 4 phiên 0-9, 9-15, 15-20, 20-24
     """
     # Không có trade nào
