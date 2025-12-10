@@ -305,6 +305,29 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
+def calc_realtime_pnl_pct(pos: dict, fut_leverage: float) -> float | None:
+    """
+    Tính PnL% realtime cho 1 position dựa trên mark/last price.
+
+    pos: 1 dict position trả về từ OKX /positions
+    fut_leverage: hệ số đòn bẩy FUT_LEVERAGE
+    """
+    try:
+        avg_px = safe_float(pos.get("avgPx", 0.0))
+        # ưu tiên markPx, nếu không có thì dùng last (tuỳ OKX trả về field nào)
+        cur_px = safe_float(pos.get("markPx") or pos.get("last") or 0.0)
+        if avg_px <= 0 or cur_px <= 0:
+            return None
+
+        pos_side = pos.get("posSide", "long")
+        if pos_side == "long":
+            price_pct = (cur_px - avg_px) / avg_px * 100.0
+        else:   # short
+            price_pct = (avg_px - cur_px) / avg_px * 100.0
+
+        return price_pct * fut_leverage
+    except Exception:
+        return None
 
 def percent_change(new, old):
     if old == 0:
@@ -508,6 +531,24 @@ class OKXClient:
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
             raise
+
+    def has_active_trailing(self, inst_id: str, pos_side: str) -> bool:
+        """
+        Kiểm tra xem symbol này đã có trailing server-side đang chờ hay chưa.
+        """
+        path = "/api/v5/trade/orders-algo-pending"
+        params = {
+            "instId": inst_id,
+            "ordType": "move_order_stop",
+        }
+        data = self._request("GET", path, params=params)
+
+        algo_orders = data.get("data", []) if isinstance(data, dict) else data
+        for o in algo_orders:
+            # tuỳ OKX trả về, thường có posSide
+            if o.get("posSide") == pos_side:
+                return True
+        return False
 
 
     # ---------- PUBLIC ----------
@@ -2862,6 +2903,35 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
         )
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
+def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
+    """
+    Trả về True nếu đã có ÍT NHẤT 1 lệnh trailing (move_order_stop)
+    đang hoạt động cho inst_id + posSide này.
+    """
+    try:
+        # Hàm wrapper đã dùng cho OCO, giờ tái dùng cho trailing
+        pending = okx.get_algo_pending(inst_id=inst_id, ord_type="move_order_stop")
+    except Exception as e:
+        logging.error("[TP-TRAIL] Lỗi get_algo_pending trailing cho %s: %s", inst_id, e)
+        return False
+
+    if not pending:
+        return False
+
+    for o in pending:
+        try:
+            if o.get("instId") != inst_id:
+                continue
+            if o.get("posSide") != pos_side:
+                continue
+            # các state còn hiệu lực
+            if o.get("state") not in ("live", "effective"):
+                continue
+            return True
+        except Exception:
+            continue
+
+    return False
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -2959,13 +3029,21 @@ def run_dynamic_tp(okx: "OKXClient"):
         l_prev1 = lows[-2]
         vol_now = vols[-1]
 
-        # ====== 1) TÍNH % GIÁ & % PnL (y như bản cũ) ======
+        # ===== 1) TÍNH % GIÁ & % PnL =====
         if posSide == "long":
             price_pct = (c_now - avg_px) / avg_px * 100.0
         else:  # short
             price_pct = (avg_px - c_now) / avg_px * 100.0
+        
+        # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
+        pnl_pct = calc_realtime_pnl_pct(p)
+        
+        # 1b) FALLBACK: nếu không tính được thì dùng công thức cũ
+        if pnl_pct is None:
+            pnl_pct = price_pct * FUT_LEVERAGE
 
-        pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
+            logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
+            continue
 
         # ====== 2) SL DYNAMIC (soft SL theo trend) ======
         # dùng cùng market_regime đã detect ở đầu hàm
@@ -3070,17 +3148,26 @@ def run_dynamic_tp(okx: "OKXClient"):
                 "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
             )
-        
+
             # 6.3) Hủy toàn bộ OCO TP/SL cũ trước khi đặt trailing
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
-                logging.error("[TP-TRAIL] Lỗi khi hủy OCO trước trailing %s (%s): %s",
+                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s",
                               inst_id, pos_side, e)
+        
+            # 6.3b) CHỐNG ĐẶT TRÙNG LỆNH TRAILING
+            if has_active_trailing_for_position(okx, inst_id, pos_side):
+                logging.info(
+                    "[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> "
+                    "không đặt thêm lệnh mới.",
+                    inst_id, pos_side,
+                )
+                # đã giao cho sàn trailing rồi thì bỏ qua TP_DYNAMIC phía dưới
+                continue
         
             # 6.4) Đặt trailing server-side trên OKX
             side_close = "sell" if pos_side == "long" else "buy"
-        
             try:
                 okx.place_trailing_stop(
                     inst_id=inst_id,
@@ -3095,6 +3182,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     "[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
                     inst_id, pnl_pct, callback_pct,
                 )
+
             except Exception as e:
                 logging.error(
                     "[TP-TRAIL] Exception khi đặt trailing server cho %s: %s",
