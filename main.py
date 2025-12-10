@@ -308,7 +308,6 @@ def safe_float(x, default=0.0):
 def calc_realtime_pnl_pct(pos: dict, fut_leverage: float) -> float | None:
     """
     Tính PnL% realtime cho 1 position dựa trên mark/last price.
-
     pos: 1 dict position trả về từ OKX /positions
     fut_leverage: hệ số đòn bẩy FUT_LEVERAGE
     """
@@ -3036,7 +3035,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             price_pct = (avg_px - c_now) / avg_px * 100.0
         
         # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
-        pnl_pct = calc_realtime_pnl_pct(p)
+        pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
         
         # 1b) FALLBACK: nếu không tính được thì dùng công thức cũ
         if pnl_pct is None:
