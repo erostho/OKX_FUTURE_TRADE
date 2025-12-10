@@ -110,6 +110,28 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
+def dynamic_trail_callback_pct(pnl_pct: float) -> float:
+    """
+    Callback động cho trailing server-side:
+    - PnL < 40%  -> dùng TRAIL_SERVER_CALLBACK_PCT (mặc định 7%)
+    - 40% <= PnL <= 100%:
+         nội suy từ 5% (40%) xuống 3.5% (100%)
+    - PnL > 100% -> cố định 3.5%
+    """
+    # 1) Nếu chưa đủ 40% thì để nguyên callback mặc định
+    if pnl_pct < 40.0:
+        return TRAIL_SERVER_CALLBACK_PCT
+
+    # 2) Vùng dynamic 40–100%: 5% -> 3.5%
+    cb_high = 5.0   # callback ở 40%
+    cb_low  = 3.5   # callback ở 100%
+
+    if pnl_pct >= 100.0:
+        return cb_low
+
+    # t từ 0 -> 1 khi pnl từ 40 -> 100
+    t = (pnl_pct - 40.0) / (100.0 - 40.0)
+    return cb_high + t * (cb_low - cb_high)
 
 def _get_gspread_client():
     """Khởi tạo client gspread từ GOOGLE_SERVICE_ACCOUNT_JSON (env trên Render)."""
@@ -3011,42 +3033,58 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
         
         drawdown = max_pnl_window - pnl_pct
-        # 6) TRAILING LOCAL – ƯU TIÊN HƠN TP DYNAMIC
-        # ===== TRAILING SERVER-SIDE KHI LÃI LỚN =====
+        # 6) TRAILING SERVER-SIDE KHI LÃI LỚN  (ƯU TIÊN HƠN TP DYNAMIC)
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
+            # 6.1) Tính callback động theo PnL hiện tại
+            callback_pct = dynamic_trail_callback_pct(pnl_pct)
+        
+            # 6.2) Lấy GIÁ HIỆN TẠI làm activePx (để chắc chắn trailing được kích hoạt)
+            # thay 'last_px' bằng biến bạn đang dùng để tính pnl (last / mark)
+            try:
+                current_px = safe_float(last_px)
+            except Exception:
+                # fallback: lấy close 5m mới nhất nếu cần
+                current_px = closes[-1]
+        
             logging.info(
                 "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
-                "Hủy OCO + đặt trailing server-side.",
-                instId,
-                pnl_pct,
-                TP_TRAIL_SERVER_MIN_PNL_PCT,
+                "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
+                inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
             )
-
-            # 1) Hủy OCO TP/SL cũ (nếu có)
-            cancel_oco_before_trailing(okx, instId, posSide)
-
-            # 2) Đặt trailing stop server-side
-            side_close = "sell" if posSide == "long" else "buy"
-
+        
+            # 6.3) Hủy toàn bộ OCO TP/SL cũ trước khi đặt trailing
             try:
-                ok = okx.place_trailing_stop(
-                    inst_id=instId,
-                    pos_side=posSide,
+                cancel_oco_before_trailing(okx, inst_id, pos_side)
+            except Exception as e:
+                logging.error("[TP-TRAIL] Lỗi khi hủy OCO trước trailing %s (%s): %s",
+                              inst_id, pos_side, e)
+        
+            # 6.4) Đặt trailing server-side trên OKX
+            side_close = "sell" if pos_side == "long" else "buy"
+        
+            try:
+                okx.place_trailing_stop(
+                    inst_id=inst_id,
+                    pos_side=pos_side,
                     side_close=side_close,
                     sz=sz,
-                    callback_ratio_pct=TP_TRAIL_SERVER_CALLBACK_PCT,
-                    active_px=avg_px,    # dùng giá vốn làm activePx
+                    callback_ratio_pct=callback_pct,  # dùng callback động
+                    active_px=current_px,             # GIÁ HIỆN TẠI, KHÔNG PHẢI ENTRY
+                    td_mode="isolated",
                 )
-                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s", instId)
+                logging.info(
+                    "[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
+                    inst_id, pnl_pct, callback_pct,
+                )
             except Exception as e:
                 logging.error(
-                    "[TP-TRAIL] Lỗi khi đặt trailing server cho %s: %s",
-                    instId,
-                    e,
+                    "[TP-TRAIL] Exception khi đặt trailing server cho %s: %s",
+                    inst_id, e,
                 )
-
-            # QUAN TRỌNG: bỏ qua TP DYNAMIC / TRAIL LOCAL cho lệnh này
+        
+            # khi đã giao trailing cho sàn thì bỏ qua TP_DYNAMIC phía dưới
             continue
+
 
         # ====== 6) 4 TÍN HIỆU TP ĐỘNG (giữ nguyên bản cũ) ======
         # 1) 3 nến không tiến thêm
