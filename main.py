@@ -2894,6 +2894,7 @@ def run_dynamic_tp(okx: "OKXClient"):
     for p in positions:
         try:
             instId  = p.get("instId")
+            inst_id = instId
             posSide = p.get("posSide")  # 'long' / 'short'
             pos     = safe_float(p.get("pos", "0"))
             avail   = safe_float(p.get("availPos", pos))
