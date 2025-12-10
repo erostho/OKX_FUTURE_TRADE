@@ -615,7 +615,7 @@ class OKXClient:
         path = "/api/v5/trade/cancel-algos"
         body = [{"instId": inst_id, "algoId": a} for a in algo_ids]
 
-        return self._request("POST", path, json=body)
+        return self._request("POST", path, body_dict=body)
 
     def place_trailing_stop(
         self,
@@ -650,7 +650,7 @@ class OKXClient:
         logging.info("---- PLACE TRAILING STOP (SERVER) ----")
         logging.info("Body: %s", body)
 
-        return self._request("POST", path, json=body)
+        return self._request("POST", path, body_dict=body)
 
     def place_oco_tp_sl(
         self, inst_id, pos_side, side_close, sz, tp_px, sl_px, td_mode="isolated"
