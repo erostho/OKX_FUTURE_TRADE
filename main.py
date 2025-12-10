@@ -3178,15 +3178,12 @@ def run_dynamic_tp(okx: "OKXClient"):
 
 
 def detect_market_regime(okx: "OKXClient"):
-    """
-    GOOD MARKET khi:
+    #GOOD MARKET khi:
     #- BTC 5m body đẹp (body_ratio > 0.55)
     #- Wick không quá dài
     #- Volume đều, không spike bất thường
     #- Trend 5m/15m đồng pha
     BAD MARKET nếu ngược lại.
-    """
-
     try:
         c5 = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=3)
         c15 = okx.get_candles("BTC-USDT-SWAP", bar="15m", limit=3)
