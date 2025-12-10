@@ -14,7 +14,11 @@ from google.oauth2.service_account import Credentials
 import gspread
 from google.oauth2 import service_account
 from urllib.parse import urlencode
-
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
+import io
+import csv
+import tempfile
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
 SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
@@ -836,10 +840,6 @@ def load_bt_cache():
     logging.info("[BT-CACHE] Load cache: %d trades.", len(trades))
     return trades
 def append_bt_cache(new_trades):
-    """
-    Append thêm các lệnh mới vào sheet cache.
-    CHỐNG TRÙNG theo key (posId + cTime) đúng như logic backtest.
-    """
     if not new_trades:
         return
 
@@ -1014,10 +1014,7 @@ def check_session_circuit_breaker(okx) -> bool:
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
 def load_bt_trades_cache() -> list[dict]:
-    """
-    Đọc toàn bộ lệnh đã lưu trong sheet BT_TRADES_CACHE.
-    Mỗi dòng = 1 lệnh đã đóng (posId + instId + side + sz + openPx + closePx + pnl + cTime)
-    """
+
     # ⚠️ get_bt_cache_worksheet KHÔNG nhận tham số -> KHÔNG truyền "BT_TRADES_CACHE" vào
     ws = get_bt_cache_worksheet()
     if not ws:
@@ -1059,12 +1056,6 @@ def load_bt_trades_cache() -> list[dict]:
     logging.info("[BACKTEST] Đọc được %d trades từ BT_TRADES_CACHE", len(trades))
     return trades
 def load_real_trades_for_backtest(okx):
-    """
-    Dùng REAL closed positions cho backtest.
-
-    - Mỗi lần chạy luôn kéo cửa sổ ~1000 lệnh mới nhất từ OKX (positions-history).
-    - Hợp nhất với cache BT_TRADES_CACHE, chỉ bỏ TRÙNG Y HỆT (cùng posId & cùng cTime).
-    """
     # 1) Load cache cũ từ Google Sheets
     cached = load_bt_cache()        # list[dict]
 
@@ -1188,12 +1179,6 @@ def load_real_trades_for_backtest(okx):
 
 
 def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
-    """
-    Trả về 3 đoạn text:
-      - msg_all     : [BT ALL] thống kê TẤT CẢ lệnh trong BT_TRADES_CACHE
-      - msg_today   : [BT TODAY] chỉ các lệnh đóng hôm nay (theo giờ VN)
-      - msg_session : --- SESSION TODAY --- 4 phiên 0-9, 9-15, 15-20, 20-24
-    """
     # Không có trade nào
     if not trades:
         msg_all = "[✅BT ALL] total=0 TP=0 SL=0 OPEN=0 win=0.0% PNL=+0.00 USDT"
@@ -1384,13 +1369,6 @@ def get_session_from_time(time_s: str) -> str | None:
 # ===== HÀM BACKTEST REAL TRIGGER THEO LỊCH =====
 
 def run_backtest_if_needed(okx: "OKXClient"):
-    """
-    Backtest REAL bằng lịch sử vị thế đã đóng trên OKX.
-    #Gửi 3 block:
-      #1) BT ALL
-      #2) BT TODAY
-      #3) SESSION TODAY (4 phiên)
-    """
     logging.info("========== [BACKTEST] BẮT ĐẦU CHẠY BACKTEST REAL ==========")
 
     if not is_backtest_time_vn():
@@ -1479,16 +1457,9 @@ def append_signals(ws, trades):
         logging.info(
             "[INFO] Đã append %d lệnh mới vào Google Sheet.", len(rows)
         )
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
-import io
-import csv
-import tempfile
+
 
 def get_drive_service():
-    """
-    Tạo service Google Drive từ GOOGLE_SERVICE_ACCOUNT_JSON
-    """
     json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
     if not json_str:
         raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
@@ -1499,10 +1470,6 @@ def get_drive_service():
     return service
 
 def load_history_from_drive():
-    """
-    Download file CSV từ Google Drive, trả về list[dict] trade.
-    Mỗi dict có key: coin, signal, entry, tp, sl, time
-    """
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
     if not file_id:
         logging.warning("[DRIVE] GOOGLE_DRIVE_TRADE_FILE_ID chưa cấu hình.")
@@ -1541,11 +1508,6 @@ def load_history_from_drive():
         logging.error("[DRIVE] Lỗi load_history_from_drive: %s", e)
         return []
 def append_trade_to_drive(trade: dict):
-    """
-    Append 1 lệnh vào file CSV trên Google Drive.
-    - Nếu DRIVE_HISTORY_RESET_ONCE=1: bỏ qua dữ liệu cũ, chỉ dùng trade mới.
-    - Luôn ghi lại header đầy đủ mỗi lần upload.
-    """
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
     if not file_id:
         logging.warning("[DRIVE] GOOGLE_DRIVE_TRADE_FILE_ID chưa cấu hình, bỏ qua append.")
@@ -1627,17 +1589,6 @@ def send_telegram_message(text):
 
 # ========== SCANNER LOGIC ==========
 def build_signals_pump_dump_pro(okx: "OKXClient"):
-    """
-    #PUMP/DUMP PRO V2:
-    #- Giữ nguyên logic V1 (24h filter, 15m/5m momentum, vol_spike).
-    #- Bổ sung thêm:
-        #+ Entry pullback (mid-body + EMA5 5m).
-        #+ BTC 5m filter (tránh LONG khi BTC đỏ nến, SHORT khi BTC xanh).
-        #+ Impulse 2–3 sóng (closes 5m cùng chiều).
-        #+ Wick filter (tránh pump-xả wick dài).
-        #+ Overextended filter (không đu quá xa high/low 15m).
-        #+ EMA align: 5m / 15m / 1H cùng hướng.
-    """
 
     # -------- B0: BTC 5m cho market filter --------
     btc_5m = None
