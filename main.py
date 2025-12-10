@@ -305,28 +305,52 @@ def safe_float(x, default=0.0):
     except Exception:
         return default
 
-def calc_realtime_pnl_pct(pos: dict, fut_leverage: float) -> float | None:
+def calc_realtime_pnl_pct(pos: dict, fut_leverage: float) -> Optional[float]:
     """
-    Tính PnL% realtime cho 1 position dựa trên mark/last price.
-    pos: 1 dict position trả về từ OKX /positions
-    fut_leverage: hệ số đòn bẩy FUT_LEVERAGE
+    Tính PnL% realtime cho 1 position.
+    Ưu tiên:
+      1) uplRatio (OKX trả dạng 0.6215 ~ 62.15%)
+      2) upl / margin
+      3) Fallback: công thức price change * leverage
+    Trả về None nếu không tính được.
     """
+    # 1) uplRatio trực tiếp
     try:
-        avg_px = safe_float(pos.get("avgPx", 0.0))
-        # ưu tiên markPx, nếu không có thì dùng last (tuỳ OKX trả về field nào)
-        cur_px = safe_float(pos.get("markPx") or pos.get("last") or 0.0)
-        if avg_px <= 0 or cur_px <= 0:
-            return None
-
-        pos_side = pos.get("posSide", "long")
-        if pos_side == "long":
-            price_pct = (cur_px - avg_px) / avg_px * 100.0
-        else:   # short
-            price_pct = (avg_px - cur_px) / avg_px * 100.0
-
-        return price_pct * fut_leverage
+        upl_ratio = safe_float(pos.get("uplRatio", None))
+        if upl_ratio is not None:
+            return upl_ratio * 100.0
     except Exception:
-        return None
+        pass
+
+    # 2) upl / margin
+    try:
+        upl = safe_float(pos.get("upl", None))
+        margin = safe_float(pos.get("margin", None))
+        if upl is not None and margin and margin != 0:
+            return upl / margin * 100.0
+    except Exception:
+        pass
+
+    # 3) Fallback: dùng giá & leverage nếu mọi thứ trên fail
+    try:
+        avg_px = safe_float(pos.get("avgPx", None))
+        last_px = safe_float(pos.get("last", None))
+        if avg_px and last_px:
+            raw_pct = (last_px - avg_px) / avg_px * 100.0
+            # pos > 0 = long, < 0 = short
+            side_factor = 1.0
+            try:
+                pos_sz = safe_float(pos.get("pos", "0"))
+                if pos_sz < 0:
+                    side_factor = -1.0
+            except Exception:
+                pass
+            return raw_pct * fut_leverage * side_factor
+    except Exception:
+        pass
+
+    return None
+
 
 def percent_change(new, old):
     if old == 0:
@@ -2902,6 +2926,34 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
         )
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
+def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
+    """
+    Kiểm tra xem đã có lệnh trailing server-side (move_order_stop)
+    cho inst_id + posSide hay chưa.
+    """
+    try:
+        params = {
+            "instId": inst_id,
+            "ordType": "move_order_stop",
+        }
+        resp = okx._request("GET", "/api/v5/trade/orders-algo-pending", params=params)
+    except Exception as e:
+        logging.error("[TP-TRAIL] Lỗi get trailing pending %s: %s", inst_id, e)
+        return False
+
+    try:
+        for o in resp.get("data", []):
+            if o.get("instId") != inst_id:
+                continue
+            # Một số account không trả posSide, khi đó coi như trùng symbol là đủ
+            pos = o.get("posSide", "") or o.get("posSide".lower(), "")
+            if not pos_side or not pos or pos == pos_side:
+                return True
+    except Exception:
+        pass
+
+    return False
+        
 def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
     """
     Trả về True nếu đã có ÍT NHẤT 1 lệnh trailing (move_order_stop)
@@ -3035,14 +3087,13 @@ def run_dynamic_tp(okx: "OKXClient"):
             price_pct = (avg_px - c_now) / avg_px * 100.0
         
         # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
-        #pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
-        pnl_pct = price_pct * FUT_LEVERAGE   # x5 → PnL% ≈ price% * 5
-        # 1b) FALLBACK: nếu không tính được thì dùng công thức cũ
+        pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
+        
+        # 1b) Nếu vẫn không tính được thì bỏ qua symbol này
         if pnl_pct is None:
-            pnl_pct = price_pct * FUT_LEVERAGE
-
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
+
 
         # ====== 2) SL DYNAMIC (soft SL theo trend) ======
         # dùng cùng market_regime đã detect ở đầu hàm
@@ -3129,17 +3180,28 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
         
         drawdown = max_pnl_window - pnl_pct
+
         # 6) TRAILING SERVER-SIDE KHI LÃI LỚN  (ƯU TIÊN HƠN TP DYNAMIC)
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
+        
+            # 6.0) ANTI-DUPLICATE: nếu đã có trailing server-side thì KHÔNG đặt thêm
+            if has_trailing_server(okx, inst_id, pos_side):
+                logging.info(
+                    "[TP-TRAIL] %s đã có trailing server-side đang chạy (posSide=%s), "
+                    "không đặt thêm.",
+                    inst_id,
+                    pos_side,
+                )
+                # Đã giao cho sàn quản lý -> bỏ qua TP_DYNAMIC phía dưới
+                continue
+        
             # 6.1) Tính callback động theo PnL hiện tại
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
         
-            # 6.2) Lấy GIÁ HIỆN TẠI làm activePx (để chắc chắn trailing được kích hoạt)
-            # thay 'last_px' bằng biến bạn đang dùng để tính pnl (last / mark)
+            # 6.2) Lấy GIÁ HIỆN TẠI làm activePx
             try:
                 current_px = safe_float(last_px)
             except Exception:
-                # fallback: lấy close 5m mới nhất nếu cần
                 current_px = closes[-1]
         
             logging.info(
@@ -3147,7 +3209,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
             )
-
+        
             # 6.3) Hủy toàn bộ OCO TP/SL cũ trước khi đặt trailing
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
