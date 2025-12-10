@@ -3133,7 +3133,7 @@ def detect_market_regime(okx: "OKXClient"):
     #- Wick không quá dài
     #- Volume đều, không spike bất thường
     #- Trend 5m/15m đồng pha
-    BAD MARKET nếu ngược lại.
+    #BAD MARKET nếu ngược lại.
     try:
         c5 = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=3)
         c15 = okx.get_candles("BTC-USDT-SWAP", bar="15m", limit=3)
