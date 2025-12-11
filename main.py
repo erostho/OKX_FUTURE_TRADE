@@ -3434,12 +3434,14 @@ def run_full_bot(okx):
     else:
         current_notional = 10
     # 🔒 1b) Anti-sweep lock
+    logging.info("[BOT] >>> BẮT ĐẦU KIỂM TRA ANTI-SWEEP <<<")
     if is_anti_sweep_locked():
         logging.warning(
             "[BOT] ANTI-SWEEP lock tới %s -> KHÔNG scan/mở lệnh mới.",
             ANTI_SWEEP_LOCK_UNTIL,
         )
         return
+    logging.info("[BOT] Anti-sweep check OK -> tiếp tục scan/mở lệnh.")
     
     # 2) CHỌN SCANNER THEO GIỜ
     if is_deadzone_time_vn():
