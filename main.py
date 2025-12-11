@@ -82,7 +82,7 @@ TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
 # Lưu đỉnh PnL cho từng vị thế để trailing local
 # key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
 TP_TRAIL_PEAK_PNL = {}
-ANTI_SWEEP_LOCK_UNTIL = None  # type: Optional[datetime.datetime]
+#ANTI_SWEEP_LOCK_UNTIL = None  # type: Optional[datetime.datetime]
 # ====== ANTI-SWEEP / SHORT-TERM DEADZONE CONFIG ======
 ANTI_SWEEP_MOVE_PCT = 1.0          # giá chạy >1% theo mỗi chiều tính là sweep
 ANTI_SWEEP_LOCK_MINUTES = 10       # khóa mở lệnh 10 phút sau khi phát hiện sweep
@@ -110,6 +110,19 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+from datetime import datetime, timedelta, timezone
+from typing import Optional
+
+ANTI_SWEEP_LOCK_UNTIL: Optional[datetime] = None
+
+def is_anti_sweep_locked() -> bool:
+    global ANTI_SWEEP_LOCK_UNTIL
+    if ANTI_SWEEP_LOCK_UNTIL is None:
+        return False
+    if datetime.utcnow() >= ANTI_SWEEP_LOCK_UNTIL:
+        ANTI_SWEEP_LOCK_UNTIL = None
+        return False
+    return True
 
 def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     """
@@ -1706,44 +1719,39 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
         btc_5m = None
     # -------- B0: BTC 5m cho market filter --------
+    global ANTI_SWEEP_LOCK_UNTIL
     btc_change_5m = None
     try:
-        btc_c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=2)
-        if btc_c and len(btc_c) >= 2:
-            btc_sorted = sorted(btc_c, key=lambda x: int(x[0]))
-            # OHLC nến 5m hiện tại
-            btc_o = safe_float(btc_sorted[-1][1])
-            btc_h = safe_float(btc_sorted[-1][2])
-            btc_l = safe_float(btc_sorted[-1][3])
-            btc_cl = safe_float(btc_sorted[-1][4])
+        c = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=4)
+        if c and len(c) >= 3:
+            c_sorted = sorted(c, key=lambda x: int(x[0]))
+            closes_5m = [safe_float(k[4]) for k in c_sorted[-3:]]
 
-            if btc_o > 0:
-                btc_change_5m = (btc_cl - btc_o) / btc_o * 100.0
+            o = safe_float(c_sorted[-1][1])
+            h = safe_float(c_sorted[-1][2])
+            l = safe_float(c_sorted[-1][3])
+            cl = safe_float(c_sorted[-1][4])
 
-                # ===== (1) ANTI-SWEEP + DEADZONE NGẮN HẠN =====
-                # Giá đã chạy >1% lên và >1% xuống trong cùng 1 nến 5m -> quét thanh khoản
-                move_up_pct = (btc_h - btc_o) / btc_o * 100.0
-                move_down_pct = (btc_o - btc_l) / btc_o * 100.0
+            if o > 0:
+                btc_change_5m = (cl - o) / o * 100.0
 
-                if (
-                    move_up_pct >= ANTI_SWEEP_MOVE_PCT
-                    and move_down_pct >= ANTI_SWEEP_MOVE_PCT
-                ):
-                    # Đặt khóa 10 phút
-                    ANTI_SWEEP_LOCK_UNTIL = now_utc + datetime.timedelta(
-                        minutes=ANTI_SWEEP_LOCK_MINUTES
-                    )
-                    logging.warning(
-                        "[ANTI-SWEEP] BTC 5m quét 2 chiều (up=%.2f%%, down=%.2f%%) -> "
-                        "khóa mở lệnh tới %s.",
-                        move_up_pct,
-                        move_down_pct,
-                        ANTI_SWEEP_LOCK_UNTIL,
-                    )
+            move_up = (h - o) / o * 100.0
+            move_dn = (o - l) / o * 100.0
+            vshape = in_short_term_vol_deadzone(closes_5m, ANTI_SWEEP_MOVE_PCT)
 
+            if ((move_up >= ANTI_SWEEP_MOVE_PCT and move_dn >= ANTI_SWEEP_MOVE_PCT)
+                or vshape):
+                ANTI_SWEEP_LOCK_UNTIL = datetime.utcnow() + timedelta(
+                    minutes=ANTI_SWEEP_LOCK_MINUTES
+                )
+                logging.warning(
+                    "[ANTI-SWEEP] BTC 5m quét mạnh (up=%.2f%%, down=%.2f%%, vshape=%s) "
+                    "-> LOCK mở lệnh tới %s.",
+                    move_up, move_dn, vshape, ANTI_SWEEP_LOCK_UNTIL,
+                )
     except Exception as e:
-        logging.warning("[PUMP_PRO_V2] Lỗi get_candles BTC 5m: %s", e)
-        btc_change_5m = None
+        logging.warning("[PUMP_PRO_V2] Lỗi anti-sweep BTC 5m: %s", e)
+
 
         
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
@@ -3425,6 +3433,14 @@ def run_full_bot(okx):
         current_notional = 30
     else:
         current_notional = 10
+    # 🔒 1b) Anti-sweep lock
+    if is_anti_sweep_locked():
+        logging.warning(
+            "[BOT] ANTI-SWEEP lock tới %s -> KHÔNG scan/mở lệnh mới.",
+            ANTI_SWEEP_LOCK_UNTIL,
+        )
+        return
+    
     # 2) CHỌN SCANNER THEO GIỜ
     if is_deadzone_time_vn():
         logging.info("[MODE] 10h30–15h30 VN -> dùng scanner SIDEWAY DEADZONE.")
