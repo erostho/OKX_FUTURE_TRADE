@@ -2858,10 +2858,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         logging.warning("[WARN] Không đủ USDT để vào bất kỳ lệnh nào.")
         return
     allowed_trades = trades[: max_trades_by_balance]
-    # ===== PRO #4: cooldown theo symbol =====
-    if is_symbol_in_cooldown(swap_inst):
-        logging.info("[COOLDOWN] Skip %s (still in cooldown).", swap_inst)
-        continue
+
 
     # 🔥 LẤY VỊ THẾ ĐANG MỞ
     open_pos_map = build_open_position_map(okx)
@@ -2879,7 +2876,10 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Spot -> Perp SWAP
         swap_inst = coin.replace("-USDT", "-USDT-SWAP")
-
+        # ===== PRO #4: cooldown theo symbol =====
+        if is_symbol_in_cooldown(swap_inst):
+            logging.info("[COOLDOWN] Skip %s (still in cooldown).", swap_inst)
+            continue
         # ❗ Nếu đã có vị thế mở cùng hướng trên OKX -> bỏ qua, không mở thêm
         pos_info = open_pos_map.get(swap_inst, {"long": False, "short": False})
         if signal == "LONG" and pos_info.get("long"):
