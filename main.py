@@ -97,6 +97,9 @@ TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
 TP_TRAIL_PEAK_PNL = {}
 #ANTI_SWEEP_LOCK_UNTIL = None  # type: Optional[datetime.datetime]
 # ====== ANTI-SWEEP / SHORT-TERM DEADZONE CONFIG ======
+ANTI_SWEEP_MOVE_PCT = 1.0
+ANTI_SWEEP_LOCK_MINUTES = 10
+
 # ===== PRO: ANTI-SWEEP per symbol (ALT) =====
 ALT_SWEEP_MOVE_PCT = 1.0            # mỗi chiều >=1% trong 1 nến 5m
 ALT_SWEEP_LOCK_MINUTES = 10         # khóa symbol 10 phút
