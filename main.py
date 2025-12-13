@@ -36,6 +36,11 @@ MAX_TRADES_PER_RUN = 10       # tối đa 10 lệnh / 1 lần cron
 # Circuit breaker theo phiên
 SESSION_MAX_LOSS_PCT = 5.0  # Mỗi phiên lỗ tối đa -5% equity thì dừng trade
 SESSION_STATE_FILE = os.getenv("SESSION_STATE_FILE", "session_state.json")
+# ===== PRO: Symbol cooldown after consecutive SL =====
+SYMBOL_COOLDOWN_FILE = os.getenv("SYMBOL_COOLDOWN_FILE", "symbol_cooldown.json")
+SYMBOL_SL_WINDOW_MINUTES = 120     # xét chuỗi SL trong 4h gần nhất
+SYMBOL_SL_STREAK_TRIGGER = 3       # SL liên tiếp >=3 thì khóa
+SYMBOL_COOLDOWN_MINUTES = 60      # khóa 2 giờ
 
 # Scanner config
 MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
@@ -74,6 +79,14 @@ MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+# ===== PRO: PROFIT LOCK (<10%) =====
+PROFIT_LOCK_ENABLED = True
+PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
+
+PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
+PROFIT_LOCK_TIER_1_FLOOR = 1.0  # thì không cho rơi dưới +1%
+PROFIT_LOCK_TIER_2_PEAK = 8.0
+PROFIT_LOCK_TIER_2_FLOOR = 3.0
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
@@ -84,8 +97,10 @@ TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
 TP_TRAIL_PEAK_PNL = {}
 #ANTI_SWEEP_LOCK_UNTIL = None  # type: Optional[datetime.datetime]
 # ====== ANTI-SWEEP / SHORT-TERM DEADZONE CONFIG ======
-ANTI_SWEEP_MOVE_PCT = 1.0          # giá chạy >1% theo mỗi chiều tính là sweep
-ANTI_SWEEP_LOCK_MINUTES = 10       # khóa mở lệnh 10 phút sau khi phát hiện sweep
+# ===== PRO: ANTI-SWEEP per symbol (ALT) =====
+ALT_SWEEP_MOVE_PCT = 1.0            # mỗi chiều >=1% trong 1 nến 5m
+ALT_SWEEP_LOCK_MINUTES = 10         # khóa symbol 10 phút
+ALT_SWEEP_LOCKS: dict[str, int] = {}  # instId -> lock_until_utc_ms
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
 PUMP_MIN_VOL_USDT_24H   = 100000     # volume USDT 24h tối thiểu
@@ -123,6 +138,73 @@ def is_anti_sweep_locked() -> bool:
         ANTI_SWEEP_LOCK_UNTIL = None
         return False
     return True
+def _load_symbol_cooldown_state() -> dict:
+    if not os.path.exists(SYMBOL_COOLDOWN_FILE):
+        return {}
+    try:
+        with open(SYMBOL_COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _save_symbol_cooldown_state(state: dict):
+    try:
+        with open(SYMBOL_COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def _cooldown_key(inst_id: str) -> str:
+    return inst_id
+
+def is_symbol_in_cooldown(inst_id: str) -> bool:
+    st = _load_symbol_cooldown_state()
+    rec = st.get(_cooldown_key(inst_id), {})
+    until = int(rec.get("cooldown_until_utc_ms", 0) or 0)
+    if until <= 0:
+        return False
+    if _utc_ms() >= until:
+        # hết hạn -> xóa
+        st.pop(_cooldown_key(inst_id), None)
+        _save_symbol_cooldown_state(st)
+        return False
+    return True
+
+def mark_symbol_sl(inst_id: str, reason: str):
+    st = _load_symbol_cooldown_state()
+    k = _cooldown_key(inst_id)
+    rec = st.get(k, {})
+    now = _utc_ms()
+
+    # giữ list ts SL trong window
+    sl_ts = rec.get("sl_ts", []) or []
+    sl_ts = [int(x) for x in sl_ts if now - int(x) <= SYMBOL_SL_WINDOW_MINUTES * 60_000]
+    sl_ts.append(now)
+
+    # streak = số SL gần nhất trong window
+    streak = len(sl_ts)
+
+    cooldown_until = int(rec.get("cooldown_until_utc_ms", 0) or 0)
+    if streak >= SYMBOL_SL_STREAK_TRIGGER:
+        cooldown_until = max(cooldown_until, now + SYMBOL_COOLDOWN_MINUTES * 60_000)
+        logging.warning("[COOLDOWN] %s SL streak=%d -> LOCK %dm (reason=%s)",
+                        inst_id, streak, SYMBOL_COOLDOWN_MINUTES, reason)
+
+    st[k] = {
+        "sl_ts": sl_ts,
+        "cooldown_until_utc_ms": cooldown_until,
+        "last_reason": reason,
+    }
+    _save_symbol_cooldown_state(st)
+
+def mark_symbol_tp(inst_id: str):
+    # có TP thì reset streak cho symbol để “tha”
+    st = _load_symbol_cooldown_state()
+    k = _cooldown_key(inst_id)
+    if k in st:
+        st.pop(k, None)
+        _save_symbol_cooldown_state(st)
+        logging.info("[COOLDOWN] %s TP -> reset cooldown/sl streak.", inst_id)
 
 def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     """
@@ -311,6 +393,30 @@ def in_short_term_vol_deadzone(closes_5m, threshold_pct: float = 1.0) -> bool:
         return True
 
     return False
+def _utc_ms() -> int:
+    return int(datetime.now(timezone.utc).timestamp() * 1000)
+
+def is_symbol_sweep_5m(o: float, h: float, l: float, move_pct: float) -> bool:
+    if o <= 0:
+        return False
+    up = (h - o) / o * 100.0
+    dn = (o - l) / o * 100.0
+    return (up >= move_pct) and (dn >= move_pct)
+
+def lock_symbol_on_sweep(inst_id: str, minutes: int, reason: str):
+    until = _utc_ms() + minutes * 60_000
+    ALT_SWEEP_LOCKS[inst_id] = until
+    logging.warning("[ANTI-SWEEP][ALT] LOCK %s %dm (%s) until=%s",
+                    inst_id, minutes, reason, until)
+
+def is_symbol_locked(inst_id: str) -> bool:
+    until = ALT_SWEEP_LOCKS.get(inst_id)
+    if not until:
+        return False
+    if _utc_ms() >= int(until):
+        ALT_SWEEP_LOCKS.pop(inst_id, None)
+        return False
+    return True
 
 
 def safe_float(x, default=0.0):
@@ -1904,7 +2010,14 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             vol_now_5 = safe_float(c5_sorted[-1][5])
         except Exception:
             continue
-
+        # ===== PRO #3: Anti-sweep per ALT (5m) =====
+        if is_symbol_locked(swap_id):
+            logging.info("[ANTI-SWEEP][ALT] Skip %s (locked).", swap_id)
+            continue
+        if is_symbol_sweep_5m(o5_now, h5_now, l5_now, ALT_SWEEP_MOVE_PCT):
+            lock_symbol_on_sweep(swap_id, ALT_SWEEP_LOCK_MINUTES,
+                                 reason=f"5m sweep up&down >= {ALT_SWEEP_MOVE_PCT:.2f}%")
+            continue
         try:
             c5_prev1 = safe_float(c5_sorted[-2][4])
         except Exception:
@@ -1913,9 +2026,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
             c5_prev2 = safe_float(c5_sorted[-3][4])
         except Exception:
             c5_prev2 = c5_prev1
-
         change_5m = percent_change(c5_now, c5_prev1)
-
         range5 = max(h5_now - l5_now, 1e-8)
         body5 = abs(c5_now - o5_now)
         body_ratio = body5 / range5
@@ -2243,11 +2354,33 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         opens = [safe_float(k[1]) for k in c5_sorted]
         highs = [safe_float(k[2]) for k in c5_sorted]
         lows = [safe_float(k[3]) for k in c5_sorted]
-
         c_now = closes[-1]
         o_now = opens[-1]
         h_now = highs[-1]
         l_now = lows[-1]
+
+        # ===== PRO: Anti-sweep per ALT (5m) =====
+        if is_symbol_locked(swap_id):
+            logging.info("[ANTI-SWEEP][ALT] Skip %s (locked).", swap_id)
+            continue
+        if is_symbol_sweep_5m(o_now, h_now, l_now, ALT_SWEEP_MOVE_PCT):
+            lock_symbol_on_sweep(swap_id, ALT_SWEEP_LOCK_MINUTES, "SIDEWAY sweep 5m")
+            continue
+
+        # ===== PRO: V-shape deadzone (2 nhịp đảo chiều mạnh) =====
+        if in_short_term_vol_deadzone(closes[-3:], threshold_pct=ANTI_SWEEP_MOVE_PCT):
+            logging.info("[SIDEWAY][V-SHAPE] Skip %s (>=%.2f%% đảo chiều nhanh).",
+                         swap_id, ANTI_SWEEP_MOVE_PCT)
+            continue
+
+        # ===== PRO: wick/body filter để tránh nến quét giả mean-reversion =====
+        rng = max(h_now - l_now, 1e-8)
+        body = abs(c_now - o_now)
+        upper = h_now - max(o_now, c_now)
+        lower = min(o_now, c_now) - l_now
+        if body > 0 and (upper > body * 2.0 or lower > body * 2.0):
+            logging.info("[SIDEWAY][WICK] Skip %s (wick quá dài vs body).", swap_id)
+            continue
 
         # ==== VOLATILITY FILTER: ATR% 5m ====
         ranges = [h - l for h, l in zip(highs[-20:], lows[-20:])]
@@ -2717,7 +2850,6 @@ def execute_futures_trades(okx: OKXClient, trades):
     # metadata SWAP (ctVal, lotSz, minSz...)
     swap_ins = okx.get_swap_instruments()
     swap_meta = build_swap_meta_map(swap_ins)
-
     # equity USDT
     avail_usdt = okx.get_usdt_balance()
     margin_per_trade = NOTIONAL_PER_TRADE / FUT_LEVERAGE
@@ -2725,8 +2857,11 @@ def execute_futures_trades(okx: OKXClient, trades):
     if max_trades_by_balance <= 0:
         logging.warning("[WARN] Không đủ USDT để vào bất kỳ lệnh nào.")
         return
-
     allowed_trades = trades[: max_trades_by_balance]
+    # ===== PRO #4: cooldown theo symbol =====
+    if is_symbol_in_cooldown(swap_inst):
+        logging.info("[COOLDOWN] Skip %s (still in cooldown).", swap_inst)
+        continue
 
     # 🔥 LẤY VỊ THẾ ĐANG MỞ
     open_pos_map = build_open_position_map(okx)
@@ -3102,6 +3237,15 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
+        # ===== update peak pnl (realtime) =====
+        peak_key = f"{instId}_{posSide}"
+        prev_peak = TP_TRAIL_PEAK_PNL.get(peak_key, None)
+        if prev_peak is None:
+            TP_TRAIL_PEAK_PNL[peak_key] = pnl_pct
+        else:
+            TP_TRAIL_PEAK_PNL[peak_key] = max(float(prev_peak), float(pnl_pct))
+
+        peak_pnl = float(TP_TRAIL_PEAK_PNL.get(peak_key, pnl_pct))
 
 
         # ====== 2) SL DYNAMIC (soft SL theo trend) ======
@@ -3141,6 +3285,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     trend_pct,
                 )
                 try:
+                    mark_symbol_sl(instId, "soft_sl")
                     okx.close_swap_position(instId, posSide)
                 except Exception as e:
                     logging.error("[SL-DYN] Lỗi đóng lệnh %s: %s", instId, e)
@@ -3155,6 +3300,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 MAX_EMERGENCY_SL_PNL_PCT,
             )
             try:
+                mark_symbol_sl(instId, "emergency_sl")
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
@@ -3333,6 +3479,7 @@ def run_dynamic_tp(okx: "OKXClient"):
         if should_close:
             logging.info("[TP-DYN] → ĐÓNG vị thế %s (%s).", instId, posSide)
             try:
+                mark_symbol_tp(instId)
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
