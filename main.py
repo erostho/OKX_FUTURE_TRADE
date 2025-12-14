@@ -695,6 +695,99 @@ class OKXClient:
             if o.get("posSide") == pos_side:
                 return True
         return False
+    # ---------- ORDER HELPERS (MAKER-FIRST) ----------
+    def place_close_limit_postonly(self, inst_id: str, pos_side: str, sz: float, px: float, td_mode="isolated"):
+        """
+        Đặt LIMIT post-only để ĐÓNG vị thế.
+        long đóng = sell, short đóng = buy.
+        """
+        side_close = "sell" if pos_side == "long" else "buy"
+        path = "/api/v5/trade/order"
+        body = {
+            "instId": inst_id,
+            "tdMode": td_mode,
+            "side": side_close,
+            "posSide": pos_side,
+            "ordType": "limit",
+            "sz": str(sz),
+            "px": f"{float(px):.12f}",
+            "tif": "post_only",
+            "reduceOnly": "true",
+        }
+        return self._request("POST", path, body_dict=body)
+
+    def place_futures_limit_order(
+        self,
+        inst_id: str,
+        side: str,
+        pos_side: str,
+        sz: str,
+        px: float,
+        td_mode: str = "isolated",
+        lever: int = 6,
+        post_only: bool = True,
+    ):
+        """
+        Limit order (ưu tiên MAKER nếu post_only=True).
+        OKX: tif='post_only' để đảm bảo maker (nếu có thể khớp ngay -> bị reject).
+        """
+        path = "/api/v5/trade/order"
+        body = {
+            "instId": inst_id,
+            "tdMode": td_mode,
+            "side": side,
+            "posSide": pos_side,
+            "ordType": "limit",
+            "sz": str(sz),
+            "px": f"{float(px):.12f}",
+            "lever": str(lever),
+        }
+        if post_only:
+            body["tif"] = "post_only"   # maker-only
+
+        logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
+        logging.info("Body: %s", body)
+        return self._request("POST", path, body_dict=body)
+
+    def cancel_order(self, inst_id: str, ord_id: str):
+        path = "/api/v5/trade/cancel-order"
+        body = {"instId": inst_id, "ordId": ord_id}
+        return self._request("POST", path, body_dict=body)
+
+    def get_order(self, inst_id: str, ord_id: str):
+        path = "/api/v5/trade/order"
+        params = {"instId": inst_id, "ordId": ord_id}
+        return self._request("GET", path, params=params)
+
+    def wait_order_filled(self, inst_id: str, ord_id: str, timeout_sec: int = 3, poll_sec: float = 0.4):
+        """
+        Chờ order filled trong timeout.
+        Return: (filled: bool, avg_px: float|None)
+        """
+        t0 = time.time()
+        last_avg = None
+
+        while time.time() - t0 <= timeout_sec:
+            try:
+                r = self.get_order(inst_id, ord_id)
+                data = r.get("data", [])
+                if data:
+                    o = data[0]
+                    state = (o.get("state") or "").lower()  # live / filled / canceled ...
+                    avg_px = safe_float(o.get("avgPx", None), None)
+                    if avg_px:
+                        last_avg = avg_px
+
+                    if state == "filled":
+                        return True, (avg_px or last_avg)
+                    if state in ("canceled", "cancelled"):
+                        return False, None
+            except Exception as e:
+                logging.warning("[MAKER] wait_order_filled error %s %s: %s", inst_id, ord_id, e)
+
+            time.sleep(poll_sec)
+
+        return False, last_avg
 
 
     # ---------- PUBLIC ----------
@@ -929,6 +1022,58 @@ def load_trade_cache():
 
 
 # ===== SESSION SHEET (circuit breaker) =====
+def maker_close_position_with_timeout(
+    okx: OKXClient,
+    inst_id: str,
+    pos_side: str,
+    sz: float,
+    last_px: float,
+    offset_bps: float = 6.0,      # 0.06%
+    timeout_sec: int = 3,
+):
+    """
+    Close bằng LIMIT post-only (maker). Không khớp trong timeout -> cancel + market close.
+    Return: used='maker'|'market'
+    """
+    if last_px <= 0 or sz <= 0:
+        okx.close_swap_position(inst_id, pos_side)
+        return "market"
+
+    off = offset_bps / 10000.0
+
+    # post-only: phải đặt giá "lùi" để không khớp ngay
+    # long đóng (sell) -> đặt cao hơn last một chút
+    # short đóng (buy) -> đặt thấp hơn last một chút
+    if pos_side == "long":
+        px = last_px * (1.0 + off)
+    else:
+        px = last_px * (1.0 - off)
+
+    resp = okx.place_close_limit_postonly(inst_id, pos_side, sz, px)
+    ord_id = None
+    try:
+        d = resp.get("data", [])
+        if d:
+            ord_id = d[0].get("ordId")
+    except Exception:
+        ord_id = None
+
+    if not ord_id:
+        okx.close_swap_position(inst_id, pos_side)
+        return "market"
+
+    filled, _avg = okx.wait_order_filled(inst_id, ord_id, timeout_sec=timeout_sec, poll_sec=0.4)
+    if filled:
+        return "maker"
+
+    try:
+        okx.cancel_order(inst_id, ord_id)
+    except Exception:
+        pass
+
+    okx.close_swap_position(inst_id, pos_side)
+    return "market"
+
 def get_session_worksheet():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -2828,6 +2973,95 @@ def build_open_position_map(okx: OKXClient):
             continue
     return pos_map
 # ========== EXECUTE FUTURES TRADES ==========
+def maker_first_open_position(
+    okx: OKXClient,
+    inst_id: str,
+    side_open: str,
+    pos_side: str,
+    contracts: float,
+    desired_entry: float,
+    lever: int,
+    maker_offset_bps: float = 5.0,     # 5 bps = 0.05% (nhẹ, đủ maker)
+    maker_timeout_sec: int = 3,        # chờ khớp maker 3s
+):
+    """
+    Ưu tiên mở bằng post-only LIMIT (maker).
+    Nếu không khớp trong timeout -> cancel + fallback MARKET.
+    Return: (ok: bool, fill_px: float|None, used: 'maker'|'market'|'skip')
+    """
+
+    # 1) Tính giá limit để tăng khả năng nằm chờ (maker)
+    # LONG: đặt thấp hơn một chút; SHORT: đặt cao hơn một chút
+    if desired_entry <= 0:
+        return False, None, "skip"
+
+    offset = maker_offset_bps / 10000.0
+    if side_open.lower() == "buy":
+        px = desired_entry * (1.0 - offset)
+    else:
+        px = desired_entry * (1.0 + offset)
+
+    # 2) Gửi post-only maker
+    resp = okx.place_futures_limit_order(
+        inst_id=inst_id,
+        side=side_open,
+        pos_side=pos_side,
+        sz=str(contracts),
+        px=px,
+        td_mode="isolated",
+        lever=lever,
+        post_only=True,
+    )
+
+    # OKX trả ordId trong data[0].ordId (thường vậy)
+    ord_id = None
+    try:
+        d = resp.get("data", [])
+        if d:
+            ord_id = d[0].get("ordId")
+    except Exception:
+        ord_id = None
+
+    if not ord_id:
+        # post-only có thể bị reject nếu giá chạm book -> fallback market
+        logging.warning("[MAKER] Không lấy được ordId (post-only có thể bị reject). Fallback MARKET.")
+        m = okx.place_futures_market_order(
+            inst_id=inst_id,
+            side=side_open,
+            pos_side=pos_side,
+            sz=contracts,
+            td_mode="isolated",
+            lever=lever,
+        )
+        code = m.get("code")
+        return (code == "0"), None, "market"
+
+    logging.info("[MAKER] Post-only sent: inst=%s ordId=%s px=%.10f", inst_id, ord_id, px)
+
+    # 3) Chờ khớp
+    filled, avg_px = okx.wait_order_filled(inst_id, ord_id, timeout_sec=maker_timeout_sec)
+
+    if filled:
+        logging.info("[MAKER] FILLED: inst=%s ordId=%s avgPx=%s", inst_id, ord_id, avg_px)
+        return True, (avg_px or desired_entry), "maker"
+
+    # 4) Không khớp -> cancel rồi market
+    try:
+        okx.cancel_order(inst_id, ord_id)
+        logging.info("[MAKER] Canceled maker order: inst=%s ordId=%s -> fallback MARKET", inst_id, ord_id)
+    except Exception as e:
+        logging.warning("[MAKER] Cancel failed (still fallback MARKET): %s", e)
+
+    m = okx.place_futures_market_order(
+        inst_id=inst_id,
+        side=side_open,
+        pos_side=pos_side,
+        sz=contracts,
+        td_mode="isolated",
+        lever=lever,
+    )
+    code = m.get("code")
+    return (code == "0"), avg_px, "market"
 
 def execute_futures_trades(okx: OKXClient, trades):
     if not trades:
@@ -2948,48 +3182,49 @@ def execute_futures_trades(okx: OKXClient, trades):
                 "Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
                 swap_inst,
             )
-        #NET MODE
-        # 2) Mở vị thế
-        #okx.set_leverage(swap_inst, lever=this_lever)
+        #NET MODE       
+        # 2) MỞ VỊ THẾ (MAKER-FIRST)
         time.sleep(0.2)
-        
-        order_resp = okx.place_futures_market_order(
+
+        ok_open, fill_px, used_type = maker_first_open_position(
+            okx=okx,
             inst_id=swap_inst,
-            side=side_open,
+            side_open=side_open,
             pos_side=pos_side,
-            sz=contracts,
-            td_mode="isolated",
+            contracts=contracts,
+            desired_entry=entry,
             lever=this_lever,
+            maker_offset_bps=5.0,      # 0.05%
+            maker_timeout_sec=3,       # 3 giây không khớp -> market
         )
-        code = order_resp.get("code")
-        if code != "0":
-            msg = order_resp.get("msg", "")
-            logging.error(
-                "[OKX ORDER RESP] Lỗi mở lệnh: code=%s msg=%s", code, msg
-            )
-            # không gửi telegram lỗi, chỉ log
+
+        if not ok_open:
+            logging.error("[ORDER] Mở lệnh thất bại %s (%s).", swap_inst, used_type)
             continue
 
-        # 3) Đặt TP/SL OCO
-        # 3) Đặt OCO chỉ dùng SL, TP để rất xa cho an toàn
-        #    → chốt lời sẽ do TP động + trailing TP xử lý.
-        HARD_TP_CAP_PCT = 50.0  # TP trần cực xa ~ +50% giá, gần như không chạm
+        # Nếu có fill price thì dùng để log/đặt SL/TP chuẩn hơn
+        real_entry = fill_px if (fill_px and fill_px > 0) else entry
+        logging.info("[ORDER] Opened %s via %s | entry_sheet=%.10f real_entry=%.10f",
+                     swap_inst, used_type, entry, real_entry)
+
+
+        # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
+        HARD_TP_CAP_PCT = 50.0
 
         if signal == "LONG":
-            tp_hard = entry * (1 + HARD_TP_CAP_PCT / 100.0)
-        else:  # SHORT
-            tp_hard = entry * (1 - HARD_TP_CAP_PCT / 100.0)
+            tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
+        else:
+            tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
 
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
             pos_side=pos_side,
             side_close=side_close,
             sz=contracts,
-            tp_px=tp_hard,  # TP rất xa, không còn vai trò TP 1R
-            sl_px=sl,       # SL vẫn theo ATR + cap 10% như cũ
+            tp_px=tp_hard,
+            sl_px=sl,
             td_mode="isolated",
         )
-
         oco_code = oco_resp.get("code")
         if oco_code != "0":
             msg = oco_resp.get("msg", "")
@@ -3004,14 +3239,14 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # 4) Lệnh đã mở thành công -> lưu vào CACHE
         trade_cache_item = {
-            "coin": coin,          # ví dụ: 'BTC-USDT'
-            "signal": signal,      # 'LONG' / 'SHORT'
-            "entry": entry,
+            "coin": coin,
+            "signal": signal,
+            "entry": real_entry,
             "tp": tp,
             "sl": sl,
-            "time": now_str_vn(),  # thời điểm vào lệnh theo VN
+            "time": now_str_vn(),
         }
-        
+
         # Nếu muốn vẫn giữ cache JSON local thì có thể gọi cả 2:
         # append_trade_to_cache(trade_cache_item)
         
@@ -3460,15 +3695,12 @@ def run_dynamic_tp(okx: "OKXClient"):
         # ====== 7) KẾT HỢP LOGIC TP ĐỘNG + TP TRAILING ======
         # TP động (logic cũ)
         should_close_dynamic = flat_move or engulfing or vol_drop or ema_break
-
         # TP trailing: đã từng lời >= 5% mà giờ tụt về quanh hòa vốn → không tham nữa
         should_close_trailing = (
             max_pnl_window >= TP_TRAIL_START_PNL_PCT
             and pnl_pct <= TP_TRAIL_EXIT_PNL_PCT
         )
-
         should_close = should_close_dynamic or should_close_trailing
-
         if should_close_trailing:
             logging.info(
                 "[TP-TRAIL] %s đã từng lời >= %.2f%% (max=%.2f%%) nhưng hiện còn %.2f%% "
@@ -3483,7 +3715,16 @@ def run_dynamic_tp(okx: "OKXClient"):
             logging.info("[TP-DYN] → ĐÓNG vị thế %s (%s).", instId, posSide)
             try:
                 mark_symbol_tp(instId)
-                okx.close_swap_position(instId, posSide)
+                used = maker_close_position_with_timeout(
+                    okx=okx,
+                    inst_id=instId,
+                    pos_side=posSide,
+                    sz=sz,
+                    last_px=c_now,
+                    offset_bps=6.0,
+                    timeout_sec=3,
+                )
+                logging.info("[TP-DYN] Closed %s via %s (TP dynamic).", instId, used)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
         else:
