@@ -3090,7 +3090,7 @@ def execute_futures_trades(okx: OKXClient, trades):
     swap_meta = build_swap_meta_map(swap_ins)
     # equity USDT
     avail_usdt = okx.get_usdt_balance()
-    margin_per_trade = NOTIONAL_PER_TRADE / FUT_LEVERAGE
+    margin_per_trade = this_notional / this_lever
     max_trades_by_balance = int(avail_usdt // margin_per_trade)
     if max_trades_by_balance <= 0:
         logging.warning("[WARN] Không đủ USDT để vào bất kỳ lệnh nào.")
@@ -3230,7 +3230,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         if oco_code != "0":
             msg = oco_resp.get("msg", "")
             logging.error(
-                f"[OKX ORDER RESP] Không đặt được OCO TP/SL cho {swap_inst}: code={code} msg={msg}. ĐÓNG LỆNH NGAY để tránh mất kiểm soát."
+                f"[OKX ORDER RESP] Không đặt được OCO TP/SL cho {swap_inst}: code={oco_code} msg={msg}. ĐÓNG LỆNH NGAY để tránh mất kiểm soát."
             )
             try:
                 okx.close_swap_position(swap_inst, pos_side)
@@ -3351,8 +3351,8 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
 
     if not pending:
         return False
-
-    for o in pending:
+    data = pending.get("data", [])
+    for o in data:
         try:
             if o.get("instId") != inst_id:
                 continue
@@ -3594,7 +3594,7 @@ def run_dynamic_tp(okx: "OKXClient"):
         
             # 6.2) Lấy GIÁ HIỆN TẠI làm activePx
             try:
-                current_px = safe_float(last_px)
+                current_px = c_now
             except Exception:
                 current_px = closes[-1]
         
