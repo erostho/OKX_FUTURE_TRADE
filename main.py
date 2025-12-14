@@ -74,6 +74,7 @@ SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
 # SL planned tối đa (khi đặt TP/SL ban đầu)
 MAX_PLANNED_SL_PNL_PCT = 7.0   # cho phép lỗ tối đa 7% PnL nếu chạm SL
+MAX_SL_PNL_PCT = 7
 # SL khẩn cấp theo PnL%
 MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
