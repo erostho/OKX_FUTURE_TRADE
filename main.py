@@ -2982,7 +2982,7 @@ def maker_first_open_position(
     contracts: float,
     desired_entry: float,
     lever: int,
-    maker_offset_bps: float = 5.0,     # 5 bps = 0.05% (nhẹ, đủ maker)
+    maker_offset_bps: float = 6.0,     # 6 bps = 0.06% (nhẹ, đủ maker)
     maker_timeout_sec: int = 3,        # chờ khớp maker 3s
 ):
     """
