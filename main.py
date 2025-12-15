@@ -3210,13 +3210,16 @@ def execute_futures_trades(okx: OKXClient, trades):
 
 
         # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
-        HARD_TP_CAP_PCT = 50.0
+        HARD_TP_CAP_PCT = 300.0
 
+        #if signal == "LONG":
+            #tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
+        #else:
+            #tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
         if signal == "LONG":
-            tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
+            tp_hard = real_entry * 6.0 #+500
         else:
-            tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
-
+            tp_hard = real_entry * 0.2 # -80% cho SHORT
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
             pos_side=pos_side,
