@@ -3479,6 +3479,30 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
+        # ====== (NEW) TÍNH NGƯỠNG TP ĐỘNG SỚM (để SL có thể co theo) ======
+        in_deadzone = is_deadzone_time_vn()
+        try:
+            market_regime_local = market_regime  # đã detect ở đầu hàm
+        except Exception:
+            market_regime_local = "UNKNOWN"
+        
+        if in_deadzone:
+            tp_dyn_threshold = 3.0
+        else:
+            if market_regime_local == "BAD":
+                tp_dyn_threshold = 2.5
+            else:
+                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # mặc định 5%
+        
+        # ====== (NEW) SL CO THEO TP ĐỘNG ======
+        # Ý tưởng: nếu bot chỉ ăn ngắn (tp_dyn_threshold nhỏ), thì SL khẩn cấp cũng phải nhỏ theo.
+        # sl_cap_pnl = min(sl_emergency_gốc, tp_dyn_threshold * hệ số)
+        SL_FOLLOW_TP_MULT = 1.1  # 1.0~1.3 tuỳ bạn, 1.1 là “cắt nhanh” nhưng không quá gắt
+        sl_cap_pnl = min(MAX_EMERGENCY_SL_PNL_PCT, tp_dyn_threshold * SL_FOLLOW_TP_MULT)
+        
+        # Kẹp tối thiểu để tránh quá nhạy (tuỳ style)
+        sl_cap_pnl = max(2.0, sl_cap_pnl)  # không cho <2% pnl
+
         # ===== update peak pnl (realtime) =====
         peak_key = f"{instId}_{posSide}"
         prev_peak = TP_TRAIL_PEAK_PNL.get(peak_key, None)
@@ -3534,12 +3558,12 @@ def run_dynamic_tp(okx: "OKXClient"):
                 continue
 
         # ====== 3) SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
-        if pnl_pct <= -MAX_EMERGENCY_SL_PNL_PCT:
+        if pnl_pct <= -sl_cap_pnl:
             logging.info(
                 "[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL → CẮT LỖ KHẨN CẤP.",
                 instId,
                 pnl_pct,
-                MAX_EMERGENCY_SL_PNL_PCT,
+                sl_cap_pnl,
             )
             try:
                 mark_symbol_sl(instId, "emergency_sl")
