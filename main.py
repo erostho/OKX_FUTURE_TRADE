@@ -3686,35 +3686,47 @@ def run_dynamic_tp(okx: "OKXClient"):
                 tp_dyn_threshold = 2.0   # thị trường xấu → ăn ngắn hơn
             else:
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 3%)
-        # ===== PROFIT LOCK dưới 10% (chống lãi thành lỗ) =====
-        if PROFIT_LOCK_ENABLED:
-            # chỉ áp dụng nếu pnl hiện tại < ngưỡng trailing server
-            if (not PROFIT_LOCK_ONLY_BELOW_SERVER) or (pnl_pct < TP_TRAIL_SERVER_MIN_PNL_PCT):
-                # tier nhỏ hơn (bạn có thể đổi số)
-                # Ví dụ: đã từng >= 2.5% thì không cho rơi dưới +0.5%
-                if peak_pnl >= 2.5 and pnl_pct <= 0.5:
-                    logging.info("[PROFIT-LOCK] %s peak=%.2f%% -> floor 0.5%%, pnl=%.2f%% => CLOSE",
-                                 instId, peak_pnl, pnl_pct)
+        # ================= LOCAL PROFIT PROTECT (< 10%) =================
+        # Chỉ chạy khi CHƯA vào vùng server-side trailing
+        if PROFIT_LOCK_ENABLED and pnl_pct < TP_TRAIL_SERVER_MIN_PNL_PCT:
+            # peak_pnl: đỉnh realtime của vị thế (bạn đang có)
+            dd_peak = peak_pnl - pnl_pct   # rút từ đỉnh realtime
+        
+            # --- ZONE A: TP < 1% (lọc nhiễu, không chốt sớm) ---
+            if peak_pnl < 1.0:
+                # thường KHÔNG chốt gì ở zone này để tránh “ăn non”
+                pass
+        
+            # --- ZONE B: 1% → 3% (bảo toàn nhẹ) ---
+            elif peak_pnl < 3.0:
+                # rút hơi mạnh là chốt (tránh từ lời nhỏ thành hòa/lỗ)
+                if dd_peak >= 1.0 or pnl_pct <= 0.1:
+                    logging.info("[LOCAL<10] %s peak=%.2f%% pnl=%.2f%% dd=%.2f%% (1-3) => CLOSE",
+                                 instId, peak_pnl, pnl_pct, dd_peak)
                     mark_symbol_tp(instId)
                     maker_close_position_with_timeout(okx, instId, posSide, sz, c_now)
                     continue
         
-                # Ví dụ: đã từng >= 4% thì không cho rơi dưới +1.5%
-                if peak_pnl >= 4.0 and pnl_pct <= 1.5:
-                    logging.info("[PROFIT-LOCK] %s peak=%.2f%% -> floor 1.5%%, pnl=%.2f%% => CLOSE",
-                                 instId, peak_pnl, pnl_pct)
+            # --- ZONE C: 3% → 5% ---
+            elif peak_pnl < 5.0:
+                lock_floor = max(1.0, peak_pnl * 0.4)  # giữ tối thiểu 40% đỉnh, nhưng không dưới 1%
+                if dd_peak >= 1.6 or pnl_pct <= lock_floor:
+                    logging.info("[LOCAL<10] %s peak=%.2f%% pnl=%.2f%% floor=%.2f%% dd=%.2f%% (3-5) => CLOSE",
+                                 instId, peak_pnl, pnl_pct, lock_floor, dd_peak)
                     mark_symbol_tp(instId)
                     maker_close_position_with_timeout(okx, instId, posSide, sz, c_now)
                     continue
         
-                # Ví dụ: đã từng >= 6% thì không cho rơi dưới +3%
-                if peak_pnl >= 6.0 and pnl_pct <= 3.0:
-                    logging.info("[PROFIT-LOCK] %s peak=%.2f%% -> floor 3.0%%, pnl=%.2f%% => CLOSE",
-                                 instId, peak_pnl, pnl_pct)
+            # --- ZONE D: 5% → < server_trailing (thường ~10%) ---
+            else:
+                lock_floor = peak_pnl * 0.5  # giữ tối thiểu 50% lợi nhuận đỉnh
+                if dd_peak >= 2.0 or pnl_pct <= lock_floor:
+                    logging.info("[LOCAL<10] %s peak=%.2f%% pnl=%.2f%% floor=%.2f%% dd=%.2f%% (5-10) => CLOSE",
+                                 instId, peak_pnl, pnl_pct, lock_floor, dd_peak)
                     mark_symbol_tp(instId)
                     maker_close_position_with_timeout(okx, instId, posSide, sz, c_now)
                     continue
-
+        # ================= END LOCAL PROFIT PROTECT =================
         if pnl_pct < tp_dyn_threshold:
             logging.info(
                 "[TP-DYN] %s lãi %.2f%% < %.2f%% → bỏ qua TP động.",
@@ -3735,18 +3747,6 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
         
         drawdown = max_pnl_window - pnl_pct
-        # ===== LOCAL TRAIL cho pnl < 10% (ăn dày vừa phải, rút thì chốt) =====
-        LOCAL_TRAIL_START = 3.0      # đã từng lời >=3%
-        LOCAL_GIVEBACK    = 1.6      # rút lại >=1.6% pnl từ đỉnh => chốt
-        
-        if max_pnl_window >= LOCAL_TRAIL_START and pnl_pct < TP_TRAIL_SERVER_MIN_PNL_PCT:
-            if drawdown >= LOCAL_GIVEBACK:
-                logging.info("[LOCAL-TRAIL] %s max=%.2f%% pnl=%.2f%% drawdown=%.2f%% => CLOSE",
-                             instId, max_pnl_window, pnl_pct, drawdown)
-                mark_symbol_tp(instId)
-                maker_close_position_with_timeout(okx, instId, posSide, sz, c_now)
-                continue
-
         # 6) TRAILING SERVER-SIDE KHI LÃI LỚN  (ƯU TIÊN HƠN TP DYNAMIC)
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
         
