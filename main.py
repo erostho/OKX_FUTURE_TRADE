@@ -129,6 +129,95 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+import os, json, time, random
+from datetime import datetime
+
+VN_TZ_OFFSET_HOURS = int(os.getenv("VN_TZ_OFFSET_HOURS", "7"))
+
+def _vn_now():
+    # nếu server chạy giờ VN sẵn thì bạn có thể đổi thành datetime.now()
+    return datetime.utcnow().timestamp() + VN_TZ_OFFSET_HOURS * 3600
+
+def _vn_hour():
+    return datetime.fromtimestamp(_vn_now()).hour
+
+def _is_session_20_24():
+    h = _vn_hour()
+    return 20 <= h < 24
+
+def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
+    """
+    Fallback-safe: nếu thiếu biến => coi như KHÔNG mạnh.
+    Bạn map các biến đang có của bot vào 3 tham số này khi gọi.
+    """
+    try:
+        if market_regime is not None and str(market_regime).upper() == "TREND":
+            if confidence is not None and float(confidence) >= 70:
+                return True
+            if trend_score is not None and float(trend_score) >= 80:
+                return True
+    except:
+        pass
+    return False
+
+def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=None):
+    if not _is_session_20_24():
+        return True, "ok:not_20_24"
+
+    # 20-24: chỉ cho nếu trend cực mạnh, còn lại giảm tần suất (mặc định skip 85%)
+    if _is_strong_trend(market_regime, confidence, trend_score):
+        return True, "ok:strong_trend_20_24"
+
+    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.85"))  # 0.70 -> 1.00
+    if random.random() < skip_prob:
+        return False, f"skip:20_24_throttle({skip_prob:.2f})"
+
+    return True, "ok:20_24_lucky_pass"
+
+TRADE_GUARD_FILE = os.getenv("TRADE_GUARD_FILE", "./trade_guard.json")
+
+def _load_guard_state():
+    try:
+        with open(TRADE_GUARD_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def _save_guard_state(st):
+    try:
+        with open(TRADE_GUARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except:
+        pass
+
+def _today_key_vn():
+    return datetime.fromtimestamp(_vn_now()).strftime("%Y-%m-%d")
+
+def get_trades_today():
+    st = _load_guard_state()
+    k = _today_key_vn()
+    return int(st.get("trades_by_day", {}).get(k, 0))
+
+def inc_trades_today():
+    st = _load_guard_state()
+    k = _today_key_vn()
+    st.setdefault("trades_by_day", {})
+    st["trades_by_day"][k] = int(st["trades_by_day"].get(k, 0)) + 1
+    _save_guard_state(st)
+    return st["trades_by_day"][k]
+
+def daily_trade_limit():
+    # Với 50 USDT: set 80–100. Mặc định 100, bạn chỉnh ENV là xong.
+    return int(os.getenv("DAILY_MAX_TRADES", "100"))
+
+def allow_trade_daily_limit():
+    limit = daily_trade_limit()
+    used = get_trades_today()
+    if used >= limit:
+        return False, f"skip:daily_limit used={used} limit={limit}"
+    return True, f"ok:daily_limit used={used} limit={limit}"
+
+
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -2990,6 +3079,20 @@ def maker_first_open_position(
     Nếu không khớp trong timeout -> cancel + fallback MARKET.
     Return: (ok: bool, fill_px: float|None, used: 'maker'|'market'|'skip')
     """
+    # ===== PATCH #2: throttle session 20-24 =====
+    allow, reason = _allow_trade_session_20_24(
+        market_regime=locals().get("market_regime", None),
+        confidence=locals().get("confidence", None),
+        trend_score=locals().get("trend_score", None),
+    )
+    if not allow:
+        logging.info("[GUARD][S20-24] Block %s %s: %s", inst_id, side_open, reason)
+        return False, None, "skip_session_20_24"
+        # ===== PATCH #4: daily trade cap =====
+    allow, reason = allow_trade_daily_limit()
+    if not allow:
+        logging.warning("[GUARD][DAILY] Block %s %s: %s", inst_id, side_open, reason)
+        return False, None, "skip_daily_limit"
 
     # 1) Tính giá limit để tăng khả năng nằm chờ (maker)
     # LONG: đặt thấp hơn một chút; SHORT: đặt cao hơn một chút
@@ -3043,8 +3146,11 @@ def maker_first_open_position(
     filled, avg_px = okx.wait_order_filled(inst_id, ord_id, timeout_sec=maker_timeout_sec)
 
     if filled:
+        n = inc_trades_today()
+        logging.info("[GUARD][DAILY] trades_today=%s", n)
         logging.info("[MAKER] FILLED: inst=%s ordId=%s avgPx=%s", inst_id, ord_id, avg_px)
         return True, (avg_px or desired_entry), "maker"
+
 
     # 4) Không khớp -> cancel rồi market
     try:
