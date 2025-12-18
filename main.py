@@ -2996,6 +2996,35 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
         tp = entry - risk * RR
 
     return tp, sl
+    risk = 1.1 * atr
+    risk_pct = risk / entry
+    # kẹp risk_pct để tránh quá bé / quá to
+    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
+    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
+
+    risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
+
+    # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
+    # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
+    #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
+    max_risk_pct_by_pnl = MAX_PLANNED_SL_PNL_PCT / FUT_LEVERAGE
+    risk_pct = min(risk_pct, max_risk_pct_by_pnl)
+    risk = risk_pct * entry
+
+    regime = detect_market_regime(okx)
+    if regime == "GOOD":
+        RR = 2.0      # ăn dày khi thị trường đẹp
+    else:
+        RR = 1.0      # thị trường xấu → scalp RR 1:1 an toàn
+
+    if direction.upper() == "LONG":
+        sl = entry - risk
+        tp = entry + risk * RR
+    else:
+        sl = entry + risk
+        tp = entry - risk * RR
+
+    return tp, sl
 
     
 def calc_scalp_tp_sl(entry: float, direction: str):
@@ -3317,7 +3346,6 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
         HARD_TP_CAP_PCT = 300.0
-
         #if signal == "LONG":
             #tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
         #else:
@@ -3326,6 +3354,22 @@ def execute_futures_trades(okx: OKXClient, trades):
             tp_hard = real_entry * 6.0 #+500
         else:
             tp_hard = real_entry * 0.2 # -80% cho SHORT
+        MAX_SL_PNL_PCT = 7.0
+        lev = float(FUT_LEVERAGE)  # hoặc lev = float(lever)
+        
+        max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
+        
+        if signal == "LONG":
+            sl_cap = real_entry * (1.0 - max_price_move)
+            # LONG: SL không được thấp hơn sl_cap (không được xa quá)
+            sl_px = max(sl_px, sl_cap)
+        else:
+            sl_cap = real_entry * (1.0 + max_price_move)
+            # SHORT: SL không được cao hơn sl_cap
+            sl_px = min(sl_px, sl_cap)
+        
+        logging.warning(f"[SL-CAP] {swap_inst} {signal} entry={real_entry:.8f} plan_sl={sl_px:.8f} cap_sl={sl_cap:.8f} lev={lev}")
+
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
             pos_side=pos_side,
