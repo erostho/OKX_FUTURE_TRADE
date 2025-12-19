@@ -195,7 +195,7 @@ def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=
     if _is_strong_trend(market_regime, confidence, trend_score):
         return True, "ok:strong_trend_20_24"
 
-    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.85"))  # 0.70 -> 1.00
+    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.70"))  # 0.70 -> 1.00
     if random.random() < skip_prob:
         return False, f"skip:20_24_throttle({skip_prob:.2f})"
 
