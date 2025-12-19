@@ -391,6 +391,14 @@ def btc_global_lock_until_ts(okx):
     return lock_until_ms, reason
 
 # ========== PATCH 1: ANTI-SWEEP FILTER ==========
+def cap_sl_by_pnl(sl_px, entry_px, side, leverage, max_pnl_pct):
+    max_move = (max_pnl_pct / leverage) / 100.0
+    if side == "LONG":
+        max_sl = entry_px * (1 - max_move)
+        return max(sl_px, max_sl)   # không cho SL thấp hơn mức -max_pnl
+    else:  # SHORT
+        max_sl = entry_px * (1 + max_move)
+        return min(sl_px, max_sl)   # không cho SL cao hơn mức -max_pnl
 
 def is_liquidity_sweep_candle(open_px: float,
                               high_px: float,
@@ -3279,12 +3287,13 @@ def execute_futures_trades(okx: OKXClient, trades):
 
 
         # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
-        sl = cap_sl_by_pnl(sl, entry, side, this_lever, MAX_PLANNED_SL_PNL_PCT)
+
         HARD_TP_CAP_PCT = 50.0
         if signal == "LONG":
             tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
         else:
             tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
+        sl = cap_sl_by_pnl(sl, real_entry, side, this_lever, MAX_PLANNED_SL_PNL_PCT)
 
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
