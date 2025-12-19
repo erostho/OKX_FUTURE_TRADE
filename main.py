@@ -603,16 +603,17 @@ def is_backtest_time_vn():
 
 def is_deadzone_time_vn():
     """
-    Phiên trưa 'deadzone' 10:30 - 16:00 giờ VN.
+    Phiên chiều tối 'deadzone' 15:00 - 20:00 giờ VN.
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
     h = now_vn.hour
     m = now_vn.minute
-
-    if h == 10 and m >= 30:
+    if 15 <= h < 20:
         return True
-    if 11 <= h < 16:
-        return True
+    #if h == 10 and m >= 30:
+        #return True
+    #if 11 <= h < 16:
+        #return True
     return False
 
 
