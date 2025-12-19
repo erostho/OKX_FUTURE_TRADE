@@ -3550,7 +3550,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 EARLY_FAIL_NEVER_REACHED_PROFIT_PCT, EARLY_FAIL_CUT_LOSS_PCT
             )
             try:
-                mark_symbol_sl(instId)  # hoặc mark_symbol_tp tuỳ bạn đang dùng marker nào cho loss
+                mark_symbol_sl(instId, "early_fail")  # hoặc mark_symbol_tp tuỳ bạn đang dùng marker nào cho loss
                 maker_close_position_with_timeout(
                     okx=okx,
                     inst_id=instId,
