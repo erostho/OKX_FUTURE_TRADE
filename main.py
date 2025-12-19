@@ -3451,11 +3451,12 @@ def run_dynamic_tp(okx: "OKXClient"):
         
         # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
         pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
-        
+                
         # 1b) Nếu vẫn không tính được thì bỏ qua symbol này
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
+        logging.info("[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s | tier=%s", instId, posSide, pnl_pct, TP_TRAIL_PEAK_PNL.get(f"{instId}_{posSide}", pnl_pct), "YES" if TP_LADDER_BE_MOVED.get(f"{instId}_{posSide}", False) else "NO", TP_BE_TIER.get(f"{instId}_{posSide}", 0))
         # ====== (NEW) TÍNH NGƯỠNG TP ĐỘNG SỚM (để SL có thể co theo) ======
         in_deadzone = is_deadzone_time_vn()
         try:
