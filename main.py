@@ -3625,10 +3625,10 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
-            tp_dyn_threshold = 3.0  # deadzone: ăn ngắn
+            tp_dyn_threshold = 2.0  # deadzone: ăn ngắn
         else:
             if market_regime == "BAD":
-                tp_dyn_threshold = 2.5   # thị trường xấu → ăn ngắn hơn
+                tp_dyn_threshold = 1.5   # thị trường xấu → ăn ngắn hơn
             else:
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 5%)
 
