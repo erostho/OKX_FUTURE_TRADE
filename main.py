@@ -721,7 +721,6 @@ class OKXClient:
                 logging.error("❌ OKX RESPONSE ERROR code=%s msg=%s", code, msg)
                 logging.error("Full response: %s", data)
                 raise Exception(f"OKX API error code={code} msg={msg}")
-            
             return data
 
     
@@ -850,11 +849,18 @@ class OKXClient:
         return data.get("data", [])
 
     def get_candles(self, inst_id, bar="15m", limit=100):
+        if inst_id.endswith("-USDT") and not inst_id.endswith("-USDT-SWAP"):
+            inst_id = f"{inst_id}-SWAP"
+    
         path = "/api/v5/market/candles"
-        params = {"instId": inst_id, "bar": bar, "limit": str(limit)}
+        params = {
+            "instId": inst_id,
+            "bar": bar,
+            "limit": str(limit),
+        }
         data = self._request("GET", path, params=params)
         return data.get("data", [])
-
+        
     def get_swap_tickers(self):
         path = "/api/v5/market/tickers"
         params = {"instType": "SWAP"}
