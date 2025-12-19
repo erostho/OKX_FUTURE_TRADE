@@ -25,7 +25,7 @@ SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE"
 # ===== BE ladder state =====
 TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 # Mỗi mốc chỉ update 1 lần
-TP_LADDER_BE_OFFSET_PCT = 0.15
+
 TP_BE_TIERS = [
     (2.0, 0.15),  # >=2%  -> BE +0.15%
     (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
@@ -3200,7 +3200,7 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
 
 
-def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, entry_px: float) -> bool:
+def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -> bool:
     """Kéo SL về hòa vốn (BE) bằng cách: hủy OCO hiện tại -> đặt lại OCO giữ nguyên TP, đổi SL."""
     try:
         resp = okx.get_algo_pending(inst_id=inst_id, ord_type="oco")
@@ -3240,9 +3240,9 @@ def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, 
 
     # SL về BE + offset nhỏ để tránh quét đúng entry
     if pos_side == "long":
-        sl_be = entry_px * (1.0 + TP_LADDER_BE_OFFSET_PCT / 100.0)
+        sl_be = entry_px * (1.0 + offset_pct / 100.0)
     else:
-        sl_be = entry_px * (1.0 - TP_LADDER_BE_OFFSET_PCT / 100.0)
+        sl_be = entry_px * (1.0 - offset_pct / 100.0)
     # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì thôi, không hủy/đặt lại
     if sl_now > 0:
         if pos_side == "long" and sl_now >= sl_be:
@@ -3571,10 +3571,8 @@ def run_dynamic_tp(okx: "OKXClient"):
                     pass
                 else:
                     try:
-                        # set offset cho tier này
-                        TP_LADDER_BE_OFFSET_PCT = desired_offset
             
-                        moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px)
+                        moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
                         if moved:
                             TP_BE_TIER[pos_key] = desired_tier
                             TP_LADDER_BE_MOVED[pos_key] = True
