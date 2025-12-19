@@ -674,14 +674,14 @@ class OKXClient:
         if self.simulated_trading:
             headers["x-simulated-trading"] = "1"
 
-        logging.info("======== OKX SIGN DEBUG ========")
-        logging.info("Method: %s", method)
-        logging.info("Path: %s", path)
-        logging.info("Timestamp: %s", ts)
-        logging.info("Message for HMAC: %s", f"{ts}{method}{path}{body}")
-        logging.info("Signature: %s", sign)
-        logging.info("Headers: %s", headers)
-        logging.info("================================")
+        #logging.info("======== OKX SIGN DEBUG ========")
+        #logging.info("Method: %s", method)
+        #logging.info("Path: %s", path)
+        #logging.info("Timestamp: %s", ts)
+        #logging.info("Message for HMAC: %s", f"{ts}{method}{path}{body}")
+        #logging.info("Signature: %s", sign)
+        #logging.info("Headers: %s", headers)
+        #logging.info("================================")
         return headers
 
     def _request(self, method, path, params=None, body_dict=None):
