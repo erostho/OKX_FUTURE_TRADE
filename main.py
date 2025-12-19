@@ -2948,7 +2948,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
     # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
     #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
-    max_risk_pct_by_pnl = (MAX_PLANNED_SL_PNL_PCT / (FUT_LEVERAGE * 100.0)
+    max_risk_pct_by_pnl = (MAX_PLANNED_SL_PNL_PCT / (FUT_LEVERAGE * 100.0))
     risk_pct = min(risk_pct, max_risk_pct_by_pnl)
     risk = risk_pct * entry
 
