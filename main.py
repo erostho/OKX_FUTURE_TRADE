@@ -3556,6 +3556,26 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         peak_pnl = float(TP_TRAIL_PEAK_PNL.get(peak_key, pnl_pct))
 
+        # ===== (NEW) timeout 120' nếu pnl < 5% thì đóng =====
+        open_ms = int(p.get("cTime", "0") or 0)
+        if open_ms > 0:
+            age_min = (time.time() * 1000 - open_ms) / 60000.0
+            if age_min >= 120 and pnl_pct < 5.0:
+                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
+                                instId, posSide, age_min, pnl_pct)
+                try:
+                    mark_symbol_sl(instId, "timeout_120m")
+                    okx.close_swap_position(instId, posSide)
+                except Exception as e:
+                    logging.error("[TIMEOUT] Lỗi đóng lệnh %s: %s", instId, e)
+        
+                # reset state
+                pos_key = f"{instId}_{posSide}"
+                TP_LADDER_BE_MOVED.pop(pos_key, None)
+                TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+                EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+                continue
 
         # ====== 2) SL DYNAMIC (soft SL theo trend) ======
         # dùng cùng market_regime đã detect ở đầu hàm
@@ -3723,6 +3743,38 @@ def run_dynamic_tp(okx: "OKXClient"):
                             )
                     except Exception as e:
                         logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
+            # ===== (NEW) bật TP DYN cũ khi đã BE (>=2%) - cần 2/4 tín hiệu thì chốt =====
+            if pnl_pct >= 2.0:  # hoặc dùng TP_LADDER_BE_TRIGGER_PNL_PCT
+                dyn_hits = sum([
+                    1 if engulfing else 0,
+                    1 if ema_break else 0,
+                    1 if vol_drop else 0,
+                    1 if flat_move else 0,
+                ])
+            
+                if dyn_hits >= 2:
+                    logging.warning("[TP-DYN2] %s %s pnl=%.2f%% hit=%d/4 => CLOSE",
+                                    instId, posSide, pnl_pct, dyn_hits)
+                    try:
+                        mark_symbol_tp(instId)
+                        maker_close_position_with_timeout(
+                            okx=okx,
+                            inst_id=instId,
+                            pos_side=posSide,
+                            sz=sz,
+                            last_px=c_now,
+                            offset_bps=6.0,
+                            timeout_sec=3,
+                        )
+                    except Exception as e:
+                        logging.error("[TP-DYN2] Lỗi đóng lệnh %s: %s", instId, e)
+            
+                    # reset state
+                    TP_LADDER_BE_MOVED.pop(pos_key, None)
+                    TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                    TP_BE_TIER.pop(pos_key, None)
+                    EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+                    continue
 
 
             # 2) Ladder close theo peak_pnl (ưu tiên bậc cao)
