@@ -3293,7 +3293,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
         else:
             tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
-        sl = cap_sl_by_pnl(sl, real_entry, side, this_lever, MAX_PLANNED_SL_PNL_PCT)
+        sl = cap_sl_by_pnl(sl, real_entry, signal, this_lever, MAX_PLANNED_SL_PNL_PCT)
 
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
