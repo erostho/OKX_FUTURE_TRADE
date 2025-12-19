@@ -219,15 +219,12 @@ def normalize_swap_sz(okx, inst_id: str, sz: float) -> str:
     Trả về sz dạng string đúng format để gửi API.
     """
     # lấy thông tin instrument để biết lotSz/minSz
-    ins_list = okx.get_swap_instruments()
-    if not ins_list:
+    ins_list = okx.get_swap_instruments()  # hàm này KHÔNG nhận inst_id, và trả LIST
+    ins = next((x for x in ins_list if x.get("instId") == inst_id), None)
+    if not ins:
         return sz
-    
-    ins = ins_list[0]          # <-- LẤY PHẦN TỬ ĐẦU TIÊN
-    lot = float(ins.get("lotSz", 1))
 
     min_sz = float(ins.get("minSz", lot))
-
     sz2 = floor_to_step(float(sz), lot)
 
     if sz2 < min_sz:
