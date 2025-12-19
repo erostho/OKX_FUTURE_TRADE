@@ -3503,7 +3503,8 @@ def run_dynamic_tp(okx: "OKXClient"):
         
         # 1a) ƯU TIÊN PnL REALTIME LẤY TỪ POSITION
         pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
-                
+        above_10 = pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT  # thường = 10.0
+
         # 1b) Nếu vẫn không tính được thì bỏ qua symbol này
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
@@ -3912,37 +3913,35 @@ def run_dynamic_tp(okx: "OKXClient"):
             vol_drop,
             ema_break,
         )
-            # ===== TP-DYN cũ chỉ bật sau khi đã BE (>= +2%) và cần 2/4 tín hiệu =====
-            if TP_LADDER_BE_MOVED.get(pos_key, False):
-                dyn_hits = (1 if flat_move else 0) + (1 if engulfing else 0) + (1 if vol_drop else 0) + (1 if ema_break else 0)
-            
-                if dyn_hits >= 2:
-                    logging.warning(
-                        "[TP-DYN2] %s %s pnl=%.2f%% hit=%d/4 (flat=%s engulf=%s vol=%s ema=%s) => CLOSE",
-                        instId, posSide, pnl_pct, dyn_hits, flat_move, engulfing, vol_drop, ema_break
+        # ===== TP-DYN cũ chỉ bật sau khi đã BE (>= +2%) và cần 2/4 tín hiệu =====
+        if TP_LADDER_BE_MOVED.get(pos_key, False) and not above_10:
+            dyn_hits = (1 if flat_move else 0) + (1 if engulfing else 0) + (1 if vol_drop else 0) + (1 if ema_break else 0)
+            if dyn_hits >= 2:
+                logging.warning(
+                    "[TP-DYN2] %s %s pnl=%.2f%% hit=%d/4 (flat=%s engulf=%s vol=%s ema=%s) => CLOSE",
+                    instId, posSide, pnl_pct, dyn_hits, flat_move, engulfing, vol_drop, ema_break
+                )
+                try:
+                    mark_symbol_tp(instId)
+                    maker_close_position_with_timeout(
+                        okx=okx,
+                        inst_id=instId,
+                        pos_side=posSide,
+                        sz=sz,
+                        last_px=c_now,
+                        offset_bps=6.0,
+                        timeout_sec=3,
                     )
-                    try:
-                        mark_symbol_tp(instId)
-                        maker_close_position_with_timeout(
-                            okx=okx,
-                            inst_id=instId,
-                            pos_side=posSide,
-                            sz=sz,
-                            last_px=c_now,
-                            offset_bps=6.0,
-                            timeout_sec=3,
-                        )
-                    except Exception as e:
-                        logging.error("[TP-DYN2] Lỗi đóng lệnh %s: %s", instId, e)
+                except Exception as e:
+                    logging.error("[TP-DYN2] Lỗi đóng lệnh %s: %s", instId, e)
             
-                    # reset state
-                    TP_LADDER_BE_MOVED.pop(pos_key, None)
-                    TP_TRAIL_PEAK_PNL.pop(pos_key, None)
-                    TP_BE_TIER.pop(pos_key, None)
-                    EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
-                    continue
+                # reset state
+                TP_LADDER_BE_MOVED.pop(pos_key, None)
+                TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+                EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+                continue
 
-        
         # ====== 7) KẾT HỢP LOGIC TP ĐỘNG + TP TRAILING ======
         # TP động (logic cũ)
         should_close_dynamic = flat_move or engulfing or vol_drop or ema_break
