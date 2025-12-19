@@ -3748,6 +3748,7 @@ def run_dynamic_tp(okx: "OKXClient"):
 
 
             # 2) Ladder close theo peak_pnl (ưu tiên bậc cao)
+            ladder_closed = False
             closed_by_ladder = False
             for peak_thr, floor_thr in TP_LADDER_RULES:
                 if peak_pnl >= peak_thr and pnl_pct <= floor_thr:
@@ -3779,10 +3780,11 @@ def run_dynamic_tp(okx: "OKXClient"):
                 EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
                 TP_BE_TIER.pop(pos_key, None)
 
-                continue
+                ladder_closed = True
+
 
             # Dưới 10%: không chạy TP dynamic nữa (tránh chốt non)
-            continue
+            #continue
         # ================= END LADDER =================
         # 5) TÍNH PNL CAO NHẤT TRONG CỬA SỔ
         max_pnl_window = 0.0
@@ -3914,7 +3916,8 @@ def run_dynamic_tp(okx: "OKXClient"):
             ema_break,
         )
         # ===== TP-DYN cũ chỉ bật sau khi đã BE (>= +2%) và cần 2/4 tín hiệu =====
-        if TP_LADDER_BE_MOVED.get(pos_key, False) and not above_10:
+        if (not ladder_closed) and TP_LADDER_BE_MOVED.get(pos_key, False) and not above_10:
+
             dyn_hits = (1 if flat_move else 0) + (1 if engulfing else 0) + (1 if vol_drop else 0) + (1 if ema_break else 0)
             if dyn_hits >= 2:
                 logging.warning(
