@@ -2973,6 +2973,19 @@ def build_open_position_map(okx: OKXClient):
         except Exception:
             continue
     return pos_map
+def cap_sl_by_pnl(sl_px, entry_px, side, leverage, max_pnl_pct):
+    """
+    Đảm bảo SL không vượt quá max_pnl_pct (% PnL) theo leverage thực tế
+    """
+    max_price_move_pct = max_pnl_pct / leverage / 100.0
+
+    if side == "LONG":
+        max_sl = entry_px * (1 - max_price_move_pct)
+        return max(sl_px, max_sl)
+    else:  # SHORT
+        max_sl = entry_px * (1 + max_price_move_pct)
+        return min(sl_px, max_sl)
+
 # ========== EXECUTE FUTURES TRADES ==========
 def maker_first_open_position(
     okx: OKXClient,
@@ -3186,7 +3199,6 @@ def execute_futures_trades(okx: OKXClient, trades):
         #NET MODE       
         # 2) MỞ VỊ THẾ (MAKER-FIRST)
         time.sleep(0.2)
-
         ok_open, fill_px, used_type = maker_first_open_position(
             okx=okx,
             inst_id=swap_inst,
@@ -3210,8 +3222,8 @@ def execute_futures_trades(okx: OKXClient, trades):
 
 
         # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
+        sl = cap_sl_by_pnl(sl, entry, side, this_lever, MAX_PLANNED_SL_PNL_PCT)
         HARD_TP_CAP_PCT = 50.0
-
         if signal == "LONG":
             tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
         else:
