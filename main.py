@@ -25,6 +25,7 @@ SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE"
 # ===== BE ladder state =====
 TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 # Mỗi mốc chỉ update 1 lần
+TP_LADDER_BE_OFFSET_PCT = 0.15
 TP_BE_TIERS = [
     (2.0, 0.15),  # >=2%  -> BE +0.15%
     (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
