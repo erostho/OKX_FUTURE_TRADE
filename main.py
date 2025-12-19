@@ -203,6 +203,36 @@ def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=
 
 TRADE_GUARD_FILE = os.getenv("TRADE_GUARD_FILE", "./trade_guard.json")
 
+from decimal import Decimal, ROUND_DOWN
+
+def floor_to_step(x: float, step: float) -> float:
+    if step <= 0:
+        return float(x)
+    xd = Decimal(str(x))
+    sd = Decimal(str(step))
+    n = (xd / sd).to_integral_value(rounding=ROUND_DOWN)
+    return float(n * sd)
+
+def normalize_swap_sz(okx, inst_id: str, sz: float) -> str:
+    """
+    OKX SWAP: sz phải là bội của lotSz và >= minSz.
+    Trả về sz dạng string đúng format để gửi API.
+    """
+    # lấy thông tin instrument để biết lotSz/minSz
+    ins = okx.get_swap_instrument(inst_id)  # <-- bạn đã có hàm tương tự thì dùng luôn
+    lot = float(ins.get("lotSz", "1"))
+    min_sz = float(ins.get("minSz", lot))
+
+    sz2 = floor_to_step(float(sz), lot)
+
+    if sz2 < min_sz:
+        raise ValueError(f"sz({sz2}) < minSz({min_sz}) for {inst_id}")
+
+    # nếu lotSz là số nguyên (thường =1) thì ép int cho chắc
+    if abs(lot - round(lot)) < 1e-12:
+        return str(int(round(sz2)))
+    return f"{sz2:.8f}".rstrip("0").rstrip(".")
+
 def _load_guard_state():
     try:
         with open(TRADE_GUARD_FILE, "r", encoding="utf-8") as f:
@@ -2878,11 +2908,12 @@ def maker_first_open_position(
         px = desired_entry * (1.0 + offset)
 
     # 2) Gửi post-only maker
+    sz = normalize_swap_sz(okx, inst_id, sz)
     resp = okx.place_futures_limit_order(
         inst_id=inst_id,
         side=side_open,
         pos_side=pos_side,
-        sz=str(contracts),
+        sz=sz,
         px=px,
         td_mode="isolated",
         lever=lever,
@@ -4136,15 +4167,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 6 - 20 - 36 - 50 phút thì chạy thêm FULL BOT
-    if minute in (6, 20, 36, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (6, 20, 36, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
