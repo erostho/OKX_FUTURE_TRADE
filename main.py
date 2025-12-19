@@ -88,6 +88,11 @@ MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+# ===== EARLY FAIL-SAFE (anti reverse right after entry) =====
+EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 2.0   # chưa từng đạt +2%
+EARLY_FAIL_CUT_LOSS_PCT = -2.0              # mà đã xuống -2% => cắt ngay
+
+
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
@@ -109,6 +114,7 @@ TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
 TP_LADDER_RULES = [(8.0, 5.0), (5.0, 3.0), (3.0, 1.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
+EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
@@ -3392,7 +3398,16 @@ def run_dynamic_tp(okx: "OKXClient"):
             continue
 
         if not instId or sz <= 0 or avg_px <= 0:
+            pos_key = f"{instId}_{posSide}"
+        
+            # reset toàn bộ state theo position (bắt buộc)
+            EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+            TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+            TP_LADDER_BE_MOVED.pop(pos_key, None)
+            TP_BE_TIER.pop(pos_key, None)
+        
             continue
+
 
         # --- Lấy nến 5m ---
         try:
@@ -3516,21 +3531,78 @@ def run_dynamic_tp(okx: "OKXClient"):
                 except Exception as e:
                     logging.error("[SL-DYN] Lỗi đóng lệnh %s: %s", instId, e)
                 continue
+        # ================= EARLY FAIL-SAFE =================
+        # Nếu chưa từng lên +2% mà đã tụt xuống -2% => thoát sớm (tránh lệnh ngược chiều)
+        pos_key = f"{instId}_{posSide}"
+        
+        # đánh dấu đã từng đạt +2%
+        if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (peak_pnl >= EARLY_FAIL_NEVER_REACHED_PROFIT_PCT):
+            EARLY_FAIL_REACHED_PROFIT[pos_key] = True
+        
+        # nếu chưa từng đạt +2% mà pnl <= -2% thì đóng luôn
+        if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (pnl_pct <= EARLY_FAIL_CUT_LOSS_PCT):
+            logging.warning(
+                "[EARLY-FAIL] %s %s peak=%.2f%% pnl=%.2f%% (chưa lên +%.1f%% mà đã xuống %.1f%%) => CLOSE",
+                instId, posSide, peak_pnl, pnl_pct,
+                EARLY_FAIL_NEVER_REACHED_PROFIT_PCT, EARLY_FAIL_CUT_LOSS_PCT
+            )
+            try:
+                mark_symbol_sl(instId)  # hoặc mark_symbol_tp tuỳ bạn đang dùng marker nào cho loss
+                maker_close_position_with_timeout(
+                    okx=okx,
+                    inst_id=instId,
+                    pos_side=posSide,
+                    sz=sz,
+                    last_px=c_now,
+                    offset_bps=6.0,
+                    timeout_sec=3,
+                )
+            except Exception as e:
+                logging.error("[EARLY-FAIL] Lỗi đóng lệnh %s: %s", instId, e)
+        
+            # reset state của position
+            EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+            TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+            TP_LADDER_BE_MOVED.pop(pos_key, None)
+            TP_BE_TIER.pop(pos_key, None)
+        
+            continue
+        # ================= END EARLY FAIL-SAFE =================
 
         # ====== 3) SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
         if pnl_pct <= -sl_cap_pnl:
             logging.info(
-                "[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL → CẮT LỖ KHẨN CẤP.",
+                "[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL -> CẮT LỖ KHẨN CẤP.",
                 instId,
                 pnl_pct,
                 sl_cap_pnl,
             )
+        
+            pos_key = f"{instId}_{posSide}"
+        
             try:
                 mark_symbol_sl(instId, "emergency_sl")
                 okx.close_swap_position(instId, posSide)
+        
+                # ✅ RESET STATE sau khi đã đóng lệnh
+                EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+                TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_LADDER_BE_MOVED.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+        
+                continue
+        
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
-            continue
+        
+                # ✅ (tuỳ chọn) reset luôn để tránh kẹt state khi lệnh đã đóng trên sàn nhưng API báo lỗi
+                EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+                TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_LADDER_BE_MOVED.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+        
+                continue
+
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
@@ -3612,6 +3684,8 @@ def run_dynamic_tp(okx: "OKXClient"):
                 # reset state
                 TP_LADDER_BE_MOVED.pop(pos_key, None)
                 TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+                EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
                 TP_BE_TIER.pop(pos_key, None)
 
                 continue
