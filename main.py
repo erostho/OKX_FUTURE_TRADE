@@ -3102,7 +3102,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
 
         # SL theo plan
-        sl_px = float(planned_trade["sl"])
+        sl_px = float(t["sl"])
         if signal == "LONG":
             sl_cap = real_entry * (1.0 - max_price_move)
             sl_px = max(sl_px, sl_cap)
@@ -3280,6 +3280,57 @@ def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -
     except Exception as e:
         logging.error("[BE] Lỗi place_oco_tp_sl %s: %s", inst_id, e)
         return False
+
+def infer_be_from_oco(okx: OKXClient, inst_id: str, pos_side: str, entry_px: float) -> tuple[bool, int, float]:
+    """
+    Trả về: (is_be, tier, sl_now)
+    is_be = True nếu SL hiện tại đã >= entry (long) hoặc <= entry (short) (có tolerance nhỏ).
+    tier = map theo TP_BE_TIERS dựa trên offset đạt được (ước lượng).
+    """
+    try:
+        resp = okx.get_algo_pending(inst_id=inst_id, ord_type="oco")
+        data = resp.get("data", []) if isinstance(resp, dict) else []
+    except Exception:
+        return False, 0, 0.0
+
+    oco = None
+    for item in data:
+        if item.get("instId") != inst_id:
+            continue
+        if item.get("ordType") != "oco":
+            continue
+        if item.get("posSide") and item["posSide"] != pos_side:
+            continue
+        oco = item
+        break
+
+    if not oco:
+        return False, 0, 0.0
+
+    sl_trigger_px = oco.get("slTriggerPx")
+    sl_now = safe_float(sl_trigger_px) if sl_trigger_px else 0.0
+    if entry_px <= 0 or sl_now <= 0:
+        return False, 0, sl_now
+
+    # tolerance 0.02% để tránh float noise
+    tol = 0.0002
+    if pos_side == "long":
+        is_be = sl_now >= entry_px * (1.0 + tol)
+        # offset % thực tế
+        off_pct = (sl_now / entry_px - 1.0) * 100.0
+    else:
+        is_be = sl_now <= entry_px * (1.0 - tol)
+        off_pct = (1.0 - sl_now / entry_px) * 100.0
+
+    tier = 0
+    if is_be:
+        # map tier theo TP_BE_TIERS (thr, off)
+        for i, (_thr, off) in enumerate(TP_BE_TIERS, start=1):
+            if off_pct >= off:
+                tier = i
+
+    return is_be, tier, sl_now
+
 def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
     """
     Kiểm tra xem đã có lệnh trailing server-side (move_order_stop)
@@ -3456,8 +3507,22 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
-        logging.info("[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s | tier=%s", instId, posSide, pnl_pct, TP_TRAIL_PEAK_PNL.get(f"{instId}_{posSide}", pnl_pct), "YES" if TP_LADDER_BE_MOVED.get(f"{instId}_{posSide}", False) else "NO", TP_BE_TIER.get(f"{instId}_{posSide}", 0))
-        # ====== (NEW) TÍNH NGƯỠNG TP ĐỘNG SỚM (để SL có thể co theo) ======
+        pos_key = f"{instId}_{posSide}"
+        is_be, be_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
+        
+        # đồng bộ state RAM cho các đoạn logic phía sau (nếu bạn vẫn muốn dùng dict)
+        TP_LADDER_BE_MOVED[pos_key] = bool(is_be)
+        TP_BE_TIER[pos_key] = int(be_tier)
+        
+        logging.info(
+            "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s, sl=%.8f) ",
+            instId, posSide, pnl_pct,
+            TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
+            "YES" if is_be else "NO",
+            be_tier,
+            sl_now
+        )
+
         in_deadzone = is_deadzone_time_vn()
         try:
             market_regime_local = market_regime  # đã detect ở đầu hàm
