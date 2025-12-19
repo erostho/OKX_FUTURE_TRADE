@@ -219,7 +219,7 @@ def normalize_swap_sz(okx, inst_id: str, sz: float) -> str:
     Trả về sz dạng string đúng format để gửi API.
     """
     # lấy thông tin instrument để biết lotSz/minSz
-    ins = okx.get_swap_instrument(inst_id)  # <-- bạn đã có hàm tương tự thì dùng luôn
+    ins = okx.get_swap_instrument()  # <-- bạn đã có hàm tương tự thì dùng luôn
     lot = float(ins.get("lotSz", "1"))
     min_sz = float(ins.get("minSz", lot))
 
@@ -4169,15 +4169,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 6 - 20 - 36 - 50 phút thì chạy thêm FULL BOT
-    if minute in (6, 20, 36, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (6, 20, 36, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
