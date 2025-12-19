@@ -213,27 +213,22 @@ def floor_to_step(x: float, step: float) -> float:
     n = (xd / sd).to_integral_value(rounding=ROUND_DOWN)
     return float(n * sd)
 
-def normalize_swap_sz(okx, inst_id: str, sz: float) -> str:
-    """
-    OKX SWAP: sz phải là bội của lotSz và >= minSz.
-    Trả về sz dạng string đúng format để gửi API.
-    """
-    # lấy thông tin instrument để biết lotSz/minSz
-    ins_list = okx.get_swap_instruments()  # hàm này KHÔNG nhận inst_id, và trả LIST
+def normalize_swap_sz(okx, inst_id: str, sz: float) -> float:
+    # nếu lỡ truyền tuple/list thì lấy phần tử đầu
+    if isinstance(sz, (tuple, list)):
+        sz = sz[0]
+
+    ins_list = okx.get_swap_instruments()  # hàm của mày KHÔNG nhận inst_id
     ins = next((x for x in ins_list if x.get("instId") == inst_id), None)
     if not ins:
-        return sz
+        return float(sz)
 
-    min_sz = float(ins.get("minSz", lot))
+    lot = float(ins.get("lotSz", "1"))  # set lot trước
+    min_sz = float(ins.get("minSz", "0"))  # default string/number, không dùng lot
     sz2 = floor_to_step(float(sz), lot)
-
-    if sz2 < min_sz:
-        raise ValueError(f"sz({sz2}) < minSz({min_sz}) for {inst_id}")
-
-    # nếu lotSz là số nguyên (thường =1) thì ép int cho chắc
-    if abs(lot - round(lot)) < 1e-12:
-        return str(int(round(sz2)))
-    return f"{sz2:.8f}".rstrip("0").rstrip(".")
+    if min_sz > 0:
+        sz2 = max(sz2, min_sz)
+    return sz2
 
 def _load_guard_state():
     try:
@@ -2885,7 +2880,7 @@ def maker_first_open_position(
     """
     # ===== PATCH #2: throttle session 20-24 =====
 
-    sz = normalize_swap_sz(okx, inst_id, contracts),
+    sz = normalize_swap_sz(okx, inst_id, contracts)
     allow, reason = _allow_trade_session_20_24(
         market_regime=locals().get("market_regime", None),
         confidence=locals().get("confidence", None),
