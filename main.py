@@ -2870,6 +2870,8 @@ def maker_first_open_position(
     inst_id: str,
     side_open: str,
     pos_side: str,
+    sz = contracts
+    sz = normalize_swap_sz(okx, inst_id, sz)
     contracts: float,
     desired_entry: float,
     lever: int,
