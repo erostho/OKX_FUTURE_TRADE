@@ -22,6 +22,14 @@ from typing import Optional
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
 SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
+# ===== BE ladder state =====
+TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
+# Mỗi mốc chỉ update 1 lần
+TP_BE_TIERS = [
+    (2.0, 0.15),  # >=2%  -> BE +0.15%
+    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
+    (8.0, 0.35),  # >=8%  -> BE +0.35%
+]
 
 # ========== CONFIG ==========
 OKX_BASE_URL = "https://www.okx.com"
@@ -3219,6 +3227,9 @@ def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, 
 
     algo_id = oco.get("algoId")
     tp_trigger_px = oco.get("tpTriggerPx")
+    sl_trigger_px = oco.get("slTriggerPx")
+    sl_now = safe_float(sl_trigger_px) if sl_trigger_px else 0.0
+
     if not algo_id or not tp_trigger_px:
         return False
 
@@ -3231,6 +3242,12 @@ def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, 
         sl_be = entry_px * (1.0 + TP_LADDER_BE_OFFSET_PCT / 100.0)
     else:
         sl_be = entry_px * (1.0 - TP_LADDER_BE_OFFSET_PCT / 100.0)
+    # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì thôi, không hủy/đặt lại
+    if sl_now > 0:
+        if pos_side == "long" and sl_now >= sl_be:
+            return True
+        if pos_side == "short" and sl_now <= sl_be:
+            return True
 
     try:
         okx.cancel_algos(inst_id, [algo_id])
@@ -3533,13 +3550,40 @@ def run_dynamic_tp(okx: "OKXClient"):
             pos_key = f"{instId}_{posSide}"
 
             # 1) Move SL -> BE khi pnl đạt 2%
-            if (pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT) and (not TP_LADDER_BE_MOVED.get(pos_key, False)):
-                try:
-                    moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px)
-                    if moved:
-                        TP_LADDER_BE_MOVED[pos_key] = True
-                except Exception as e:
-                    logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
+            # 1) pnl >= 2% -> kéo SL về BE (update OCO)
+            #    - chỉ đặt 1 lần
+            #    - chỉ khi lên tier cao hơn mới update lại (nếu cấu hình nhiều tier)
+            if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
+                desired_tier = 0
+                desired_offset = TP_LADDER_BE_OFFSET_PCT
+            
+                # xác định tier theo pnl hiện tại
+                for i, (thr, off) in enumerate(TP_BE_TIERS, start=1):
+                    if pnl_pct >= thr:
+                        desired_tier = i
+                        desired_offset = off
+            
+                last_tier = TP_BE_TIER.get(pos_key, 0)
+            
+                # chưa lên tier mới -> không update
+                if desired_tier <= last_tier:
+                    pass
+                else:
+                    try:
+                        # set offset cho tier này
+                        TP_LADDER_BE_OFFSET_PCT = desired_offset
+            
+                        moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px)
+                        if moved:
+                            TP_BE_TIER[pos_key] = desired_tier
+                            TP_LADDER_BE_MOVED[pos_key] = True
+                            logging.info(
+                                "[BE] %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
+                                instId, desired_tier, pnl_pct, desired_offset
+                            )
+                    except Exception as e:
+                        logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
+
 
             # 2) Ladder close theo peak_pnl (ưu tiên bậc cao)
             closed_by_ladder = False
@@ -3569,6 +3613,8 @@ def run_dynamic_tp(okx: "OKXClient"):
                 # reset state
                 TP_LADDER_BE_MOVED.pop(pos_key, None)
                 TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                TP_BE_TIER.pop(pos_key, None)
+
                 continue
 
             # Dưới 10%: không chạy TP dynamic nữa (tránh chốt non)
