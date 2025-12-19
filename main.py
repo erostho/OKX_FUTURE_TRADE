@@ -9,7 +9,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 import requests
 import pandas as pd
-import numpy as np
 from google.oauth2.service_account import Credentials
 import gspread
 from google.oauth2 import service_account
@@ -52,7 +51,7 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 2.5%
+TP_DYN_MIN_PROFIT_PCT   = 3.0   # chỉ bật TP động khi lãi >= 3.0%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
 TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 8     # EMA-8
@@ -80,7 +79,6 @@ MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
-
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
@@ -90,22 +88,22 @@ PROFIT_LOCK_TIER_1_FLOOR = 1.0  # thì không cho rơi dưới +1%
 PROFIT_LOCK_TIER_2_PEAK = 8.0
 PROFIT_LOCK_TIER_2_FLOOR = 3.0
 
-# ======== TRAILING TP CONFIG ========
-TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
-TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
-
 # ===== PRO: LADDER TP TRAIL (<10%) + BE =====
+# Rule:
 # - pnl >= 2%  -> kéo SL về BE (update OCO SL)
 # - peak>=3% & pnl<=1%  -> chốt
 # - peak>=5% & pnl<=3%  -> chốt
 # - peak>=8% & pnl<=5%  -> chốt
-# - peak>=10% -> giao trailing server-side (block OKX trailing hiện có)
-
+# - peak>=10% -> giao cho trailing server-side hiện có
 TP_LADDER_BE_TRIGGER_PNL_PCT = 2.0
 TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
 TP_LADDER_RULES = [(8.0, 5.0), (5.0, 3.0), (3.0, 1.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
+
+# ======== TRAILING TP CONFIG ========
+TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
+TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
 
 # Lưu đỉnh PnL cho từng vị thế để trailing local
 # key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
@@ -132,10 +130,6 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0     # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 
-GLOBAL_LOCK_ON_BTC_STRONG_GREEN_THEN_RED_1H = True
-BTC_STRONG_GREEN_PCT_1H = 1.2   # tuỳ chỉnh (1.0–2.0% tuỳ bạn)
-BTC_LOCK_MAX_HOURS = 1          # khoá đúng 1 cây 1H
-
 # ================== HELPERS CHUNG ==================
 # =========================
 #  BT ALL CACHE -> GOOGLE SHEETS
@@ -147,6 +141,95 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
+import os, json, time, random
+from datetime import datetime
+
+VN_TZ_OFFSET_HOURS = int(os.getenv("VN_TZ_OFFSET_HOURS", "7"))
+
+def _vn_now():
+    # nếu server chạy giờ VN sẵn thì bạn có thể đổi thành datetime.now()
+    return datetime.utcnow().timestamp() + VN_TZ_OFFSET_HOURS * 3600
+
+def _vn_hour():
+    return datetime.fromtimestamp(_vn_now()).hour
+
+def _is_session_20_24():
+    h = _vn_hour()
+    return 20 <= h < 24
+
+def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
+    """
+    Fallback-safe: nếu thiếu biến => coi như KHÔNG mạnh.
+    Bạn map các biến đang có của bot vào 3 tham số này khi gọi.
+    """
+    try:
+        if market_regime is not None and str(market_regime).upper() == "TREND":
+            if confidence is not None and float(confidence) >= 70:
+                return True
+            if trend_score is not None and float(trend_score) >= 80:
+                return True
+    except:
+        pass
+    return False
+
+def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=None):
+    if not _is_session_20_24():
+        return True, "ok:not_20_24"
+
+    # 20-24: chỉ cho nếu trend cực mạnh, còn lại giảm tần suất (mặc định skip 85%)
+    if _is_strong_trend(market_regime, confidence, trend_score):
+        return True, "ok:strong_trend_20_24"
+
+    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.85"))  # 0.70 -> 1.00
+    if random.random() < skip_prob:
+        return False, f"skip:20_24_throttle({skip_prob:.2f})"
+
+    return True, "ok:20_24_lucky_pass"
+
+TRADE_GUARD_FILE = os.getenv("TRADE_GUARD_FILE", "./trade_guard.json")
+
+def _load_guard_state():
+    try:
+        with open(TRADE_GUARD_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def _save_guard_state(st):
+    try:
+        with open(TRADE_GUARD_FILE, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except:
+        pass
+
+def _today_key_vn():
+    return datetime.fromtimestamp(_vn_now()).strftime("%Y-%m-%d")
+
+def get_trades_today():
+    st = _load_guard_state()
+    k = _today_key_vn()
+    return int(st.get("trades_by_day", {}).get(k, 0))
+
+def inc_trades_today():
+    st = _load_guard_state()
+    k = _today_key_vn()
+    st.setdefault("trades_by_day", {})
+    st["trades_by_day"][k] = int(st["trades_by_day"].get(k, 0)) + 1
+    _save_guard_state(st)
+    return st["trades_by_day"][k]
+
+def daily_trade_limit():
+    # Với 50 USDT: set 80–100. Mặc định 100, bạn chỉnh ENV là xong.
+    return int(os.getenv("DAILY_MAX_TRADES", "100"))
+
+def allow_trade_daily_limit():
+    limit = daily_trade_limit()
+    used = get_trades_today()
+    if used >= limit:
+        return False, f"skip:daily_limit used={used} limit={limit}"
+    return True, f"ok:daily_limit used={used} limit={limit}"
+
+
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -251,13 +334,6 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     t = (pnl_pct - 40.0) / (100.0 - 40.0)
     return cb_high + t * (cb_low - cb_high)
 
-def _get_gspread_client():
-    """Khởi tạo client gspread từ GOOGLE_SERVICE_ACCOUNT_JSON (env trên Render)."""
-    raw_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
-    info = json.loads(raw_json)
-    creds = Credentials.from_service_account_info(info, scopes=SCOPES)
-    client = gspread.authorize(creds)
-    return client
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -321,7 +397,7 @@ def apply_risk_config(okx: "OKXClient"):
     if is_deadzone_time_vn():
         FUT_LEVERAGE = 3
         NOTIONAL_PER_TRADE = 10.0
-        TP_DYN_MIN_PROFIT_PCT = 3.0
+        TP_DYN_MIN_PROFIT_PCT = 1.5
         MAX_SL_PNL_PCT = 3.0
         MAX_TRADES_PER_RUN = 5
         logging.info("[RISK] DEADZONE config: lev=3, notional=10, tp_dyn=3%%, maxSL=3%%, max_trades=5")
@@ -356,92 +432,9 @@ def apply_risk_config(okx: "OKXClient"):
         MAX_SL_PNL_PCT,
         MAX_TRADES_PER_RUN,
     )
-def _pct(o, c):
-    return (c - o) / o * 100.0 if o else 0.0
-
-def btc_global_lock_until_ts(okx):
-    """
-    Trả về (lock_until_ts, reason) hoặc (None, None)
-    Logic: prev candle (đã đóng) là xanh mạnh, candle hiện tại (đang chạy) là đỏ => lock tới cuối candle hiện tại.
-    """
-    inst = "BTC-USDT-SWAP"
-    # cần 3 để chắc có prev closed + current
-    c = okx.get_candles(inst, bar="1H", limit=3)
-
-    if not c or len(c) < 2:
-        return None, None
-
-    # Hỗ trợ 2 format phổ biến:
-    # - list/tuple OKX: [ts, open, high, low, close, ...] (ts ms)
-    # - dict: {"ts":..., "open":..., "close":...}
-    def _get(x, k, idx):
-        return float(x[k]) if isinstance(x, dict) else float(x[idx])
-
-    def _ts(x):
-        return int(x["ts"]) if isinstance(x, dict) else int(x[0])
-
-    prev = c[-2]   # candle trước (thường đã đóng)
-    cur  = c[-1]   # candle hiện tại (đang hình thành)
-
-    prev_o = _get(prev, "open", 1)
-    prev_c = _get(prev, "close", 4)
-    cur_o  = _get(cur,  "open", 1)
-    cur_c  = _get(cur,  "close", 4)
-
-    prev_green = prev_c > prev_o
-    prev_move  = _pct(prev_o, prev_c)
-    strong_green = prev_green and (prev_move >= BTC_STRONG_GREEN_PCT_1H)
-
-    cur_red = cur_c < cur_o  # đỏ “tạm thời” trong giờ đó
-
-    if not (strong_green and cur_red):
-        return None, None
-
-    # lock tới cuối candle hiện tại (ts + 1h)
-    cur_ts_ms = _ts(cur)
-    lock_until_ms = cur_ts_ms + 60 * 60 * 1000
-
-    reason = f"BTC 1H strong green ({prev_move:.2f}%) then current red => global lock until candle close"
-    return lock_until_ms, reason
 
 # ========== PATCH 1: ANTI-SWEEP FILTER ==========
-def cap_sl_by_pnl(sl_px, entry_px, side, leverage, max_pnl_pct):
-    max_move = (max_pnl_pct / leverage) / 100.0
-    if side == "LONG":
-        max_sl = entry_px * (1 - max_move)
-        return max(sl_px, max_sl)   # không cho SL thấp hơn mức -max_pnl
-    else:  # SHORT
-        max_sl = entry_px * (1 + max_move)
-        return min(sl_px, max_sl)   # không cho SL cao hơn mức -max_pnl
 
-def is_liquidity_sweep_candle(open_px: float,
-                              high_px: float,
-                              low_px: float,
-                              close_px: float,
-                              min_wick_body_ratio: float = 1.5) -> bool:
-    """
-    Phát hiện nến quét thanh khoản (liquidity sweep):
-    - Wick rất dài so với thân.
-    - Đóng cửa ngược hướng với cú quét.
-
-    Trả về:
-        True  -> nến sweep, nên tránh mở lệnh ngay sau đó.
-        False -> nến bình thường.
-    """
-    body = abs(close_px - open_px)
-    if body <= 0:
-        return False
-
-    upper_wick = high_px - max(open_px, close_px)
-    lower_wick = min(open_px, close_px) - low_px
-
-    # Sweep xuống: đâm thủng đáy mạnh rồi đóng cửa xanh
-    sweep_down = (lower_wick > body * min_wick_body_ratio) and (close_px > open_px)
-
-    # Sweep lên: đâm thủng đỉnh mạnh rồi đóng cửa đỏ
-    sweep_up = (upper_wick > body * min_wick_body_ratio) and (close_px < open_px)
-
-    return sweep_down or sweep_up
 # ========== PATCH 2: SHORT-TERM VOLATILITY DEADZONE ==========
 
 def in_short_term_vol_deadzone(closes_5m, threshold_pct: float = 1.0) -> bool:
@@ -567,13 +560,6 @@ def now_str_vn():
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
 
-def parse_trade_time_to_utc_ms(time_str: str) -> int | None:
-    try:
-        dt_vn = datetime.strptime(time_str, "%d/%m/%Y %H:%M")
-        dt_utc = dt_vn - timedelta(hours=7)
-        return int(dt_utc.timestamp() * 1000)
-    except Exception:
-        return None
 
 
 def is_quiet_hours_vn():
@@ -628,15 +614,6 @@ def get_current_session_vn():
         return "20-24"
 
 
-def get_session_from_hour_vn(hour: int) -> str:
-    if hour < 9:
-        return "0-9"
-    elif hour < 15:
-        return "9-15"
-    elif hour < 20:
-        return "15-20"
-    else:
-        return "20-24"
 
 
 # ========== OKX REST CLIENT ==========
@@ -1082,17 +1059,6 @@ class OKXClient:
 
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
     
-def load_trade_cache():
-    if not os.path.exists(CACHE_FILE):
-        return []
-    try:
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-        return []
-    except Exception:
-        return []
 
 
 # ===== SESSION SHEET (circuit breaker) =====
@@ -1457,48 +1423,6 @@ def check_session_circuit_breaker(okx) -> bool:
     return True
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
-def load_bt_trades_cache() -> list[dict]:
-
-    # ⚠️ get_bt_cache_worksheet KHÔNG nhận tham số -> KHÔNG truyền "BT_TRADES_CACHE" vào
-    ws = get_bt_cache_worksheet()
-    if not ws:
-        logging.error("[BACKTEST] Không lấy được worksheet BT_TRADES_CACHE.")
-        return []
-
-    try:
-        rows = ws.get_all_records()  # list[dict]
-    except Exception as e:
-        logging.error("[BACKTEST] Lỗi get_all_records BT_TRADES_CACHE: %s", e)
-        return []
-
-    trades: list[dict] = []
-
-    for r in rows:
-        try:
-            pos_id = str(r.get("posId") or r.get("posid") or "").strip()
-            if not pos_id:
-                continue  # bỏ dòng rác
-
-            inst_id = str(r.get("instId") or r.get("instid") or "").strip()
-            side = str(r.get("side") or "").upper()
-
-            trade = {
-                "posId": pos_id,
-                "instId": inst_id,
-                "side": side,
-                "sz": safe_float(r.get("sz", 0)),
-                "openAvgPx": safe_float(r.get("openPx") or r.get("openAvgPx") or 0),
-                "closePx": safe_float(r.get("closePx") or 0),
-                "pnl": safe_float(r.get("pnl") or 0),
-                # summarize_real_backtest dùng cTime/uTime để xác định ngày/giờ VN
-                "cTime": str(r.get("cTime") or r.get("ctime") or ""),
-            }
-            trades.append(trade)
-        except Exception as e:
-            logging.error("[BACKTEST] Lỗi parse dòng BT_TRADES_CACHE: %s | row=%s", e, r)
-
-    logging.info("[BACKTEST] Đọc được %d trades từ BT_TRADES_CACHE", len(trades))
-    return trades
 def load_real_trades_for_backtest(okx):
     # 1) Load cache cũ từ Google Sheets
     cached = load_bt_cache()        # list[dict]
@@ -1724,90 +1648,12 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
 
 # (phần cũ load_history_from_drive / trade_cache vẫn giữ nguyên cho bot khác nếu cần)
-def save_trade_cache(trades):
-    try:
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(trades, f, ensure_ascii=False)
-    except Exception as e:
-        logging.error("Lỗi save cache: %s", e)
 
 
-def append_trade_to_cache(trade: dict):
-    trades = load_trade_cache()
-    trades.append(trade)
-    save_trade_cache(trades)
 
 
-def eval_trades_with_prices(trades, price_map, only_today: bool):
-    now_vn = datetime.utcnow() + timedelta(hours=7)
-    today_str = now_vn.strftime("%d/%m/%Y")
-
-    total = 0
-    tp_count = 0
-    sl_count = 0
-    open_count = 0
-
-    for t in trades:
-        try:
-            coin = t.get("coin")
-            signal = str(t.get("signal") or "").upper()
-            entry = float(t.get("entry") or 0)
-            tp = float(t.get("tp") or 0)
-            sl = float(t.get("sl") or 0)
-            time_s = str(t.get("time") or "")
-
-            if only_today and not time_s.startswith(today_str):
-                continue
-
-            price = price_map.get(coin)
-            if price is None or price == 0:
-                continue
-
-            total += 1
-            status = "OPEN"
-
-            if signal == "LONG":
-                if tp > 0 and price >= tp:
-                    status = "TP"
-                elif sl > 0 and price <= sl:
-                    status = "SL"
-            elif signal == "SHORT":
-                if tp > 0 and price <= tp:
-                    status = "TP"
-                elif sl > 0 and price >= sl:
-                    status = "SL"
-
-            if status == "TP":
-                tp_count += 1
-            elif status == "SL":
-                sl_count += 1
-            else:
-                open_count += 1
-        except Exception:
-            continue
-
-    closed = tp_count + sl_count
-    winrate = (tp_count / closed * 100) if closed > 0 else 0.0
-    return total, tp_count, sl_count, open_count, winrate
 
 
-def get_session_from_time(time_s: str) -> str | None:
-    if not time_s:
-        return None
-    try:
-        h = int(time_s[11:13])
-        m = int(time_s[14:16])
-    except Exception:
-        return None
-    t = h + m / 60.0
-    if 0 <= t < 9:
-        return "0-9"
-    elif 9 <= t < 15:
-        return "9-15"
-    elif 15 <= t < 20:
-        return "15-20"
-    else:
-        return "20-24"
 
 
 # ===== HÀM BACKTEST REAL TRIGGER THEO LỊCH =====
@@ -1867,20 +1713,6 @@ def prepare_worksheet():
     return ws
 
 
-def get_recent_signals(ws, lookback_hours=24):
-    records = ws.get_all_records()
-    recent = set()
-    cutoff = datetime.utcnow() + timedelta(hours=7) - timedelta(hours=lookback_hours)
-    for row in records:
-        try:
-            date_str = row.get("Ngày") or row.get("Ngay") or ""
-            dt = datetime.strptime(date_str, "%d/%m/%Y %H:%M")
-            if dt >= cutoff:
-                key = (row.get("Coin"), row.get("Tín hiệu"))
-                recent.add(key)
-        except Exception:
-            continue
-    return recent
 
 
 def append_signals(ws, trades):
@@ -2839,101 +2671,6 @@ def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 
     atr = sum(trs[-period:]) / period
     return atr if atr > 0 else None
 
-def simulate_trade_result_with_candles(
-    okx: "OKXClient",
-    coin: str,
-    signal: str,
-    entry: float,
-    tp: float,
-    sl: float,
-    time_str: str,
-    bar: str = "5m",
-    max_limit: int = 300,
-):
-    """
-    Backtest 1 lệnh bằng nến lịch sử:
-      - coin: 'MERL-USDT' (spot) hoặc 'MERL-USDT-SWAP' (perp)
-      - signal: 'LONG' / 'SHORT'
-      - entry, tp, sl: float
-      - time_str: 'dd/mm/YYYY HH:MM' (giờ VN)
-
-    #Logic:
-      #- lấy ~300 nến 5m gần nhất
-      #- tìm nến có ts >= thời điểm vào lệnh
-      #- duyệt từng nến: kiểm tra high/low chạm TP/SL
-      #- nếu cả TP & SL cùng chạm trong 1 nến -> giả định XẤU NHẤT: SL trước
-    """
-    ts_entry = parse_trade_time_to_utc_ms(time_str)
-    if ts_entry is None:
-        return "UNKNOWN"
-
-    # ƯU TIÊN BACKTEST BẰNG SWAP (Perpetual Futures)
-    # coin: 'SAHARA-USDT'
-    # swap_inst: 'SAHARA-USDT-SWAP'
-    base = coin.replace("-USDT", "")
-    swap_inst = f"{base}-USDT-SWAP"
-
-    # Thử lấy nến từ SWAP trước
-    try:
-        candles = okx.get_candles(swap_inst, bar=bar, limit=max_limit)
-        inst_id = swap_inst
-    except Exception:
-        candles = []
-
-    # Nếu SWAP thất bại → fallback SPOT
-    if not candles:
-        try:
-            candles = okx.get_candles(coin, bar=bar, limit=max_limit)
-            inst_id = coin
-        except Exception:
-            return "NO_DATA"
-
-    try:
-        candles_sorted = sorted(candles, key=lambda x: int(x[0]))
-    except Exception:
-        candles_sorted = candles
-
-    # tìm index bắt đầu từ lúc vào lệnh
-    start_idx = None
-    for i, k in enumerate(candles_sorted):
-        try:
-            ts_bar = int(k[0])
-        except Exception:
-            continue
-        if ts_bar >= ts_entry:
-            start_idx = i
-            break
-
-    if start_idx is None:
-        # lệnh quá cũ, không nằm trong khoảng nến tải về
-        return "OUT_OF_RANGE"
-
-    sig = (signal or "").upper()
-
-    for k in candles_sorted[start_idx:]:
-        try:
-            high = float(k[2])
-            low  = float(k[3])
-        except Exception:
-            continue
-
-        if sig == "LONG":
-            hit_tp = high >= tp
-            hit_sl = low  <= sl
-        else:  # SHORT
-            hit_tp = low  <= tp
-            hit_sl = high >= sl
-
-        # nếu trong 1 nến chạm cả TP & SL -> chọn kịch bản xấu: SL
-        if hit_tp and hit_sl:
-            return "SL"
-        if hit_tp:
-            return "TP"
-        if hit_sl:
-            return "SL"
-
-    # duyệt hết mà không chạm TP/SL
-    return "OPEN"
     
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
@@ -2962,7 +2699,36 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
     # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
     # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
     #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
-    max_risk_pct_by_pnl = (MAX_PLANNED_SL_PNL_PCT / (FUT_LEVERAGE * 100.0))
+    max_risk_pct_by_pnl = MAX_PLANNED_SL_PNL_PCT / FUT_LEVERAGE
+    risk_pct = min(risk_pct, max_risk_pct_by_pnl)
+    risk = risk_pct * entry
+
+    regime = detect_market_regime(okx)
+    if regime == "GOOD":
+        RR = 2.0      # ăn dày khi thị trường đẹp
+    else:
+        RR = 1.0      # thị trường xấu → scalp RR 1:1 an toàn
+
+    if direction.upper() == "LONG":
+        sl = entry - risk
+        tp = entry + risk * RR
+    else:
+        sl = entry + risk
+        tp = entry - risk * RR
+
+    return tp, sl
+    risk = 1.1 * atr
+    risk_pct = risk / entry
+    # kẹp risk_pct để tránh quá bé / quá to
+    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
+    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
+
+    risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
+
+    # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
+    # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
+    #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
+    max_risk_pct_by_pnl = MAX_PLANNED_SL_PNL_PCT / FUT_LEVERAGE
     risk_pct = min(risk_pct, max_risk_pct_by_pnl)
     risk = risk_pct * entry
 
@@ -3046,19 +2812,6 @@ def build_open_position_map(okx: OKXClient):
         except Exception:
             continue
     return pos_map
-def cap_sl_by_pnl(sl_px, entry_px, side, leverage, max_pnl_pct):
-    """
-    Đảm bảo SL không vượt quá max_pnl_pct (% PnL) theo leverage thực tế
-    """
-    max_price_move_pct = max_pnl_pct / leverage / 100.0
-
-    if side == "LONG":
-        max_sl = entry_px * (1 - max_price_move_pct)
-        return max(sl_px, max_sl)
-    else:  # SHORT
-        max_sl = entry_px * (1 + max_price_move_pct)
-        return min(sl_px, max_sl)
-
 # ========== EXECUTE FUTURES TRADES ==========
 def maker_first_open_position(
     okx: OKXClient,
@@ -3076,6 +2829,20 @@ def maker_first_open_position(
     Nếu không khớp trong timeout -> cancel + fallback MARKET.
     Return: (ok: bool, fill_px: float|None, used: 'maker'|'market'|'skip')
     """
+    # ===== PATCH #2: throttle session 20-24 =====
+    allow, reason = _allow_trade_session_20_24(
+        market_regime=locals().get("market_regime", None),
+        confidence=locals().get("confidence", None),
+        trend_score=locals().get("trend_score", None),
+    )
+    if not allow:
+        logging.info("[GUARD][S20-24] Block %s %s: %s", inst_id, side_open, reason)
+        return False, None, "skip_session_20_24"
+        # ===== PATCH #4: daily trade cap =====
+    allow, reason = allow_trade_daily_limit()
+    if not allow:
+        logging.warning("[GUARD][DAILY] Block %s %s: %s", inst_id, side_open, reason)
+        return False, None, "skip_daily_limit"
 
     # 1) Tính giá limit để tăng khả năng nằm chờ (maker)
     # LONG: đặt thấp hơn một chút; SHORT: đặt cao hơn một chút
@@ -3129,8 +2896,11 @@ def maker_first_open_position(
     filled, avg_px = okx.wait_order_filled(inst_id, ord_id, timeout_sec=maker_timeout_sec)
 
     if filled:
+        n = inc_trades_today()
+        logging.info("[GUARD][DAILY] trades_today=%s", n)
         logging.info("[MAKER] FILLED: inst=%s ordId=%s avgPx=%s", inst_id, ord_id, avg_px)
         return True, (avg_px or desired_entry), "maker"
+
 
     # 4) Không khớp -> cancel rồi market
     try:
@@ -3153,13 +2923,7 @@ def maker_first_open_position(
 def execute_futures_trades(okx: OKXClient, trades):
     if not trades:
         logging.info("[INFO] Không có lệnh futures nào để vào.")
-        return  
-    if GLOBAL_LOCK_ON_BTC_STRONG_GREEN_THEN_RED_1H:
-        lock_until_ms, reason = btc_global_lock_until_ts(okx)
-        now_ms = int(time.time() * 1000)
-        if lock_until_ms and now_ms < lock_until_ms:
-            log(f"[GLOBAL_LOCK] Skip ALL new entries. {reason}")
-            return
+        return
 
     # ===== CHỌN LEVERAGE + SIZE THEO GIỜ & THỊ TRƯỜNG =====
     regime = detect_market_regime(okx)  # "GOOD" / "BAD"
@@ -3278,6 +3042,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         #NET MODE       
         # 2) MỞ VỊ THẾ (MAKER-FIRST)
         time.sleep(0.2)
+
         ok_open, fill_px, used_type = maker_first_open_position(
             okx=okx,
             inst_id=swap_inst,
@@ -3301,13 +3066,30 @@ def execute_futures_trades(okx: OKXClient, trades):
 
 
         # 3) Đặt TP/SL OCO (SL giữ nguyên theo plan, TP hard cực xa)
-
-        HARD_TP_CAP_PCT = 50.0
+        HARD_TP_CAP_PCT = 300.0
+        #if signal == "LONG":
+            #tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
+        #else:
+            #tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
         if signal == "LONG":
-            tp_hard = real_entry * (1 + HARD_TP_CAP_PCT / 100.0)
+            tp_hard = real_entry * 6.0 #+500
         else:
-            tp_hard = real_entry * (1 - HARD_TP_CAP_PCT / 100.0)
-        sl = cap_sl_by_pnl(sl, real_entry, signal, this_lever, MAX_PLANNED_SL_PNL_PCT)
+            tp_hard = real_entry * 0.2 # -80% cho SHORT
+        MAX_SL_PNL_PCT = 7.0
+        lev = float(FUT_LEVERAGE)  # hoặc lev = float(lever)
+        
+        max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
+        
+        if signal == "LONG":
+            sl_cap = real_entry * (1.0 - max_price_move)
+            # LONG: SL không được thấp hơn sl_cap (không được xa quá)
+            sl_px = max(sl_px, sl_cap)
+        else:
+            sl_cap = real_entry * (1.0 + max_price_move)
+            # SHORT: SL không được cao hơn sl_cap
+            sl_px = min(sl_px, sl_cap)
+        
+        logging.warning(f"[SL-CAP] {swap_inst} {signal} entry={real_entry:.8f} plan_sl={sl_px:.8f} cap_sl={sl_cap:.8f} lev={lev}")
 
         oco_resp = okx.place_oco_tp_sl(
             inst_id=swap_inst,
@@ -3401,6 +3183,8 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
         )
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
+
+
 def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, entry_px: float) -> bool:
     """Kéo SL về hòa vốn (BE) bằng cách: hủy OCO hiện tại -> đặt lại OCO giữ nguyên TP, đổi SL."""
     try:
@@ -3464,9 +3248,6 @@ def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, 
     except Exception as e:
         logging.error("[BE] Lỗi place_oco_tp_sl %s: %s", inst_id, e)
         return False
-
-
-
 def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
     """
     Kiểm tra xem đã có lệnh trailing server-side (move_order_stop)
@@ -3634,6 +3415,30 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct is None:
             logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
+        # ====== (NEW) TÍNH NGƯỠNG TP ĐỘNG SỚM (để SL có thể co theo) ======
+        in_deadzone = is_deadzone_time_vn()
+        try:
+            market_regime_local = market_regime  # đã detect ở đầu hàm
+        except Exception:
+            market_regime_local = "UNKNOWN"
+        
+        if in_deadzone:
+            tp_dyn_threshold = 1.5
+        else:
+            if market_regime_local == "BAD":
+                tp_dyn_threshold = 2.0
+            else:
+                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # mặc định 3%
+        
+        # ====== (NEW) SL CO THEO TP ĐỘNG ======
+        # Ý tưởng: nếu bot chỉ ăn ngắn (tp_dyn_threshold nhỏ), thì SL khẩn cấp cũng phải nhỏ theo.
+        # sl_cap_pnl = min(sl_emergency_gốc, tp_dyn_threshold * hệ số)
+        SL_FOLLOW_TP_MULT = 1.1  # 1.0~1.3 tuỳ bạn, 1.1 là “cắt nhanh” nhưng không quá gắt
+        sl_cap_pnl = min(MAX_EMERGENCY_SL_PNL_PCT, tp_dyn_threshold * SL_FOLLOW_TP_MULT)
+        
+        # Kẹp tối thiểu để tránh quá nhạy (tuỳ style)
+        sl_cap_pnl = max(2.0, sl_cap_pnl)  # không cho <2% pnl
+
         # ===== update peak pnl (realtime) =====
         peak_key = f"{instId}_{posSide}"
         prev_peak = TP_TRAIL_PEAK_PNL.get(peak_key, None)
@@ -3689,12 +3494,12 @@ def run_dynamic_tp(okx: "OKXClient"):
                 continue
 
         # ====== 3) SL KHẨN CẤP THEO PnL% (ví dụ -5% PnL) ======
-        if pnl_pct <= -MAX_EMERGENCY_SL_PNL_PCT:
+        if pnl_pct <= -sl_cap_pnl:
             logging.info(
                 "[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL → CẮT LỖ KHẨN CẤP.",
                 instId,
                 pnl_pct,
-                MAX_EMERGENCY_SL_PNL_PCT,
+                sl_cap_pnl,
             )
             try:
                 mark_symbol_sl(instId, "emergency_sl")
@@ -3702,12 +3507,26 @@ def run_dynamic_tp(okx: "OKXClient"):
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
             continue
+
+        # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
+        if in_deadzone:
+            tp_dyn_threshold = 1.5  # deadzone: ăn ngắn
+        else:
+            if market_regime == "BAD":
+                tp_dyn_threshold = 2.0   # thị trường xấu → ăn ngắn hơn
+            else:
+                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 3%)
         # ================= LADDER TP TRAIL (<10%) + BE =================
-        # Dưới 10%: dùng ladder trail + BE, KHÔNG dùng TP dynamic OR nữa (tránh chốt non)
+        # Ý bạn: dùng TP trail theo bậc, KHÔNG dùng TP dynamic chốt sớm.
+        # - pnl>=2%: kéo SL về BE
+        # - peak>=3% & pnl<=1%: chốt
+        # - peak>=5% & pnl<=3%: chốt
+        # - peak>=8% & pnl<=5%: chốt
+        # - peak>=10%: giao cho trailing server-side (khối phía dưới)
         if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
             pos_key = f"{instId}_{posSide}"
-        
-            # 1) pnl >= 2% -> kéo SL về BE (update OCO)
+
+            # 1) Move SL -> BE khi pnl đạt 2%
             if (pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT) and (not TP_LADDER_BE_MOVED.get(pos_key, False)):
                 try:
                     moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px)
@@ -3715,8 +3534,8 @@ def run_dynamic_tp(okx: "OKXClient"):
                         TP_LADDER_BE_MOVED[pos_key] = True
                 except Exception as e:
                     logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
-        
-            # 2) Ladder close theo peak (ưu tiên bậc cao)
+
+            # 2) Ladder close theo peak_pnl (ưu tiên bậc cao)
             closed_by_ladder = False
             for peak_thr, floor_thr in TP_LADDER_RULES:
                 if peak_pnl >= peak_thr and pnl_pct <= floor_thr:
@@ -3739,33 +3558,16 @@ def run_dynamic_tp(okx: "OKXClient"):
                     except Exception as e:
                         logging.error("[LADDER] Lỗi đóng lệnh %s: %s", instId, e)
                     break
-        
+
             if closed_by_ladder:
+                # reset state
                 TP_LADDER_BE_MOVED.pop(pos_key, None)
                 TP_TRAIL_PEAK_PNL.pop(pos_key, None)
                 continue
-        
-            # Dưới 10%: không chạy TP dynamic nữa
+
+            # Dưới 10%: không chạy TP dynamic nữa (tránh chốt non)
             continue
         # ================= END LADDER =================
-
-        # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
-        if in_deadzone:
-            tp_dyn_threshold = 2.0  # deadzone: ăn ngắn
-        else:
-            if market_regime == "BAD":
-                tp_dyn_threshold = 1.5   # thị trường xấu → ăn ngắn hơn
-            else:
-                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 5%)
-
-        if pnl_pct < tp_dyn_threshold:
-            logging.info(
-                "[TP-DYN] %s lãi %.2f%% < %.2f%% → bỏ qua TP động.",
-                instId,
-                pnl_pct,
-                tp_dyn_threshold,
-            )
-            continue   
         # 5) TÍNH PNL CAO NHẤT TRONG CỬA SỔ
         max_pnl_window = 0.0
         for close_px in closes[-TP_TRAIL_LOOKBACK_BARS:]:
@@ -3778,7 +3580,6 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
         
         drawdown = max_pnl_window - pnl_pct
-
         # 6) TRAILING SERVER-SIDE KHI LÃI LỚN  (ƯU TIÊN HƠN TP DYNAMIC)
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
         
