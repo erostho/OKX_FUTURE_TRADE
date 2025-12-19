@@ -118,6 +118,10 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0     # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 
+GLOBAL_LOCK_ON_BTC_STRONG_GREEN_THEN_RED_1H = True
+BTC_STRONG_GREEN_PCT_1H = 1.2   # tuỳ chỉnh (1.0–2.0% tuỳ bạn)
+BTC_LOCK_MAX_HOURS = 1          # khoá đúng 1 cây 1H
+
 # ================== HELPERS CHUNG ==================
 # =========================
 #  BT ALL CACHE -> GOOGLE SHEETS
@@ -338,6 +342,53 @@ def apply_risk_config(okx: "OKXClient"):
         MAX_SL_PNL_PCT,
         MAX_TRADES_PER_RUN,
     )
+def _pct(o, c):
+    return (c - o) / o * 100.0 if o else 0.0
+
+def btc_global_lock_until_ts(okx):
+    """
+    Trả về (lock_until_ts, reason) hoặc (None, None)
+    Logic: prev candle (đã đóng) là xanh mạnh, candle hiện tại (đang chạy) là đỏ => lock tới cuối candle hiện tại.
+    """
+    inst = "BTC-USDT-SWAP"
+    # cần 3 để chắc có prev closed + current
+    c = okx.get_candles(inst, bar="1H", limit=3)
+
+    if not c or len(c) < 2:
+        return None, None
+
+    # Hỗ trợ 2 format phổ biến:
+    # - list/tuple OKX: [ts, open, high, low, close, ...] (ts ms)
+    # - dict: {"ts":..., "open":..., "close":...}
+    def _get(x, k, idx):
+        return float(x[k]) if isinstance(x, dict) else float(x[idx])
+
+    def _ts(x):
+        return int(x["ts"]) if isinstance(x, dict) else int(x[0])
+
+    prev = c[-2]   # candle trước (thường đã đóng)
+    cur  = c[-1]   # candle hiện tại (đang hình thành)
+
+    prev_o = _get(prev, "open", 1)
+    prev_c = _get(prev, "close", 4)
+    cur_o  = _get(cur,  "open", 1)
+    cur_c  = _get(cur,  "close", 4)
+
+    prev_green = prev_c > prev_o
+    prev_move  = _pct(prev_o, prev_c)
+    strong_green = prev_green and (prev_move >= BTC_STRONG_GREEN_PCT_1H)
+
+    cur_red = cur_c < cur_o  # đỏ “tạm thời” trong giờ đó
+
+    if not (strong_green and cur_red):
+        return None, None
+
+    # lock tới cuối candle hiện tại (ts + 1h)
+    cur_ts_ms = _ts(cur)
+    lock_until_ms = cur_ts_ms + 60 * 60 * 1000
+
+    reason = f"BTC 1H strong green ({prev_move:.2f}%) then current red => global lock until candle close"
+    return lock_until_ms, reason
 
 # ========== PATCH 1: ANTI-SWEEP FILTER ==========
 
@@ -3080,7 +3131,13 @@ def maker_first_open_position(
 def execute_futures_trades(okx: OKXClient, trades):
     if not trades:
         logging.info("[INFO] Không có lệnh futures nào để vào.")
-        return
+        return  
+    if GLOBAL_LOCK_ON_BTC_STRONG_GREEN_THEN_RED_1H:
+        lock_until_ms, reason = btc_global_lock_until_ts(okx)
+        now_ms = int(time.time() * 1000)
+        if lock_until_ms and now_ms < lock_until_ms:
+            log(f"[GLOBAL_LOCK] Skip ALL new entries. {reason}")
+            return
 
     # ===== CHỌN LEVERAGE + SIZE THEO GIỜ & THỊ TRƯỜNG =====
     regime = detect_market_regime(okx)  # "GOOD" / "BAD"
