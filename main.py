@@ -3252,8 +3252,10 @@ def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -
     # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì thôi, không hủy/đặt lại
     if sl_now > 0:
         if pos_side == "long" and sl_now >= sl_be:
+            logging.info("[BE] %s long SKIP (đã BE) | sl_now=%.8f >= sl_be=%.8f", inst_id, sl_now, sl_be)
             return True
         if pos_side == "short" and sl_now <= sl_be:
+            logging.info("[BE] %s short SKIP (đã BE) | sl_now=%.8f <= sl_be=%.8f", inst_id, sl_now, sl_be)
             return True
 
     try:
@@ -3640,7 +3642,8 @@ def run_dynamic_tp(okx: "OKXClient"):
             
                 # chưa lên tier mới -> không update
                 if desired_tier <= last_tier:
-                    pass
+                    logging.info("[BE] %s %s SKIP | đã dời BE rồi (tier=%s) | pnl=%.2f%%", instId, posSide, last_tier, pnl_pct)
+
                 else:
                     try:
             
