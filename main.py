@@ -3094,14 +3094,14 @@ def execute_futures_trades(okx: OKXClient, trades):
         lev = float(FUT_LEVERAGE)  # hoặc lev = float(lever)
         
         max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
-        
+
+        # SL theo plan
+        sl_px = float(planned_trade["sl"])
         if signal == "LONG":
             sl_cap = real_entry * (1.0 - max_price_move)
-            # LONG: SL không được thấp hơn sl_cap (không được xa quá)
             sl_px = max(sl_px, sl_cap)
         else:
             sl_cap = real_entry * (1.0 + max_price_move)
-            # SHORT: SL không được cao hơn sl_cap
             sl_px = min(sl_px, sl_cap)
         
         logging.warning(f"[SL-CAP] {swap_inst} {signal} entry={real_entry:.8f} plan_sl={sl_px:.8f} cap_sl={sl_cap:.8f} lev={lev}")
