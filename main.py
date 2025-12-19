@@ -80,6 +80,7 @@ MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
+
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
@@ -92,6 +93,19 @@ PROFIT_LOCK_TIER_2_FLOOR = 3.0
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
 TP_TRAIL_CALLBACK_PCT  = 7.0    # giá rút lại 7% từ đỉnh thì cắt
+
+# ===== PRO: LADDER TP TRAIL (<10%) + BE =====
+# - pnl >= 2%  -> kéo SL về BE (update OCO SL)
+# - peak>=3% & pnl<=1%  -> chốt
+# - peak>=5% & pnl<=3%  -> chốt
+# - peak>=8% & pnl<=5%  -> chốt
+# - peak>=10% -> giao trailing server-side (block OKX trailing hiện có)
+
+TP_LADDER_BE_TRIGGER_PNL_PCT = 2.0
+TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
+TP_LADDER_RULES = [(8.0, 5.0), (5.0, 3.0), (3.0, 1.0)]  # check từ bậc cao -> thấp
+TP_LADDER_SERVER_THRESHOLD = 10.0
+TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 
 # Lưu đỉnh PnL cho từng vị thế để trailing local
 # key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
@@ -3301,7 +3315,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             side_close=side_close,
             sz=contracts,
             tp_px=tp_hard,
-            sl_px=sl,
+            sl_px=sl_px,
             td_mode="isolated",
         )
         oco_code = oco_resp.get("code")
@@ -3387,6 +3401,72 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
         )
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
+def move_oco_sl_to_be(okx: "OKXClient", inst_id: str, pos_side: str, sz: float, entry_px: float) -> bool:
+    """Kéo SL về hòa vốn (BE) bằng cách: hủy OCO hiện tại -> đặt lại OCO giữ nguyên TP, đổi SL."""
+    try:
+        resp = okx.get_algo_pending(inst_id=inst_id, ord_type="oco")
+    except Exception as e:
+        logging.error("[BE] Lỗi get_algo_pending OCO %s: %s", inst_id, e)
+        return False
+
+    data = resp.get("data", []) if isinstance(resp, dict) else []
+    oco = None
+    for item in data:
+        try:
+            if item.get("instId") != inst_id:
+                continue
+            if item.get("ordType") != "oco":
+                continue
+            if item.get("posSide") and item["posSide"] != pos_side:
+                continue
+            oco = item
+            break
+        except Exception:
+            continue
+
+    if not oco:
+        return False
+
+    algo_id = oco.get("algoId")
+    tp_trigger_px = oco.get("tpTriggerPx")
+    if not algo_id or not tp_trigger_px:
+        return False
+
+    tp_px = safe_float(tp_trigger_px)
+    if tp_px <= 0:
+        return False
+
+    # SL về BE + offset nhỏ để tránh quét đúng entry
+    if pos_side == "long":
+        sl_be = entry_px * (1.0 + TP_LADDER_BE_OFFSET_PCT / 100.0)
+    else:
+        sl_be = entry_px * (1.0 - TP_LADDER_BE_OFFSET_PCT / 100.0)
+
+    try:
+        okx.cancel_algos(inst_id, [algo_id])
+    except Exception as e:
+        logging.error("[BE] Lỗi cancel_algos %s: %s", inst_id, e)
+        return False
+
+    side_close = "sell" if pos_side == "long" else "buy"
+    try:
+        okx.place_oco_tp_sl(
+            inst_id=inst_id,
+            pos_side=pos_side,
+            side_close=side_close,
+            sz=str(sz),
+            tp_px=tp_px,
+            sl_px=sl_be,
+            td_mode="isolated",
+        )
+        logging.warning("[BE] %s %s moved SL -> BE (%.8f), keep TP=%.8f", inst_id, pos_side, sl_be, tp_px)
+        return True
+    except Exception as e:
+        logging.error("[BE] Lỗi place_oco_tp_sl %s: %s", inst_id, e)
+        return False
+
+
+
 def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
     """
     Kiểm tra xem đã có lệnh trailing server-side (move_order_stop)
@@ -3622,6 +3702,52 @@ def run_dynamic_tp(okx: "OKXClient"):
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
             continue
+        # ================= LADDER TP TRAIL (<10%) + BE =================
+        # Dưới 10%: dùng ladder trail + BE, KHÔNG dùng TP dynamic OR nữa (tránh chốt non)
+        if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
+            pos_key = f"{instId}_{posSide}"
+        
+            # 1) pnl >= 2% -> kéo SL về BE (update OCO)
+            if (pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT) and (not TP_LADDER_BE_MOVED.get(pos_key, False)):
+                try:
+                    moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px)
+                    if moved:
+                        TP_LADDER_BE_MOVED[pos_key] = True
+                except Exception as e:
+                    logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
+        
+            # 2) Ladder close theo peak (ưu tiên bậc cao)
+            closed_by_ladder = False
+            for peak_thr, floor_thr in TP_LADDER_RULES:
+                if peak_pnl >= peak_thr and pnl_pct <= floor_thr:
+                    logging.warning(
+                        "[LADDER] %s peak=%.2f%% pnl=%.2f%% hit rule (>=%.1f then <=%.1f) => CLOSE",
+                        instId, peak_pnl, pnl_pct, peak_thr, floor_thr
+                    )
+                    try:
+                        mark_symbol_tp(instId)
+                        maker_close_position_with_timeout(
+                            okx=okx,
+                            inst_id=instId,
+                            pos_side=posSide,
+                            sz=sz,
+                            last_px=c_now,
+                            offset_bps=6.0,
+                            timeout_sec=3,
+                        )
+                        closed_by_ladder = True
+                    except Exception as e:
+                        logging.error("[LADDER] Lỗi đóng lệnh %s: %s", instId, e)
+                    break
+        
+            if closed_by_ladder:
+                TP_LADDER_BE_MOVED.pop(pos_key, None)
+                TP_TRAIL_PEAK_PNL.pop(pos_key, None)
+                continue
+        
+            # Dưới 10%: không chạy TP dynamic nữa
+            continue
+        # ================= END LADDER =================
 
         # ====== 4) CHỌN NGƯỠNG KÍCH HOẠT TP ĐỘNG ======
         if in_deadzone:
