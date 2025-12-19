@@ -219,7 +219,7 @@ def normalize_swap_sz(okx, inst_id: str, sz: float) -> str:
     Trả về sz dạng string đúng format để gửi API.
     """
     # lấy thông tin instrument để biết lotSz/minSz
-    ins_list = okx.get_swap_instruments(inst_id)
+    ins_list = okx.get_swap_instruments()
     if not ins_list:
         return sz
     
