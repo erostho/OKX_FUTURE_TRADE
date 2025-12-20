@@ -51,7 +51,7 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 
 # ======== DYNAMIC TP CONFIG ========
-TP_DYN_MIN_PROFIT_PCT   = 3.0   # chỉ bật TP động khi lãi >= 3.0%
+TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 4.0%
 TP_DYN_MAX_FLAT_BARS    = 3     # số nến 5m gần nhất để kiểm tra
 TP_DYN_VOL_DROP_RATIO   = 0.4   # vol hiện tại < 40% avg 10 nến -> yếu
 TP_DYN_EMA_LEN          = 8     # EMA-8
@@ -83,8 +83,8 @@ TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
-#PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
-#PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +1%
+PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
+PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +3%
 PROFIT_LOCK_TIER_1_PEAK = 8.0
 PROFIT_LOCK_TIER_1_FLOOR = 4.0
 
@@ -3556,7 +3556,7 @@ def run_dynamic_tp(okx: "OKXClient"):
         # ---------- 5) emergency SL follow tp_dyn_threshold ----------
         SL_FOLLOW_TP_MULT = 1.1
         sl_cap_pnl = min(MAX_EMERGENCY_SL_PNL_PCT, tp_dyn_threshold * SL_FOLLOW_TP_MULT)
-        sl_cap_pnl = max(2.0, sl_cap_pnl)
+        sl_cap_pnl = max(3.0, sl_cap_pnl)
 
         # ---------- 6) update peak pnl realtime ----------
         prev_peak = TP_TRAIL_PEAK_PNL.get(pos_key, None)
