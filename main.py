@@ -3533,20 +3533,6 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         above_10 = pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT  # thường = 10.0
 
-        # ---------- 3) infer BE từ OCO + đồng bộ dict state ----------
-        is_be, be_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-        TP_LADDER_BE_MOVED[pos_key] = bool(is_be)
-        TP_BE_TIER[pos_key] = int(be_tier)
-
-        logging.info(
-            "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s, sl=%.8f) ",
-            instId, posSide, pnl_pct,
-            TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
-            "YES" if is_be else "NO",
-            be_tier,
-            sl_now
-        )
-
         # ---------- 4) chọn tp_dyn_threshold (tính 1 lần) ----------
         in_deadzone = is_deadzone_time_vn()
         if in_deadzone:
@@ -3683,7 +3669,19 @@ def run_dynamic_tp(okx: "OKXClient"):
                                          instId, desired_tier, pnl_pct, desired_offset)
                     except Exception as e:
                         logging.error("[BE] Exception move SL->BE %s: %s", instId, e)
-
+            #  11.1.1) infer BE từ OCO + đồng bộ dict state ----------
+            is_be, be_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
+            TP_LADDER_BE_MOVED[pos_key] = bool(is_be)
+            TP_BE_TIER[pos_key] = int(be_tier)
+    
+            logging.info(
+                "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s, sl=%.8f) ",
+                instId, posSide, pnl_pct,
+                TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
+                "YES" if is_be else "NO",
+                be_tier,
+                sl_now
+            )
             # 11.2) Ladder close theo peak_pnl
             closed_by_ladder = False
             for peak_thr, floor_thr in TP_LADDER_RULES:
