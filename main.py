@@ -22,15 +22,6 @@ from typing import Optional
 # Sheet dùng để lưu trạng thái circuit breaker
 SESSION_SHEET_KEY = os.getenv("SESSION_SHEET_KEY")  # hoặc GSHEET_SESSION_KEY riêng nếu muốn
 SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE")
-# ===== BE ladder state =====
-TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
-# Mỗi mốc chỉ update 1 lần
-
-TP_BE_TIERS = [
-    (2.0, 0.15),  # >=2%  -> BE +0.15%
-    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
-    (8.0, 0.35),  # >=8%  -> BE +0.35%
-]
 
 # ========== CONFIG ==========
 OKX_BASE_URL = "https://www.okx.com"
@@ -89,7 +80,6 @@ MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
 
-
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
@@ -99,22 +89,32 @@ PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +1%
 PROFIT_LOCK_TIER_2_PEAK = 8.0
 PROFIT_LOCK_TIER_2_FLOOR = 4.0
 
+# ===== BE ladder state =====
+TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
+# Mỗi mốc chỉ update 1 lần
+
+TP_BE_TIERS = [
+    #(3.0, 0.15),  # >=2%  -> BE +0.15%
+    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
+    (8.0, 0.35),  # >=8%  -> BE +0.35%
+]
+
 # ===== PRO: LADDER TP TRAIL (<10%) + BE =====
 # Rule:
-# - pnl >= 3%  -> kéo SL về BE (update OCO SL)
-# - peak>=5% & pnl<=3%  -> chốt
+# - pnl >= 5%  -> kéo SL về BE (update OCO SL)
+# - peak>=6% & pnl<=3%  -> chốt
 # - peak>=8% & pnl<=5%  -> chốt
 # - peak>=10% -> giao cho trailing server-side hiện có
-TP_LADDER_BE_TRIGGER_PNL_PCT = 3.0
+TP_LADDER_BE_TRIGGER_PNL_PCT = 5.0
 TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
-TP_LADDER_RULES = [(8.0, 5.0), (5.0, 3.0)]  # check từ bậc cao -> thấp
+TP_LADDER_RULES = [(8.0, 5.0), (6.0, 3.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
 
 # ===== EARLY FAIL-SAFE (anti reverse right after entry) =====
-EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 3.0   # chưa từng đạt +3%
-EARLY_FAIL_CUT_LOSS_PCT = -3.0              # mà đã xuống -3% => cắt ngay
+EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 4.0   # chưa từng đạt +4%
+EARLY_FAIL_CUT_LOSS_PCT = -4.0              # mà đã xuống -4% => cắt ngay
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
