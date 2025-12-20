@@ -3294,14 +3294,15 @@ def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -
         sl_be = entry_px * (1.0 + offset_pct / 100.0)
     else:
         sl_be = entry_px * (1.0 - offset_pct / 100.0)
-    # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì thôi, không hủy/đặt lại
+    # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì KHÔNG MOVE -> trả False
     if sl_now > 0:
         if pos_side == "long" and sl_now >= sl_be:
-            logging.info("[BE] %s long SKIP (đã BE) | sl_now=%.8f >= sl_be=%.8f", inst_id, sl_now, sl_be)
-            return True
+            logging.warning("[BE] %s long SKIP (đã BE sẵn) | sl_now=%.8f >= target_be=%.8f", inst_id, sl_now, sl_be)
+            return False
         if pos_side == "short" and sl_now <= sl_be:
-            logging.info("[BE] %s short SKIP (đã BE) | sl_now=%.8f <= sl_be=%.8f", inst_id, sl_now, sl_be)
-            return True
+            logging.warning("[BE] %s short SKIP (đã BE sẵn) | sl_now=%.8f <= target_be=%.8f", inst_id, sl_now, sl_be)
+            return False
+    
 
     try:
         okx.cancel_algos(inst_id, [algo_id])
