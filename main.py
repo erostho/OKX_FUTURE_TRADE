@@ -100,13 +100,13 @@ TP_BE_TIERS = [
 
 # ===== PRO: LADDER TP TRAIL (<10%) + BE =====
 # Rule:
-# - pnl >= 5%  -> kéo SL về BE (update OCO SL)
-# - peak>=6% & pnl<=3%  -> chốt
-# - peak>=8% & pnl<=5%  -> chốt
+# - pnl >= 3%  -> kéo SL về BE (update OCO SL)
+# - peak>=7% & pnl<=3%  -> chốt
+# - peak>=9% & pnl<=5%  -> chốt
 # - peak>=10% -> giao cho trailing server-side hiện có
-TP_LADDER_BE_TRIGGER_PNL_PCT = 5.0
-TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
-TP_LADDER_RULES = [(8.0, 5.0)]  # check từ bậc cao -> thấp
+TP_LADDER_BE_TRIGGER_PNL_PCT = 3.0
+TP_LADDER_BE_OFFSET_PCT = 0.2  # tránh quét đúng entry (0.05~0.2)
+TP_LADDER_RULES = [(9.0, 5.0), (7.0, 3.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
