@@ -3943,8 +3943,12 @@ def run_dynamic_tp(okx: "OKXClient"):
             ema_break,
         )
         # ===== TP-DYN cũ chỉ bật sau khi đã BE (>= +2%) và cần 2/4 tín hiệu =====
-        if (not ladder_closed) and TP_LADDER_BE_MOVED.get(pos_key, False) and not above_10:
+        pos_key = f"{instId}_{posSide}"
+        # CHƯA DỜI BE -> CẤM TP DYN
+        if not TP_LADDER_BE_MOVED.get(pos_key, False):
+            continue
 
+        if (not ladder_closed) and TP_LADDER_BE_MOVED.get(pos_key, False) and not above_10:
             dyn_hits = (1 if flat_move else 0) + (1 if engulfing else 0) + (1 if vol_drop else 0) + (1 if ema_break else 0)
             if dyn_hits >= 2:
                 logging.warning(
