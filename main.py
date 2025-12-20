@@ -3356,7 +3356,14 @@ def infer_be_from_oco(okx: OKXClient, inst_id: str, pos_side: str, entry_px: flo
             tier = i
     
     # Offset tối thiểu coi là "đã BE"
-    min_be_off = float(TP_LADDER_BE_OFFSET_PCT)  # ví dụ 0.2 (%)
+    # BE tối thiểu phải khớp với offset nhỏ nhất mà bot có thể dùng để dời SL
+    min_off_from_tiers = 999.0
+    try:
+        min_off_from_tiers = min(float(off) for (_thr, off) in TP_BE_TIERS)
+    except Exception:
+        pass
+    min_be_off = min(float(TP_LADDER_BE_OFFSET_PCT), float(min_off_from_tiers))
+
     
     # tolerance nhỏ để tránh nhiễu giá (0.01% là đủ)
     tol_pct = 0.01
