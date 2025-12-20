@@ -3235,33 +3235,48 @@ def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi khi hủy OCO %s: %s", inst_id, e)
 
+def _extract_data_list(resp):
+    # OKX có lúc trả dict {"code":"0","data":[...]} có lúc bạn đang nhận list luôn
+    if isinstance(resp, dict):
+        return resp.get("data", []) or []
+    if isinstance(resp, list):
+        return resp
+    return []
 
-def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -> bool:
-    """Kéo SL về hòa vốn (BE) bằng cách: hủy OCO hiện tại -> đặt lại OCO giữ nguyên TP, đổi SL."""
+def _get_oco_for_position(okx, inst_id: str, pos_side: str):
     try:
         resp = okx.get_algo_pending(inst_id=inst_id, ord_type="oco")
     except Exception as e:
-        logging.error("[BE] Lỗi get_algo_pending OCO %s: %s", inst_id, e)
-        return False
+        logging.error("[BE] Lỗi get_algo_pending oco %s: %s", inst_id, e)
+        return None
 
-    data = resp.get("data", []) if isinstance(resp, dict) else []
-    oco = None
+    data = _extract_data_list(resp)
+
     for item in data:
         try:
             if item.get("instId") != inst_id:
                 continue
-            if item.get("ordType") != "oco":
+            # nhiều bản OKX trả ordType hoặc algoOrdType… nên check mềm
+            ord_type = item.get("ordType") or item.get("algoOrdType") or ""
+            if "oco" not in str(ord_type).lower():
                 continue
-            if item.get("posSide") and item["posSide"] != pos_side:
+
+            # posSide có thể rỗng trong vài trường hợp -> nếu rỗng thì chấp nhận
+            it_pos = item.get("posSide")
+            if it_pos and it_pos != pos_side:
                 continue
-            oco = item
-            break
+
+            return item
         except Exception:
             continue
 
+    return None
+
+def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -> bool:
+    """Kéo SL về hòa vốn (BE) bằng cách: hủy OCO hiện tại -> đặt lại OCO giữ nguyên TP, đổi SL."""
+    oco = _get_oco_for_position(okx, inst_id, pos_side)
     if not oco:
         return False
-
     algo_id = oco.get("algoId")
     tp_trigger_px = oco.get("tpTriggerPx")
     sl_trigger_px = oco.get("slTriggerPx")
@@ -3317,49 +3332,38 @@ def infer_be_from_oco(okx: OKXClient, inst_id: str, pos_side: str, entry_px: flo
     is_be = True nếu SL hiện tại đã >= entry (long) hoặc <= entry (short) (có tolerance nhỏ).
     tier = map theo TP_BE_TIERS dựa trên offset đạt được (ước lượng).
     """
-    try:
-        resp = okx.get_algo_pending(inst_id=inst_id, ord_type="oco")
-        data = resp.get("data", []) if isinstance(resp, dict) else []
-    except Exception:
-        return False, 0, 0.0
-
-    oco = None
-    for item in data:
-        if item.get("instId") != inst_id:
-            continue
-        if item.get("ordType") != "oco":
-            continue
-        if item.get("posSide") and item["posSide"] != pos_side:
-            continue
-        oco = item
-        break
-
+    oco = _get_oco_for_position(okx, inst_id, pos_side)
     if not oco:
         return False, 0, 0.0
-
-    sl_trigger_px = oco.get("slTriggerPx")
+    sl_trigger_px = oco.get("slTriggerPx") or oco.get("slOrdPx")
     sl_now = safe_float(sl_trigger_px) if sl_trigger_px else 0.0
     if entry_px <= 0 or sl_now <= 0:
         return False, 0, sl_now
 
-    # tolerance 0.02% để tránh float noise
-    tol = 0.0002
+    # --- BE check phải khớp với offset bạn dùng khi move_oco_sl_to_be ---
+    # Nếu bạn có nhiều tier offset (TP_BE_TIERS), tier được suy từ off_pct.
+    # is_be chỉ TRUE khi SL đã >= entry +/- offset tối thiểu (TP_LADDER_BE_OFFSET_PCT).
+    # % offset thực tế của SL so với entry (dương)
     if pos_side == "long":
-        is_be = sl_now >= entry_px * (1.0 + tol)
-        # offset % thực tế
         off_pct = (sl_now / entry_px - 1.0) * 100.0
     else:
-        is_be = sl_now <= entry_px * (1.0 - tol)
         off_pct = (1.0 - sl_now / entry_px) * 100.0
-
+    
+    # Tier theo offset (nếu có TP_BE_TIERS)
     tier = 0
-    if is_be:
-        # map tier theo TP_BE_TIERS (thr, off)
-        for i, (_thr, off) in enumerate(TP_BE_TIERS, start=1):
-            if off_pct >= off:
-                tier = i
-
-    return is_be, tier, sl_now
+    for i, (_thr, off) in enumerate(TP_BE_TIERS, start=1):
+        if off_pct >= float(off):
+            tier = i
+    
+    # Offset tối thiểu coi là "đã BE"
+    min_be_off = float(TP_LADDER_BE_OFFSET_PCT)  # ví dụ 0.2 (%)
+    
+    # tolerance nhỏ để tránh nhiễu giá (0.01% là đủ)
+    tol_pct = 0.01
+    
+    is_be = off_pct >= (min_be_off - tol_pct)
+    
+    return bool(is_be), int(tier), float(sl_now)
 
 def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
     """
