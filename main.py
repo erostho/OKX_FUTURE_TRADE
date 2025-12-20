@@ -83,11 +83,10 @@ TRAIL_SERVER_CALLBACK_PCT = 7.0   # giá rút lại 7% từ đỉnh thì cắt
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
-
-PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
-PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +1%
-PROFIT_LOCK_TIER_2_PEAK = 8.0
-PROFIT_LOCK_TIER_2_FLOOR = 4.0
+#PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
+#PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +1%
+PROFIT_LOCK_TIER_1_PEAK = 8.0
+PROFIT_LOCK_TIER_1_FLOOR = 4.0
 
 # ===== BE ladder state =====
 TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
@@ -95,7 +94,7 @@ TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 
 TP_BE_TIERS = [
     #(3.0, 0.15),  # >=2%  -> BE +0.15%
-    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
+    #(5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
     (8.0, 0.35),  # >=8%  -> BE +0.35%
 ]
 
@@ -107,7 +106,7 @@ TP_BE_TIERS = [
 # - peak>=10% -> giao cho trailing server-side hiện có
 TP_LADDER_BE_TRIGGER_PNL_PCT = 5.0
 TP_LADDER_BE_OFFSET_PCT = 0.15  # tránh quét đúng entry (0.05~0.2)
-TP_LADDER_RULES = [(8.0, 5.0), (6.0, 3.0)]  # check từ bậc cao -> thấp
+TP_LADDER_RULES = [(8.0, 5.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
@@ -3652,14 +3651,14 @@ def run_dynamic_tp(okx: "OKXClient"):
                     logging.error("[SL-DYN] Lỗi đóng lệnh %s: %s", instId, e)
                 continue
         # ================= EARLY FAIL-SAFE =================
-        # Nếu chưa từng lên +3% mà đã tụt xuống -3% => thoát sớm (tránh lệnh ngược chiều)
+        # Nếu chưa từng lên +4% mà đã tụt xuống -4% => thoát sớm (tránh lệnh ngược chiều)
         pos_key = f"{instId}_{posSide}"
         
-        # đánh dấu đã từng đạt +3%
+        # đánh dấu đã từng đạt +4%
         if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (peak_pnl >= EARLY_FAIL_NEVER_REACHED_PROFIT_PCT):
             EARLY_FAIL_REACHED_PROFIT[pos_key] = True
         
-        # nếu chưa từng đạt +3% mà pnl <= -3% thì đóng luôn
+        # nếu chưa từng đạt +4% mà pnl <= -4% thì đóng luôn
         if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (pnl_pct <= EARLY_FAIL_CUT_LOSS_PCT):
             logging.warning(
                 "[EARLY-FAIL] %s %s peak=%.2f%% pnl=%.2f%% (chưa lên +%.1f%% mà đã xuống %.1f%%) => CLOSE",
@@ -3734,15 +3733,14 @@ def run_dynamic_tp(okx: "OKXClient"):
                 tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # GOOD → config (mặc định 3%)
         # ================= LADDER TP TRAIL (<10%) + BE =================
         # Ý bạn: dùng TP trail theo bậc, KHÔNG dùng TP dynamic chốt sớm.
-        # - pnl>=3%: kéo SL về BE
-        # - peak>=5% & pnl<=3%: chốt
+        # - pnl>=5%: kéo SL về BE
         # - peak>=8% & pnl<=5%: chốt
         # - peak>=10%: giao cho trailing server-side (khối phía dưới)
         if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
             pos_key = f"{instId}_{posSide}"
 
-            # 1) Move SL -> BE khi pnl đạt 3%
-            # 1) pnl >= 3% -> kéo SL về BE (update OCO)
+            # 1) Move SL -> BE khi pnl đạt 5%
+            # 1) pnl >= 5% -> kéo SL về BE (update OCO)
             #    - chỉ đặt 1 lần
             #    - chỉ khi lên tier cao hơn mới update lại (nếu cấu hình nhiều tier)
             if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
