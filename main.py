@@ -355,7 +355,7 @@ def mark_symbol_tp(inst_id: str):
 def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     """
     Callback động cho trailing server-side:
-    - PnL < 40%  -> dùng TRAIL_SERVER_CALLBACK_PCT (mặc định 7%)
+    - PnL < 40%  -> dùng TRAIL_SERVER_CALLBACK_PCT (mặc định 7%pnl)
     - 40% <= PnL <= 100%:
          nội suy từ 5% (40%) xuống 3.5% (100%)
     - PnL > 100% -> cố định 3.5%
@@ -365,8 +365,8 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
         return TRAIL_SERVER_CALLBACK_PCT
 
     # 2) Vùng dynamic 40–100%: 5% -> 3.5%
-    cb_high = 5.0   # callback ở 40%
-    cb_low  = 3.5   # callback ở 100%
+    cb_high = 0.8   # callback ở 40%
+    cb_low  = 0.5   # callback ở 100%
 
     if pnl_pct >= 100.0:
         return cb_low
