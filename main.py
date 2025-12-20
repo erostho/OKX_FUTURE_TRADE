@@ -3302,8 +3302,6 @@ def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -
         if pos_side == "short" and sl_now <= sl_be:
             logging.warning("[BE] %s short SKIP (đã BE sẵn) | sl_now=%.8f <= target_be=%.8f", inst_id, sl_now, sl_be)
             return False
-    
-
     try:
         okx.cancel_algos(inst_id, [algo_id])
     except Exception as e:
@@ -3653,31 +3651,16 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         # ---------- 11) LADDER + BE (<10%) ----------
         ladder_closed = False
-        if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
-            # 11.1) Move SL -> BE theo tier
-            pos_key = f"{instId}_{posSide}"
-            # 1) INFER từ OCO trước (nguồn sự thật)
-            is_be, be_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-            TP_LADDER_BE_MOVED[pos_key] = bool(is_be)
-            TP_BE_TIER[pos_key] = int(be_tier)
-            
-            # LOG POS phải dùng is_be vừa infer (để không “BE=NO” khi thực tế đã BE)
-            logging.info(
-                "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s, sl=%.8f)",
-                instId, posSide, pnl_pct,
-                TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
-                "YES" if is_be else "NO",
-                be_tier,
-                sl_now
-            )
-            
-            # 2) Nếu đã BE rồi -> SKIP (từ lần 2 trở đi chỉ thấy SKIP)
-            if is_be:
+        pos_key = f"{instId}_{posSide}"
+        if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:            
+            # 1) Nếu đã MOVE trước đó → SKIP NGAY
+            if TP_LADDER_BE_MOVED.get(pos_key, False):
                 logging.info("[BE] %s %s SKIP | đã dời BE rồi (tier=%s) | pnl=%.2f%%",
-                             instId, posSide, be_tier, pnl_pct)
-            
+                             instId, posSide,
+                             TP_BE_TIER.get(pos_key, 0),
+                             pnl_pct)
             else:
-                # 3) Chưa BE -> lần đầu MOVE THẬT -> phải WARNING
+                # 2) CHƯA BE → CHỈ 1 LẦN DUY NHẤT ĐƯỢC MOVE
                 if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
                     desired_tier = 0
                     desired_offset = TP_LADDER_BE_OFFSET_PCT
@@ -3688,13 +3671,21 @@ def run_dynamic_tp(okx: "OKXClient"):
             
                     moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
                     if moved:
-                        TP_BE_TIER[pos_key] = desired_tier
                         TP_LADDER_BE_MOVED[pos_key] = True
-                        logging.warning("[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
-                                        instId, posSide, desired_tier, pnl_pct, desired_offset)
-                    else:
-                        logging.error("[BE] %s %s FAIL move SL->BE (pnl=%.2f%%)", instId, posSide, pnl_pct)
-
+                        TP_BE_TIER[pos_key] = desired_tier
+                        logging.warning(
+                            "[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
+                            instId, posSide, desired_tier, pnl_pct, desired_offset
+                        )
+            # LOG POS
+            logging.info(
+                "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s)",
+                instId, posSide,
+                pnl_pct,
+                TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
+                "YES" if TP_LADDER_BE_MOVED.get(pos_key, False) else "NO",
+                TP_BE_TIER.get(pos_key, 0),
+            ) 
             # 11.2) Ladder close theo peak_pnl
             closed_by_ladder = False
             for peak_thr, floor_thr in TP_LADDER_RULES:
