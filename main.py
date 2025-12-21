@@ -478,7 +478,7 @@ def apply_risk_config(okx):
     MAX_SL_PNL_PCT = cfg["max_sl_pnl_pct"]
     MAX_TRADES_PER_RUN = cfg["max_trades_per_run"]
 
-    log_info(f"[RISK] base cfg applied: lev={FUT_LEVERAGE} notional={NOTIONAL_PER_TRADE} "
+    logging(f"[RISK] base cfg applied: lev={FUT_LEVERAGE} notional={NOTIONAL_PER_TRADE} "
              f"tp_dyn_min={TP_DYN_MIN_PROFIT_PCT} maxSL={MAX_SL_PNL_PCT} maxTrades={MAX_TRADES_PER_RUN}")
 
     return cfg
