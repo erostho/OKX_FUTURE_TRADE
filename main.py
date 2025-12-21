@@ -167,9 +167,9 @@ def _vn_now():
 def _vn_hour():
     return datetime.fromtimestamp(_vn_now()).hour
 
-def _is_session_20_24():
+def _is_session_16_24():
     h = _vn_hour()
-    return 20 <= h < 24
+    return 16 <= h < 24
 
 def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     """
@@ -186,19 +186,19 @@ def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
         pass
     return False
 
-def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=None):
-    if not _is_session_20_24():
-        return True, "ok:not_20_24"
+def _allow_trade_session_16_24(market_regime=None, confidence=None, trend_score=None):
+    if not _is_session_16_24():
+        return True, "ok:not_16_24"
 
-    # 20-24: chỉ cho nếu trend cực mạnh, còn lại giảm tần suất (mặc định skip 85%)
+    # 16-24: chỉ cho nếu trend cực mạnh, còn lại giảm tần suất (mặc định skip 85%)
     if _is_strong_trend(market_regime, confidence, trend_score):
-        return True, "ok:strong_trend_20_24"
+        return True, "ok:strong_trend_16_24"
 
-    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.70"))  # 0.70 -> 1.00
+    skip_prob = float(os.getenv("S16_24_SKIP_PROB", "0.70"))  # 0.70 -> 1.00
     if random.random() < skip_prob:
-        return False, f"skip:20_24_throttle({skip_prob:.2f})"
+        return False, f"skip:16_24_throttle({skip_prob:.2f})"
 
-    return True, "ok:20_24_lucky_pass"
+    return True, "ok:16_24_lucky_pass"
 
 TRADE_GUARD_FILE = os.getenv("TRADE_GUARD_FILE", "./trade_guard.json")
 
@@ -2877,17 +2877,17 @@ def maker_first_open_position(
     Nếu không khớp trong timeout -> cancel + fallback MARKET.
     Return: (ok: bool, fill_px: float|None, used: 'maker'|'market'|'skip')
     """
-    # ===== PATCH #2: throttle session 20-24 =====
+    # ===== PATCH #2: throttle session 16-24 =====
 
     sz = normalize_swap_sz(okx, inst_id, contracts)
-    allow, reason = _allow_trade_session_20_24(
+    allow, reason = _allow_trade_session_16_24(
         market_regime=locals().get("market_regime", None),
         confidence=locals().get("confidence", None),
         trend_score=locals().get("trend_score", None),
     )
     if not allow:
         logging.info("[GUARD][S20-24] Block %s %s: %s", inst_id, side_open, reason)
-        return False, None, "skip_session_20_24"
+        return False, None, "skip_session_16_24"
         # ===== PATCH #4: daily trade cap =====
     allow, reason = allow_trade_daily_limit()
     if not allow:
