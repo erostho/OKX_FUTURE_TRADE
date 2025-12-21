@@ -83,10 +83,8 @@ TRAIL_SERVER_CALLBACK_PCT = 1.3   # giá rút lại 7% từ đỉnh thì cắt
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
-PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
-PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +3%
-PROFIT_LOCK_TIER_1_PEAK = 8.0
-PROFIT_LOCK_TIER_1_FLOOR = 4.0
+PROFIT_LOCK_TIER_1_PEAK = 8.0   # nếu đã từng >=8%
+PROFIT_LOCK_TIER_1_FLOOR = 4.0  # thì không cho rơi dưới +4%
 
 # ===== BE ladder state =====
 TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
@@ -2792,35 +2790,6 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
         tp = entry - risk * RR
 
     return tp, sl
-    risk = 1.1 * atr
-    risk_pct = risk / entry
-    # kẹp risk_pct để tránh quá bé / quá to
-    MIN_RISK_PCT = 0.006   # 0.6% giá (≈ -3% PnL với x5)
-    MAX_RISK_PCT = 0.08    # 8% giá (trần kỹ thuật, nhưng sẽ bị PnL cap chặn lại bên dưới)
-
-    risk_pct = max(MIN_RISK_PCT, min(risk_pct, MAX_RISK_PCT))
-
-    # ✅ Giới hạn thêm: SL không được vượt MAX_SL_PNL_PCT (theo PnL%)
-    # PnL% ≈ risk_pct * FUT_LEVERAGE * 100
-    #  → risk_pct_max_theo_pnl = MAX_SL_PNL_PCT / FUT_LEVERAGE
-    max_risk_pct_by_pnl = MAX_PLANNED_SL_PNL_PCT / FUT_LEVERAGE
-    risk_pct = min(risk_pct, max_risk_pct_by_pnl)
-    risk = risk_pct * entry
-
-    regime = detect_market_regime(okx)
-    if regime == "GOOD":
-        RR = 2.0      # ăn dày khi thị trường đẹp
-    else:
-        RR = 1.0      # thị trường xấu → scalp RR 1:1 an toàn
-
-    if direction.upper() == "LONG":
-        sl = entry - risk
-        tp = entry + risk * RR
-    else:
-        sl = entry + risk
-        tp = entry - risk * RR
-
-    return tp, sl
 
     
 def calc_scalp_tp_sl(entry: float, direction: str):
@@ -3165,9 +3134,9 @@ def execute_futures_trades(okx: OKXClient, trades):
             tp_hard = real_entry * 6.0 #+500
         else:
             tp_hard = real_entry * 0.2 # -80% cho SHORT
-        lev = float(FUT_LEVERAGE)  # hoặc lev = float(lever)
-        max_sl_pnl = float(MAX_SL_PNL_PCT)
-        max_price_move = (max_sl_pnl / 100.0) / lev  # vd 7%/4 = 1.75% giá
+        lev = float(this_lever)  # hoặc lev = float(lever)
+        
+        max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
 
         # SL theo plan
         sl_px = float(t["sl"])
