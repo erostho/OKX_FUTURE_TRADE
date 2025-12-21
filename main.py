@@ -72,10 +72,10 @@ SL_DYN_TREND_PCT = 1.0       # 1%/15m đi ngược chiều thì coi là mạnh
 SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
 # SL planned tối đa (khi đặt TP/SL ban đầu)
-MAX_PLANNED_SL_PNL_PCT = 7.0   # cho phép lỗ tối đa 7% PnL nếu chạm SL
-MAX_SL_PNL_PCT = 7
+MAX_PLANNED_SL_PNL_PCT = 6.0   # cho phép lỗ tối đa 6% PnL nếu chạm SL
+MAX_SL_PNL_PCT = 6
 # SL khẩn cấp theo PnL%
-MAX_EMERGENCY_SL_PNL_PCT = 5.0  # qua -5% là cắt khẩn cấp
+MAX_EMERGENCY_SL_PNL_PCT = 4.5  # qua -4.5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
 TRAIL_SERVER_CALLBACK_PCT = 1.3   # giá rút lại 7% từ đỉnh thì cắt
@@ -112,8 +112,8 @@ TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
 
 # ===== EARLY FAIL-SAFE (anti reverse right after entry) =====
-EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 4.0   # chưa từng đạt +4%
-EARLY_FAIL_CUT_LOSS_PCT = -4.0              # mà đã xuống -4% => cắt ngay
+EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 3.5   # chưa từng đạt +3.5%
+EARLY_FAIL_CUT_LOSS_PCT = -3.5              # mà đã xuống -4% => cắt ngay
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
@@ -133,7 +133,7 @@ ALT_SWEEP_LOCK_MINUTES = 10         # khóa symbol 10 phút
 ALT_SWEEP_LOCKS: dict[str, int] = {}  # instId -> lock_until_utc_ms
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 100000     # volume USDT 24h tối thiểu
+PUMP_MIN_VOL_USDT_24H   = 200000     # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 1.0       # %change 15m tối thiểu theo hướng LONG/SHORT
