@@ -463,7 +463,7 @@ def apply_risk_config(okx):
     }
 
     # (Nếu bạn vẫn muốn session 20-24 ảnh hưởng BASE)
-    if is_session_20_24_vn():
+    if is_session_20_24():
         # ví dụ: giảm số lệnh / tăng yêu cầu lời tối thiểu
         cfg["max_trades_per_run"] = min(cfg["max_trades_per_run"], 2)
         cfg["tp_dyn_min_profit"] = max(cfg["tp_dyn_min_profit"], 4.0)
