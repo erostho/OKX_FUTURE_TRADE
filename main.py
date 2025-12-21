@@ -39,7 +39,7 @@ SESSION_STATE_FILE = os.getenv("SESSION_STATE_FILE", "session_state.json")
 SYMBOL_COOLDOWN_FILE = os.getenv("SYMBOL_COOLDOWN_FILE", "symbol_cooldown.json")
 SYMBOL_SL_WINDOW_MINUTES = 120     # xét chuỗi SL trong 4h gần nhất
 SYMBOL_SL_STREAK_TRIGGER = 3       # SL liên tiếp >=3 thì khóa
-SYMBOL_COOLDOWN_MINUTES = 60      # khóa 2 giờ
+SYMBOL_COOLDOWN_MINUTES = 60      # khóa 1 giờ
 
 # Scanner config
 MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
@@ -83,8 +83,8 @@ TRAIL_SERVER_CALLBACK_PCT = 1.3   # giá rút lại 7% từ đỉnh thì cắt
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
 PROFIT_LOCK_ONLY_BELOW_SERVER = True   # chỉ áp dụng khi pnl < TP_TRAIL_SERVER_MIN_PNL_PCT
-PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
-PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +3%
+#PROFIT_LOCK_TIER_1_PEAK = 6.0   # nếu đã từng >=6%
+#PROFIT_LOCK_TIER_1_FLOOR = 3.0  # thì không cho rơi dưới +3%
 PROFIT_LOCK_TIER_1_PEAK = 8.0
 PROFIT_LOCK_TIER_1_FLOOR = 4.0
 
@@ -450,56 +450,38 @@ def decide_risk_config(regime: str | None, session_flag: str | None):
         "max_sl_pnl_pct": 3.0,
         "max_trades_per_run": 7,
     }
+def apply_risk_config(okx):
+    global FUT_LEVERAGE, NOTIONAL_PER_TRADE, TP_DYN_MIN_PROFIT_PCT, MAX_SL_PNL_PCT, MAX_TRADES_PER_RUN
 
+    # === BASE CONFIG (dùng cho nhánh ELSE(3) trong execute_futures_trades) ===
+    cfg = {
+        "leverage": 6,
+        "notional": 30.0,
+        "tp_dyn_min_profit": 3.0,
+        "max_sl_pnl_pct": 6.0,
+        "max_trades_per_run": 3,
+    }
 
-def apply_risk_config(okx: "OKXClient"):
-    """
-    Set lại các biến GLOBAL:
-      FUT_LEVERAGE, NOTIONAL_PER_TRADE, TP_DYN_MIN_PROFIT_PCT,
-      MAX_SL_PNL_PCT, MAX_TRADES_PER_RUN
-    """
-    global FUT_LEVERAGE, NOTIONAL_PER_TRADE
-    global TP_DYN_MIN_PROFIT_PCT, MAX_SL_PNL_PCT, MAX_TRADES_PER_RUN
+    # (Nếu bạn vẫn muốn session 20-24 ảnh hưởng BASE)
+    if is_session_20_24_vn():
+        # ví dụ: giảm số lệnh / tăng yêu cầu lời tối thiểu
+        cfg["max_trades_per_run"] = min(cfg["max_trades_per_run"], 2)
+        cfg["tp_dyn_min_profit"] = max(cfg["tp_dyn_min_profit"], 4.0)
+        # leverage/notional base bạn có thể giữ hoặc chỉnh tùy ý:
+        # cfg["leverage"] = 5
+        # cfg["notional"] = 25.0
 
-    # DEADZONE: giữ nguyên style scalping an toàn
-    if is_deadzone_time_vn():
-        FUT_LEVERAGE = 3
-        NOTIONAL_PER_TRADE = 10.0
-        TP_DYN_MIN_PROFIT_PCT = 1.5
-        MAX_SL_PNL_PCT = 3.0
-        MAX_TRADES_PER_RUN = 5
-        logging.info("[RISK] DEADZONE config: lev=3, notional=10, tp_dyn=3%%, maxSL=3%%, max_trades=5")
-        return
-
-    # Ngoài DEADZONE: dùng 2 tầng regime + session_flag
-    try:
-        regime = detect_market_regime(okx)
-    except NameError:
-        regime = "GOOD"
-
-    try:
-        session_flag = get_session_flag_for_next_session()  # nếu có
-    except NameError:
-        session_flag = "GOOD"
-
-    cfg = decide_risk_config(regime, session_flag)
-
+    # === APPLY GLOBALS cho nhánh ELSE(3) ===
     FUT_LEVERAGE = cfg["leverage"]
     NOTIONAL_PER_TRADE = cfg["notional"]
     TP_DYN_MIN_PROFIT_PCT = cfg["tp_dyn_min_profit"]
     MAX_SL_PNL_PCT = cfg["max_sl_pnl_pct"]
     MAX_TRADES_PER_RUN = cfg["max_trades_per_run"]
 
-    logging.info(
-        "[RISK] regime=%s session=%s -> lev=%dx, notional=%.1f, tp_dyn=%.1f%%, maxSL=%.1f%%, max_trades=%d",
-        regime,
-        session_flag,
-        FUT_LEVERAGE,
-        NOTIONAL_PER_TRADE,
-        TP_DYN_MIN_PROFIT_PCT,
-        MAX_SL_PNL_PCT,
-        MAX_TRADES_PER_RUN,
-    )
+    log_info(f"[RISK] base cfg applied: lev={FUT_LEVERAGE} notional={NOTIONAL_PER_TRADE} "
+             f"tp_dyn_min={TP_DYN_MIN_PROFIT_PCT} maxSL={MAX_SL_PNL_PCT} maxTrades={MAX_TRADES_PER_RUN}")
+
+    return cfg
 
 # ========== PATCH 1: ANTI-SWEEP FILTER ==========
 
@@ -627,13 +609,9 @@ def setup_logging():
 def now_str_vn():
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
-
-
-
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
     return now_vn.hour >= 23 or now_vn.hour < 6
-
 
 def is_backtest_time_vn():
     """
@@ -2908,11 +2886,14 @@ def maker_first_open_position(
 
     sz = normalize_swap_sz(okx, inst_id, contracts)
     # ===== PATCH: session guard =====
+    market_regime = detect_market_regime(okx)
+    confidence = None
+    trend_score = None
     if _is_session_20_24():
         allow, reason = _allow_trade_session_20_24(
-            market_regime=locals().get("market_regime"),
-            confidence=locals().get("confidence"),
-            trend_score=locals().get("trend_score"),
+            market_regime=market_regime,
+            confidence=confidence),
+            trend_score=trend_score,
         )
     elif _is_session_16_20():
         allow, reason = _allow_trade_session_16_20(
@@ -3021,7 +3002,7 @@ def execute_futures_trades(okx: OKXClient, trades):
     if is_deadzone_time_vn():
         # phiên trưa: luôn giảm size + leverage
         this_lever    = 3
-        this_notional = 12.0          # chỉ 15 USDT / lệnh
+        this_notional = 12.0          # chỉ 12 USDT / lệnh
     elif regime == "BAD":
         # thị trường xấu: giữ size 20$ nhưng hạ đòn bẩy
         this_lever    = 4
@@ -3165,10 +3146,9 @@ def execute_futures_trades(okx: OKXClient, trades):
             tp_hard = real_entry * 6.0 #+500
         else:
             tp_hard = real_entry * 0.2 # -80% cho SHORT
-        MAX_SL_PNL_PCT = 7.0
-        lev = float(FUT_LEVERAGE)  # hoặc lev = float(lever)
-        
-        max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
+        lev = float(this_lever)
+        max_sl_pnl = float(MAX_SL_PNL_PCT)
+        max_price_move = (max_sl_pnl / 100.0) / lev  # vd 7%/4 = 1.75% giá
 
         # SL theo plan
         sl_px = float(t["sl"])
