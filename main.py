@@ -91,8 +91,8 @@ TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 # Mỗi mốc chỉ update 1 lần
 
 TP_BE_TIERS = [
-    #(3.0, 0.15),  # >=2%  -> BE +0.15%
-    #(5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
+    (3.0, 0.15),  # >=2%  -> BE +0.15%
+    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
     (8.0, 0.35),  # >=8%  -> BE +0.35%
 ]
 
