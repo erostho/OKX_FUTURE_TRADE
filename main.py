@@ -4053,15 +4053,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    run_full_bot(okx)
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)
 
     # 2) Các mốc 6 - 20 - 36 - 50 phút thì chạy thêm FULL BOT
-    #if minute in (6, 20, 36, 50):
-        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        #run_full_bot(okx)
-    #else:
-        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    if minute in (6, 20, 36, 50):
+        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        run_full_bot(okx)
+    else:
+        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
