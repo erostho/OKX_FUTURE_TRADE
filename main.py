@@ -2892,7 +2892,7 @@ def maker_first_open_position(
     if _is_session_20_24():
         allow, reason = _allow_trade_session_20_24(
             market_regime=market_regime,
-            confidence=confidence),
+            confidence=confidence,
             trend_score=trend_score,
         )
     elif _is_session_16_20():
