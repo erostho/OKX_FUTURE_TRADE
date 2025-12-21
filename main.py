@@ -169,7 +169,12 @@ def _vn_now():
 
 def _vn_hour():
     return datetime.fromtimestamp(_vn_now()).hour
-
+    
+def _is_session_16_20(now=None):
+    if now is None:
+        now = datetime.utcnow() + timedelta(hours=7)
+    h = now.hour
+    return 16 <= h < 20
 def _is_session_20_24():
     h = _vn_hour()
     return 20 <= h < 24
