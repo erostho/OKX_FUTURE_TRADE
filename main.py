@@ -1126,7 +1126,7 @@ class OKXClient:
             "mgnMode": "isolated",
             "posSide": pos_side,
         }
-        logging.info(f"[OKX] Close position: {inst_id} | {pos_side}")
+        #logging.info(f"[OKX] Close position: {inst_id} | {pos_side}")
         return self._request("POST", path, body_dict=body)
 
 
