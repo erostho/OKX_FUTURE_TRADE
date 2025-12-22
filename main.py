@@ -3648,6 +3648,7 @@ def run_dynamic_tp(okx: "OKXClient"):
         # ---------- 10) emergency SL theo pnl (follow tp_dyn_threshold) ----------
         if pnl_pct <= -sl_cap_pnl:
             logging.info("[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL -> CẮT LỖ KHẨN CẤP.", instId, pnl_pct, sl_cap_pnl)
+            logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
             try:
                 mark_symbol_sl(instId, "emergency_sl")
                 okx.close_swap_position(instId, posSide)
