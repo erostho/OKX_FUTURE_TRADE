@@ -3891,16 +3891,13 @@ def run_dynamic_tp(okx: "OKXClient"):
                     offset_bps=6.0,
                     timeout_sec=3,
                 )
-                logging.info("[TP-TRAIL] Closed %s via %s (TP trailing).", instId, used)
+                logging.info("[CLOSE] reason=TRAILING pnl=%.2f%% inst=%s side=%s via=%s", pnl_pct, instId, posSide, used)
             except Exception as e:
                 logging.error("[TP-TRAIL] Lỗi đóng lệnh %s: %s", instId, e)
             _reset_state(pos_key)
             continue
-
         logging.info("[TP-DYN] Giữ lệnh %s – chưa đến điểm thoát.", instId)
-
     logging.info("[TP-DYN] ===== DYNAMIC TP DONE =====")
-
 
 
 def detect_market_regime(okx: "OKXClient"):
