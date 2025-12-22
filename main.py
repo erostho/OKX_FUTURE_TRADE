@@ -43,7 +43,7 @@ SYMBOL_COOLDOWN_MINUTES = 60      # khóa 2 giờ
 
 # Scanner config
 MIN_ABS_CHANGE_PCT = 2.0      # chỉ lấy coin |24h change| >= 2%
-MIN_VOL_USDT = 100000         # min 24h volume quote
+MIN_VOL_USDT = 500000         # min 24h volume quote
 TOP_N_BY_CHANGE = 300         # universe: top 300 theo độ biến động
 
 # Google Sheet headers
@@ -131,7 +131,7 @@ ALT_SWEEP_LOCK_MINUTES = 10         # khóa symbol 10 phút
 ALT_SWEEP_LOCKS: dict[str, int] = {}  # instId -> lock_until_utc_ms
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
-PUMP_MIN_VOL_USDT_24H   = 200000     # volume USDT 24h tối thiểu
+PUMP_MIN_VOL_USDT_24H   = 500000     # volume USDT 24h tối thiểu
 PUMP_PRE_TOP_N          = 300       # lấy top 300 coin theo độ biến động 24h để refine
 
 PUMP_MIN_CHANGE_15M     = 1.0       # %change 15m tối thiểu theo hướng LONG/SHORT
