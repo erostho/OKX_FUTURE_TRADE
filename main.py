@@ -3456,7 +3456,7 @@ def run_dynamic_tp(okx: "OKXClient"):
     """
 
     def _reset_state(pos_key: str):
-        EARLY_FAIL_REACHED_PROFIT.pop(pos_key, None)
+        EARLY_FAIL_REACHED_PROFIT.pop((pos_key + "_ARM"), None)
         TP_TRAIL_PEAK_PNL.pop(pos_key, None)
         TP_LADDER_BE_MOVED.pop(pos_key, None)
         TP_BE_TIER.pop(pos_key, None)
@@ -3626,27 +3626,42 @@ def run_dynamic_tp(okx: "OKXClient"):
         if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (peak_pnl >= EARLY_FAIL_NEVER_REACHED_PROFIT_PCT):
             EARLY_FAIL_REACHED_PROFIT[pos_key] = True
 
+        # 9.2) EARLY 2-NHỊP: chạm ngưỡng lần 1 -> ARM, lần 2 liên tiếp -> CLOSE
         if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (pnl_pct <= EARLY_FAIL_CUT_LOSS_PCT):
-            logging.warning(
-                "[EARLY-FAIL] %s %s peak=%.2f%% pnl=%.2f%% (chưa lên +%.1f%% mà đã xuống %.1f%%) => CLOSE",
-                instId, posSide, peak_pnl, pnl_pct,
-                EARLY_FAIL_NEVER_REACHED_PROFIT_PCT, EARLY_FAIL_CUT_LOSS_PCT
-            )
-            try:
-                mark_symbol_sl(instId, "early_fail")
-                maker_close_position_with_timeout(
-                    okx=okx,
-                    inst_id=instId,
-                    pos_side=posSide,
-                    sz=sz,
-                    last_px=c_now,
-                    offset_bps=6.0,
-                    timeout_sec=3,
+            # nhịp 1: chỉ ARM, không đóng ngay
+            if not EARLY_FAIL_REACHED_PROFIT.get((pos_key + "_ARM"), False):
+                EARLY_FAIL_REACHED_PROFIT[(pos_key + "_ARM")] = True
+                logging.warning(
+                    "[EARLY-ARM] %s %s peak=%.2f%% pnl=%.2f%% (chưa lên +%.1f%% mà đã xuống %.1f%%) -> WAIT 1 CYCLE",
+                    instId, posSide, peak_pnl, pnl_pct,
+                    EARLY_FAIL_NEVER_REACHED_PROFIT_PCT, EARLY_FAIL_CUT_LOSS_PCT
                 )
-            except Exception as e:
-                logging.error("[EARLY-FAIL] Lỗi đóng lệnh %s: %s", instId, e)
-            _reset_state(pos_key)
-            continue
+            else:
+                # nhịp 2: vẫn dưới ngưỡng ở vòng kế tiếp -> CLOSE
+                logging.warning(
+                    "[EARLY-FAIL] %s %s peak=%.2f%% pnl=%.2f%% (2nd hit) => CLOSE",
+                    instId, posSide, peak_pnl, pnl_pct
+                )
+                try:
+                    mark_symbol_sl(instId, "early_fail")
+                    maker_close_position_with_timeout(
+                        okx=okx,
+                        inst_id=instId,
+                        pos_side=posSide,
+                        sz=sz,
+                        last_px=c_now,
+                        offset_bps=6.0,
+                        timeout_sec=3,
+                    )
+                    logging.info("[CLOSE] reason=EARLY pnl=%.2f%% inst=%s side=%s", pnl_pct, instId, posSide)
+                except Exception as e:
+                    logging.error("[EARLY-FAIL] Lỗi đóng lệnh %s: %s", instId, e)
+                _reset_state(pos_key)
+                continue
+        else:
+            # reset ARM khi đã hồi lên khỏi ngưỡng EARLY
+            if EARLY_FAIL_REACHED_PROFIT.get((pos_key + "_ARM"), False):
+                EARLY_FAIL_REACHED_PROFIT[(pos_key + "_ARM")] = False
 
         # ---------- 10) emergency SL theo pnl (follow tp_dyn_threshold) ----------
         if pnl_pct <= -sl_cap_pnl:
