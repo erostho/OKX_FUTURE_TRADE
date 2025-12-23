@@ -3664,67 +3664,40 @@ def run_dynamic_tp(okx: "OKXClient"):
         ladder_closed = False
         pos_key = f"{instId}_{posSide}"
         if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
-            # 0) Đồng bộ trạng thái BE từ OCO (luôn infer mỗi vòng để chống spam cancel)
-            try:
-                is_be, tier, _sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-                if is_be:
-                    TP_LADDER_BE_MOVED[pos_key] = True
-                    TP_BE_TIER[pos_key] = max(int(TP_BE_TIER.get(pos_key, 0) or 0), int(tier or 0))
-            except Exception:
-                pass
-
-            # 1) Xác định tier mong muốn theo pnl hiện tại
-            desired_tier = 0
-            desired_offset = TP_LADDER_BE_OFFSET_PCT
-            if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
-                for i, (thr, off) in enumerate(TP_BE_TIERS, start=1):
-                    if pnl_pct >= thr:
-                        desired_tier = i
-                        desired_offset = off
-
+            # (A) Infer BE trực tiếp từ OCO để chống cron restart (dict reset vẫn nhận ra đã BE)
+            is_be, inferred_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
+            if is_be:
+                TP_LADDER_BE_MOVED[pos_key] = True
+                TP_BE_TIER[pos_key] = max(int(TP_BE_TIER.get(pos_key, 0) or 0), int(inferred_tier or 0))
+        
             current_tier = int(TP_BE_TIER.get(pos_key, 0) or 0)
-
-            # 2) Nếu đã BE rồi: chỉ nâng tier khi desired_tier > current_tier
+        
+            # (B) Nếu đã BE rồi thì SKIP (chỉ nâng khi lên tier cao hơn)
             if TP_LADDER_BE_MOVED.get(pos_key, False):
-                if desired_tier > current_tier:
-                    moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
-                    # Dù moved True/False, luôn re-infer để cập nhật đúng trạng thái
-                    try:
-                        is_be, tier, _sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-                        if is_be:
-                            TP_LADDER_BE_MOVED[pos_key] = True
-                            TP_BE_TIER[pos_key] = max(int(tier), int(desired_tier))
-                    except Exception:
-                        TP_BE_TIER[pos_key] = max(current_tier, desired_tier)
-                    if moved:
-                        logging.warning(
-                            "[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
-                            instId, posSide, desired_tier, pnl_pct, float(desired_offset)
-                        )
-                else:
-                    logging.info(
-                        "[BE] %s %s SKIP | đã dời BE rồi (tier=%s) | pnl=%.2f%%",
-                        instId, posSide, current_tier, pnl_pct
-                    )
+                logging.info(
+                    "[BE] %s %s SKIP | already_BE tier=%s | pnl=%.2f%% | sl_now=%.8f",
+                    instId, posSide, current_tier, pnl_pct, float(sl_now or 0.0)
+                )
             else:
-                # 3) Chưa BE: chỉ move khi đủ điều kiện trigger
-                if desired_tier > 0:
-                    moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
-                    # Dù moved True/False, luôn re-infer để cập nhật đúng trạng thái
-                    try:
-                        is_be, tier, _sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-                        if is_be:
-                            TP_LADDER_BE_MOVED[pos_key] = True
-                            TP_BE_TIER[pos_key] = max(int(tier), int(desired_tier))
-                    except Exception:
+                # (C) Chưa BE: nếu pnl đủ trigger thì move về tier tương ứng
+                if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
+                    desired_tier = 0
+                    desired_offset = TP_LADDER_BE_OFFSET_PCT
+                    for i, (thr, off) in enumerate(TP_BE_TIERS, start=1):
+                        if pnl_pct >= thr:
+                            desired_tier = i
+                            desired_offset = off
+        
+                    # chỉ move nếu tier > current (và current lúc này là 0)
+                    if desired_tier > current_tier:
+                        moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
                         if moved:
                             TP_LADDER_BE_MOVED[pos_key] = True
-                            TP_BE_TIER[pos_key] = int(desired_tier)
-                    if moved:
-                        logging.warning(
-                            "[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
-                            instId, posSide, desired_tier, pnl_pct, float(desired_offset)
-                        )
+                            TP_BE_TIER[pos_key] = desired_tier
+                            logging.warning(
+                                "[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
+                                instId, posSide, desired_tier, pnl_pct, desired_offset
+                            )
             # LOG POS
             logging.info(
                 "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s)",
