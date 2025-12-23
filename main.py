@@ -3301,14 +3301,17 @@ def move_oco_sl_to_be(okx, inst_id, pos_side, sz, entry_px, offset_pct: float) -
         sl_be = entry_px * (1.0 + offset_pct / 100.0)
     else:
         sl_be = entry_px * (1.0 - offset_pct / 100.0)
-    # Anti-spam: nếu SL hiện tại đã "tốt hơn hoặc bằng" BE thì KHÔNG MOVE -> trả False
-    if sl_now > 0:
-        if pos_side == "long" and sl_now >= sl_be:
-            logging.warning("[BE] %s long SKIP (đã BE sẵn) | sl_now=%.8f >= target_be=%.8f", inst_id, sl_now, sl_be)
-            return False
-        if pos_side == "short" and sl_now <= sl_be:
-            logging.warning("[BE] %s short SKIP (đã BE sẵn) | sl_now=%.8f <= target_be=%.8f", inst_id, sl_now, sl_be)
-            return False
+    # Anti-spam: nếu SL hiện tại đã gần target BE thì SKIP (tránh cancel/đặt lại y chang)
+    if sl_now > 0 and sl_be > 0:
+        tol_pct = 0.05  # 0.05% tolerance
+        if pos_side == "long":
+            if sl_now >= sl_be * (1.0 - tol_pct / 100.0):
+                logging.warning("[BE] %s long SKIP (already near target) | sl_now=%.8f target_be=%.8f", inst_id, sl_now, sl_be)
+                return False
+        else:
+            if sl_now <= sl_be * (1.0 + tol_pct / 100.0):
+                logging.warning("[BE] %s short SKIP (already near target) | sl_now=%.8f target_be=%.8f", inst_id, sl_now, sl_be)
+                return False
     try:
         okx.cancel_algos(inst_id, [algo_id])
     except Exception as e:
@@ -3661,15 +3664,14 @@ def run_dynamic_tp(okx: "OKXClient"):
         ladder_closed = False
         pos_key = f"{instId}_{posSide}"
         if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
-            # 0) Đồng bộ trạng thái BE từ OCO (để tránh restart/crontab làm mất state)
-            if not TP_LADDER_BE_MOVED.get(pos_key, False):
-                try:
-                    is_be, tier, _sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
-                    if is_be:
-                        TP_LADDER_BE_MOVED[pos_key] = True
-                        TP_BE_TIER[pos_key] = int(tier)
-                except Exception:
-                    pass
+            # 0) Đồng bộ trạng thái BE từ OCO (luôn infer mỗi vòng để chống spam cancel)
+            try:
+                is_be, tier, _sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
+                if is_be:
+                    TP_LADDER_BE_MOVED[pos_key] = True
+                    TP_BE_TIER[pos_key] = max(int(TP_BE_TIER.get(pos_key, 0) or 0), int(tier or 0))
+            except Exception:
+                pass
 
             # 1) Xác định tier mong muốn theo pnl hiện tại
             desired_tier = 0
