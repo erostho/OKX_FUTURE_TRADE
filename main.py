@@ -71,6 +71,14 @@ SL_DYN_SOFT_PCT_BAD  = 2.0   # thị trường xấu → cắt sớm hơn
 SL_DYN_TREND_PCT = 1.0       # 1%/15m đi ngược chiều thì coi là mạnh
 SL_DYN_LOOKBACK = 3          # số cây 5m/15m để đo trend ngắn
 
+# ---- FOLLOW-THROUGH filter: phân biệt continuation vs spike exhaustion (5m) ----
+PUMP_FOLLOW_THROUGH_ENABLED = True
+# candle confirm (nến -2) phải cùng hướng và có lực tối thiểu so với nến spike (nến -3)
+PUMP_FT_BODY_MIN_RATIO = 0.50      # body_confirm >= 50% body_spike
+PUMP_FT_VOL_MIN_RATIO  = 0.60      # vol_confirm  >= 60% vol_spike
+PUMP_FT_CLOSEPOS_LONG_MIN  = 0.60  # close nằm trên 60% range (nến confirm) cho LONG
+PUMP_FT_CLOSEPOS_SHORT_MAX = 0.40  # close nằm dưới 40% range (nến confirm) cho SHORT
+
 # SL planned tối đa (khi đặt TP/SL ban đầu)
 MAX_PLANNED_SL_PNL_PCT = 6.0   # cho phép lỗ tối đa 6% PnL nếu chạm SL
 MAX_SL_PNL_PCT = 6
@@ -2191,6 +2199,37 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
 
         if direction is None:
             continue
+        # ===== FOLLOW-THROUGH FILTER (5m): tránh vào đúng nến spike bị xả =====
+        # Ý tưởng: coi nến -3 là "spike", nến -2 là "confirm" (đều là nến đã đóng).
+        # Chỉ cho vào nếu nến confirm còn cùng hướng + đủ lực (body/vol/close position).
+        if PUMP_FOLLOW_THROUGH_ENABLED:
+            if len(c5_sorted) < 4:
+                continue
+        
+            sp = c5_sorted[-3]   # spike candle (closed)
+            cf = c5_sorted[-2]   # confirm candle (closed)
+        
+            sp_o, sp_h, sp_l, sp_c, sp_v = safe_float(sp[1]), safe_float(sp[2]), safe_float(sp[3]), safe_float(sp[4]), safe_float(sp[5])
+            cf_o, cf_h, cf_l, cf_c, cf_v = safe_float(cf[1]), safe_float(cf[2]), safe_float(cf[3]), safe_float(cf[4]), safe_float(cf[5])
+        
+            sp_rng = max(sp_h - sp_l, 1e-8)
+            cf_rng = max(cf_h - cf_l, 1e-8)
+            sp_body = abs(sp_c - sp_o)
+            cf_body = abs(cf_c - cf_o)
+            cf_close_pos = (cf_c - cf_l) / cf_rng  # 0..1
+        
+            # ratio check
+            body_ok = (sp_body <= 0) or (cf_body >= sp_body * PUMP_FT_BODY_MIN_RATIO)
+            vol_ok  = (sp_v   <= 0) or (cf_v   >= sp_v   * PUMP_FT_VOL_MIN_RATIO)
+        
+            if direction == "LONG":
+                # confirm phải là nến xanh + close nằm cao
+                if not (cf_c > cf_o and cf_close_pos >= PUMP_FT_CLOSEPOS_LONG_MIN and body_ok and vol_ok):
+                    continue
+            else:  # SHORT
+                # confirm phải là nến đỏ + close nằm thấp
+                if not (cf_c < cf_o and cf_close_pos <= PUMP_FT_CLOSEPOS_SHORT_MAX and body_ok and vol_ok):
+                    continue
 
         # ===== V2 FILTER 1: BTC 5m đồng pha =====
         if btc_5m is not None:
