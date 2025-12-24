@@ -85,7 +85,7 @@ MAX_SL_PNL_PCT = 6
 # SL khẩn cấp theo PnL%
 MAX_EMERGENCY_SL_PNL_PCT = 4.5  # qua -4.5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
-TP_TRAIL_SERVER_MIN_PNL_PCT = 10.0   # chỉ bật trailing server khi PnL >= 10%
+TP_TRAIL_SERVER_MIN_PNL_PCT = 8.0   # chỉ bật trailing server khi PnL >= 8%
 TRAIL_SERVER_CALLBACK_PCT = 1.3   # giá rút lại 7% từ đỉnh thì cắt
 
 # ===== PRO: PROFIT LOCK (<10%) =====
@@ -113,7 +113,7 @@ TP_BE_TIERS = [
 TP_LADDER_BE_TRIGGER_PNL_PCT = 5.0
 TP_LADDER_BE_OFFSET_PCT = 0.2  # tránh quét đúng entry (0.05~0.2)
 TP_LADDER_RULES = [(9.0, 5.0), (7.0, 3.0)]  # check từ bậc cao -> thấp
-TP_LADDER_SERVER_THRESHOLD = 10.0
+TP_LADDER_SERVER_THRESHOLD = 8.0
 TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
 
@@ -122,7 +122,7 @@ EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 4   # chưa từng đạt +3.5%
 EARLY_FAIL_CUT_LOSS_PCT = -4              # mà đã xuống -4% => cắt ngay
 
 # ======== TRAILING TP CONFIG ========
-TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
+TP_TRAIL_MIN_PNL_PCT   = 8.0   # chỉ bắt đầu trailing khi pnl >= 8%
 TP_TRAIL_CALLBACK_PCT  = 1.3    # giá rút lại 7%pnl từ đỉnh thì cắt
 
 # Lưu đỉnh PnL cho từng vị thế để trailing local
@@ -135,7 +135,7 @@ ANTI_SWEEP_LOCK_MINUTES = 10
 
 # ===== PRO: ANTI-SWEEP per symbol (ALT) =====
 ALT_SWEEP_MOVE_PCT = 1.0            # mỗi chiều >=1% trong 1 nến 5m
-ALT_SWEEP_LOCK_MINUTES = 10         # khóa symbol 10 phút
+ALT_SWEEP_LOCK_MINUTES = 15         # khóa symbol 15 phút
 ALT_SWEEP_LOCKS: dict[str, int] = {}  # instId -> lock_until_utc_ms
 
 PUMP_MIN_ABS_CHANGE_24H = 2.0       # |%change 24h| tối thiểu để được xem xét (lọc coin chết)
