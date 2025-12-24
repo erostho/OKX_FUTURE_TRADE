@@ -91,8 +91,8 @@ TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 # Mỗi mốc chỉ update 1 lần
 
 TP_BE_TIERS = [
-    (3.0, 0.15),  # >=2%  -> BE +0.15%
-    (5.0, 0.25),  # >=5%  -> BE +0.25% (tuỳ bạn có muốn nâng BE không)
+    #(3.0, 0.15),  # >=2%  -> BE +0.15%
+    (5.0, 0.25),  # >=5%  -> BE +0.25% 
     (8.0, 0.35),  # >=8%  -> BE +0.35%
 ]
 
@@ -102,7 +102,7 @@ TP_BE_TIERS = [
 # - peak>=7% & pnl<=3%  -> chốt
 # - peak>=9% & pnl<=5%  -> chốt
 # - peak>=10% -> giao cho trailing server-side hiện có
-TP_LADDER_BE_TRIGGER_PNL_PCT = 3.0
+TP_LADDER_BE_TRIGGER_PNL_PCT = 5.0
 TP_LADDER_BE_OFFSET_PCT = 0.2  # tránh quét đúng entry (0.05~0.2)
 TP_LADDER_RULES = [(9.0, 5.0), (7.0, 3.0)]  # check từ bậc cao -> thấp
 TP_LADDER_SERVER_THRESHOLD = 10.0
@@ -110,8 +110,8 @@ TP_LADDER_BE_MOVED = {}  # key=f"{instId}_{posSide}" -> bool
 EARLY_FAIL_REACHED_PROFIT = {}  # key=f"{instId}_{posSide}" -> bool
 
 # ===== EARLY FAIL-SAFE (anti reverse right after entry) =====
-EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 3.5   # chưa từng đạt +3.5%
-EARLY_FAIL_CUT_LOSS_PCT = -3.5              # mà đã xuống -4% => cắt ngay
+EARLY_FAIL_NEVER_REACHED_PROFIT_PCT = 4   # chưa từng đạt +3.5%
+EARLY_FAIL_CUT_LOSS_PCT = -4              # mà đã xuống -4% => cắt ngay
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 10.0   # chỉ bắt đầu trailing khi pnl >= 10%
@@ -3440,16 +3440,10 @@ def run_dynamic_tp(okx: "OKXClient"):
     """
     TP động + SL động + TP trailing cho các lệnh futures đang mở.
 
-    Giữ:
-      - Soft SL theo trend (SL_DYN_SOFT_PCT_GOOD/BAD, SL_DYN_LOOKBACK, SL_DYN_TREND_PCT)
-      - SL khẩn cấp theo PnL% (MAX_EMERGENCY_SL_PNL_PCT) + follow tp_dyn_threshold
-      - EARLY FAIL-SAFE
-      - Ladder BE + ladder close (<10%) + server trailing (>=10%)
-      - TP-DYN (2/4) CHỈ khi đã BE và pnl < 10% (và ladder chưa close)
-
-    Sửa chồng chéo:
-      - Đoạn "7) KẾT HỢP TP ĐỘNG + TP TRAILING" chỉ còn trailing (peak->tụt),
-        KHÔNG còn đóng theo 1/4 tín hiệu nữa (vì TP-DYN2 đã xử lý 2/4).
+    QUY ƯỚC TÁCH QUYỀN (SAU KHI SỬA):
+      - pnl < 6%        : TP-DYN + EARLY + EMERGENCY (ĐỘC QUYỀN)
+      - 6% <= pnl < 10% : BE + LADDER (ĐỘC QUYỀN)
+      - pnl >= 10%      : SERVER TRAILING OKX (ĐỘC QUYỀN TUYỆT ĐỐI)
     """
 
     def _reset_state(pos_key: str):
@@ -3460,425 +3454,180 @@ def run_dynamic_tp(okx: "OKXClient"):
 
     logging.info("[TP-DYN] === BẮT ĐẦU KIỂM TRA TP ===")
     positions = okx.get_open_positions()
-    logging.info("[TP-DYN] Số vị thế đang mở: %d", len(positions))
     if not positions:
-        logging.info("[TP-DYN] Không có vị thế futures nào đang mở.")
         return
 
-    # --- BỐI CẢNH CHUNG (tính 1 lần cho cả vòng) ---
     try:
-        market_regime = detect_market_regime(okx)  # GOOD / BAD / ...
-    except Exception as e:
-        logging.error("[TP-DYN] Lỗi detect_market_regime: %s", e)
+        market_regime = detect_market_regime(okx)
+    except Exception:
         market_regime = "UNKNOWN"
 
-    # --- CONFIG CHO TP TRAILING (local) ---
     TP_TRAIL_START_PNL_PCT = 8.0
-    TP_TRAIL_EXIT_PNL_PCT = 4.0
+    TP_TRAIL_EXIT_PNL_PCT  = 4.0
     TP_TRAIL_LOOKBACK_BARS = 30
 
     for p in positions:
-        # ---------- 0) đọc position ----------
         try:
-            instId = p.get("instId")
-            inst_id = instId
-            posSide = p.get("posSide")  # 'long' / 'short'
-            pos_side = posSide
-
-            pos = safe_float(p.get("pos", "0"))
-            avail = safe_float(p.get("availPos", pos))
-            sz = avail if avail > 0 else pos
-            avg_px = safe_float(p.get("avgPx", "0"))
-
-            logging.info("[TP-DYN] -> Kiểm tra %s | posSide=%s", instId, posSide)
-        except Exception as e:
-            logging.error("[TP-DYN] Lỗi đọc position: %s", e)
+            instId   = p.get("instId")
+            posSide  = p.get("posSide")
+            pos      = safe_float(p.get("pos", "0"))
+            avail    = safe_float(p.get("availPos", pos))
+            sz       = avail if avail > 0 else pos
+            avg_px   = safe_float(p.get("avgPx", "0"))
+        except Exception:
             continue
 
         pos_key = f"{instId}_{posSide}"
-
-        if (not instId) or (sz <= 0) or (avg_px <= 0):
+        if not instId or sz <= 0 or avg_px <= 0:
             _reset_state(pos_key)
             continue
 
-        # ---------- 1) lấy nến 5m ----------
+        # ---------- candles ----------
         try:
             c5 = okx.get_candles(instId, bar="5m", limit=TP_TRAIL_LOOKBACK_BARS)
-        except Exception as e:
-            logging.warning("[TP-DYN] Lỗi get_candles 5m %s: %s", instId, e)
-            continue
-
-        if (not c5) or (len(c5) < TP_DYN_FLAT_BARS + 10):
-            continue
-
-        try:
-            c5_sorted = sorted(c5, key=lambda x: int(x[0]))
         except Exception:
-            c5_sorted = c5
+            continue
+        if not c5 or len(c5) < TP_DYN_FLAT_BARS + 10:
+            continue
 
+        c5_sorted = sorted(c5, key=lambda x: int(x[0]))
         closes = [safe_float(k[4]) for k in c5_sorted]
         opens  = [safe_float(k[1]) for k in c5_sorted]
         highs  = [safe_float(k[2]) for k in c5_sorted]
         lows   = [safe_float(k[3]) for k in c5_sorted]
         vols   = [safe_float(k[5]) for k in c5_sorted]
 
-        c_now   = closes[-1]
-        c_prev1 = closes[-2]
-        c_prev2 = closes[-3]
-
-        o_now   = opens[-1]
-        o_prev1 = opens[-2]
-        h_prev1 = highs[-2]
-        l_prev1 = lows[-2]
+        c_now, c_prev1, c_prev2 = closes[-1], closes[-2], closes[-3]
+        o_now, o_prev1 = opens[-1], opens[-2]
+        h_prev1, l_prev1 = highs[-2], lows[-2]
         vol_now = vols[-1]
 
-        # ---------- 2) PnL realtime ----------
-        # (giữ price_pct vì code cũ có, dù hiện không dùng)
-        if posSide == "long":
-            price_pct = (c_now - avg_px) / avg_px * 100.0
-        else:
-            price_pct = (avg_px - c_now) / avg_px * 100.0
-
+        # ---------- pnl ----------
         pnl_pct = calc_realtime_pnl_pct(p, FUT_LEVERAGE)
         if pnl_pct is None:
-            logging.warning("[TP-DYN] Không tính được PnL realtime cho %s, bỏ qua.", instId)
             continue
 
-        above_10 = pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT  # thường = 10.0
+        above_10 = pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT
 
-        # ---------- 4) chọn tp_dyn_threshold (tính 1 lần) ----------
-        in_deadzone = is_deadzone_time_vn()
-        if in_deadzone:
+        # ---------- tp_dyn_threshold ----------
+        if is_deadzone_time_vn():
             tp_dyn_threshold = 1.5
         else:
-            if market_regime == "BAD":
-                tp_dyn_threshold = 2.0
-            else:
-                tp_dyn_threshold = TP_DYN_MIN_PROFIT_PCT  # default 3%
+            tp_dyn_threshold = 2.0 if market_regime == "BAD" else TP_DYN_MIN_PROFIT_PCT
 
-        # ---------- 5) emergency SL follow tp_dyn_threshold ----------
-        SL_FOLLOW_TP_MULT = 1.1
-        sl_cap_pnl = min(MAX_EMERGENCY_SL_PNL_PCT, tp_dyn_threshold * SL_FOLLOW_TP_MULT)
+        # ---------- emergency SL cap ----------
+        sl_cap_pnl = min(MAX_EMERGENCY_SL_PNL_PCT, tp_dyn_threshold * 1.1)
         sl_cap_pnl = max(3.0, sl_cap_pnl)
 
-        # ---------- 6) update peak pnl realtime ----------
-        prev_peak = TP_TRAIL_PEAK_PNL.get(pos_key, None)
-        if prev_peak is None:
-            TP_TRAIL_PEAK_PNL[pos_key] = pnl_pct
-        else:
-            TP_TRAIL_PEAK_PNL[pos_key] = max(float(prev_peak), float(pnl_pct))
-        peak_pnl = float(TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct))
+        # ---------- peak pnl ----------
+        TP_TRAIL_PEAK_PNL[pos_key] = max(
+            TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct), pnl_pct
+        )
+        peak_pnl = TP_TRAIL_PEAK_PNL[pos_key]
 
-        # ---------- 7) timeout 120' pnl < 5% ----------
+        # ---------- timeout ----------
         open_ms = int(p.get("cTime", "0") or 0)
         if open_ms > 0:
             age_min = (time.time() * 1000 - open_ms) / 60000.0
             if age_min >= 120 and pnl_pct < 5.0:
-                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
-                                instId, posSide, age_min, pnl_pct)
-                try:
-                    mark_symbol_sl(instId, "timeout_120m")
-                    okx.close_swap_position(instId, posSide)
-                except Exception as e:
-                    logging.error("[TIMEOUT] Lỗi đóng lệnh %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-
-        # ---------- 8) soft SL theo trend ----------
-        soft_sl_pct = SL_DYN_SOFT_PCT_BAD if market_regime == "BAD" else SL_DYN_SOFT_PCT_GOOD
-        if pnl_pct <= -soft_sl_pct:
-            try:
-                c = okx.get_candles(instId, bar="5m", limit=SL_DYN_LOOKBACK + 1)
-                c_sorted = sorted(c, key=lambda x: int(x[0]))
-                closes_tr = [float(k[4]) for k in c_sorted]
-                if len(closes_tr) >= SL_DYN_LOOKBACK + 1:
-                    base = closes_tr[-1 - SL_DYN_LOOKBACK]
-                    trend_pct = (closes_tr[-1] - base) / base * 100.0
-                else:
-                    trend_pct = 0.0
-            except Exception as e:
-                logging.warning("[SL-DYN] Lỗi lấy candles cho %s: %s", instId, e)
-                trend_pct = 0.0
-
-            trend_against = False
-            if posSide == "long" and trend_pct <= -SL_DYN_TREND_PCT:
-                trend_against = True
-            if posSide == "short" and trend_pct >= SL_DYN_TREND_PCT:
-                trend_against = True
-
-            if trend_against:
-                logging.info(
-                    "[SL-DYN] %s lỗ %.2f%% & trend ngược %.2f%% → CẮT LỖ SỚM (soft SL).",
-                    instId, pnl_pct, trend_pct
-                )
-                try:
-                    mark_symbol_sl(instId, "soft_sl")
-                    okx.close_swap_position(instId, posSide)
-                except Exception as e:
-                    logging.error("[SL-DYN] Lỗi đóng lệnh %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-
-        # ---------- 9) EARLY FAIL-SAFE ----------
-        if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (peak_pnl >= EARLY_FAIL_NEVER_REACHED_PROFIT_PCT):
-            EARLY_FAIL_REACHED_PROFIT[pos_key] = True
-
-        # 9.2) EARLY 2-NHỊP: chạm ngưỡng lần 1 -> ARM, lần 2 liên tiếp -> CLOSE
-        if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (pnl_pct <= EARLY_FAIL_CUT_LOSS_PCT):
-            # nhịp 1: chỉ ARM, không đóng ngay
-            if not EARLY_FAIL_REACHED_PROFIT.get((pos_key + "_ARM"), False):
-                EARLY_FAIL_REACHED_PROFIT[(pos_key + "_ARM")] = True
-                logging.warning(
-                    "[EARLY-ARM] %s %s peak=%.2f%% pnl=%.2f%% (chưa lên +%.1f%% mà đã xuống %.1f%%) -> WAIT 1 CYCLE",
-                    instId, posSide, peak_pnl, pnl_pct,
-                    EARLY_FAIL_NEVER_REACHED_PROFIT_PCT, EARLY_FAIL_CUT_LOSS_PCT
-                )
-            else:
-                # nhịp 2: vẫn dưới ngưỡng ở vòng kế tiếp -> CLOSE
-                logging.warning(
-                    "[EARLY-FAIL] %s %s peak=%.2f%% pnl=%.2f%% (2nd hit) => CLOSE",
-                    instId, posSide, peak_pnl, pnl_pct
-                )
-                try:
-                    mark_symbol_sl(instId, "early_fail")
-                    maker_close_position_with_timeout(
-                        okx=okx,
-                        inst_id=instId,
-                        pos_side=posSide,
-                        sz=sz,
-                        last_px=c_now,
-                        offset_bps=6.0,
-                        timeout_sec=3,
-                    )
-                    logging.info("[CLOSE] reason=EARLY pnl=%.2f%% inst=%s side=%s", pnl_pct, instId, posSide)
-                except Exception as e:
-                    logging.error("[EARLY-FAIL] Lỗi đóng lệnh %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-        else:
-            # reset ARM khi đã hồi lên khỏi ngưỡng EARLY
-            if EARLY_FAIL_REACHED_PROFIT.get((pos_key + "_ARM"), False):
-                EARLY_FAIL_REACHED_PROFIT[(pos_key + "_ARM")] = False
-
-        # ---------- 10) emergency SL theo pnl (follow tp_dyn_threshold) ----------
-        if pnl_pct <= -sl_cap_pnl:
-            logging.info("[TP-DYN] %s lỗ %.2f%% <= -%.2f%% PnL -> CẮT LỖ KHẨN CẤP.", instId, pnl_pct, sl_cap_pnl)
-            logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
-            try:
-                mark_symbol_sl(instId, "emergency_sl")
                 okx.close_swap_position(instId, posSide)
-            except Exception as e:
-                logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
-            _reset_state(pos_key)
-            continue
+                _reset_state(pos_key)
+                continue
 
-        # ---------- 11) LADDER + BE (<10%) ----------
-        ladder_closed = False
-        pos_key = f"{instId}_{posSide}"
-        if PROFIT_LOCK_ENABLED and pnl_pct < TP_LADDER_SERVER_THRESHOLD:
-            # (A) Infer BE trực tiếp từ OCO để chống cron restart (dict reset vẫn nhận ra đã BE)
-            is_be, inferred_tier, sl_now = infer_be_from_oco(okx, instId, posSide, avg_px)
+        # =====================================================
+        # ZONE 1 — pnl < 6% (TP-DYN + EARLY + EMERGENCY)
+        # =====================================================
+        if pnl_pct < 6:
+            # EARLY FAIL
+            if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (peak_pnl >= EARLY_FAIL_NEVER_REACHED_PROFIT_PCT):
+                EARLY_FAIL_REACHED_PROFIT[pos_key] = True
+
+            if (not EARLY_FAIL_REACHED_PROFIT.get(pos_key, False)) and (pnl_pct <= EARLY_FAIL_CUT_LOSS_PCT):
+                if not EARLY_FAIL_REACHED_PROFIT.get((pos_key + "_ARM"), False):
+                    EARLY_FAIL_REACHED_PROFIT[(pos_key + "_ARM")] = True
+                else:
+                    okx.close_swap_position(instId, posSide)
+                    _reset_state(pos_key)
+                    continue
+            else:
+                EARLY_FAIL_REACHED_PROFIT.pop((pos_key + "_ARM"), None)
+
+            # EMERGENCY SL
+            if pnl_pct <= -sl_cap_pnl:
+                okx.close_swap_position(instId, posSide)
+                _reset_state(pos_key)
+                continue
+
+            # TP-DYN 2/4 (CHỈ KHI ĐÃ BE)
+            if not TP_LADDER_BE_MOVED.get(pos_key, False):
+                continue
+
+            # signals
+            flat_move = not (c_now > c_prev1 > c_prev2) if posSide == "long" else not (c_now < c_prev1 < c_prev2)
+            body_now = abs(c_now - o_now)
+            body_prev = abs(c_prev1 - o_prev1)
+            engulfing = (
+                (c_now < o_now and body_now > body_prev and c_now < l_prev1)
+                if posSide == "long"
+                else (c_now > o_now and body_now > body_prev and c_now > h_prev1)
+            )
+            avg_vol10 = sum(vols[-(TP_DYN_FLAT_BARS + 10):-1]) / max(1, TP_DYN_FLAT_BARS)
+            vol_drop = avg_vol10 > 0 and (vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO
+            ema5 = calc_ema(closes[-(TP_DYN_EMA_LEN + 5):], TP_DYN_EMA_LEN)
+            ema_break = c_now < ema5 if posSide == "long" else c_now > ema5
+
+            hits = sum([flat_move, engulfing, vol_drop, ema_break])
+            if hits >= 2:
+                okx.close_swap_position(instId, posSide)
+                _reset_state(pos_key)
+            continue  # [ZONE LOCK]
+
+        # =====================================================
+        # ZONE 2 — 6% <= pnl < 10% (BE + LADDER)
+        # =====================================================
+        if pnl_pct < TP_TRAIL_SERVER_MIN_PNL_PCT:
+            # infer BE
+            is_be, inferred_tier, _ = infer_be_from_oco(okx, instId, posSide, avg_px)
             if is_be:
                 TP_LADDER_BE_MOVED[pos_key] = True
-                TP_BE_TIER[pos_key] = max(int(TP_BE_TIER.get(pos_key, 0) or 0), int(inferred_tier or 0))
-        
-            current_tier = int(TP_BE_TIER.get(pos_key, 0) or 0)
-        
-            # (B) Nếu đã BE rồi thì SKIP (chỉ nâng khi lên tier cao hơn)
-            if TP_LADDER_BE_MOVED.get(pos_key, False):
-                logging.info(
-                    "[BE] %s %s SKIP | already_BE tier=%s | pnl=%.2f%% | sl_now=%.8f",
-                    instId, posSide, current_tier, pnl_pct, float(sl_now or 0.0)
-                )
-            else:
-                # (C) Chưa BE: nếu pnl đủ trigger thì move về tier tương ứng
+                TP_BE_TIER[pos_key] = max(TP_BE_TIER.get(pos_key, 0), inferred_tier or 0)
+
+            if not TP_LADDER_BE_MOVED.get(pos_key, False):
                 if pnl_pct >= TP_LADDER_BE_TRIGGER_PNL_PCT:
-                    desired_tier = 0
-                    desired_offset = TP_LADDER_BE_OFFSET_PCT
                     for i, (thr, off) in enumerate(TP_BE_TIERS, start=1):
                         if pnl_pct >= thr:
-                            desired_tier = i
-                            desired_offset = off
-        
-                    # chỉ move nếu tier > current (và current lúc này là 0)
-                    if desired_tier > current_tier:
-                        moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
-                        if moved:
-                            TP_LADDER_BE_MOVED[pos_key] = True
-                            TP_BE_TIER[pos_key] = desired_tier
-                            logging.warning(
-                                "[BE] %s %s moved SL->BE tier=%s (pnl=%.2f%%, offset=%.2f%%)",
-                                instId, posSide, desired_tier, pnl_pct, desired_offset
-                            )
-            # LOG POS
-            logging.info(
-                "[POS] %s %s | pnl=%.2f%% | peak=%.2f%% | BE=%s(tier=%s)",
-                instId, posSide,
-                pnl_pct,
-                TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
-                "YES" if TP_LADDER_BE_MOVED.get(pos_key, False) else "NO",
-                TP_BE_TIER.get(pos_key, 0),
-            ) 
-            # 11.2) Ladder close theo peak_pnl
-            closed_by_ladder = False
+                            if move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, off):
+                                TP_LADDER_BE_MOVED[pos_key] = True
+                                TP_BE_TIER[pos_key] = i
+
             for peak_thr, floor_thr in TP_LADDER_RULES:
                 if peak_pnl >= peak_thr and pnl_pct <= floor_thr:
-                    logging.warning(
-                        "[LADDER] %s peak=%.2f%% pnl=%.2f%% hit rule (>=%.1f then <=%.1f) => CLOSE",
-                        instId, peak_pnl, pnl_pct, peak_thr, floor_thr
-                    )
-                    try:
-                        mark_symbol_tp(instId)
-                        maker_close_position_with_timeout(
-                            okx=okx,
-                            inst_id=instId,
-                            pos_side=posSide,
-                            sz=sz,
-                            last_px=c_now,
-                            offset_bps=6.0,
-                            timeout_sec=3,
-                        )
-                        closed_by_ladder = True
-                    except Exception as e:
-                        logging.error("[LADDER] Lỗi đóng lệnh %s: %s", instId, e)
+                    okx.close_swap_position(instId, posSide)
+                    _reset_state(pos_key)
                     break
+            continue  # [ZONE LOCK]
 
-            if closed_by_ladder:
-                _reset_state(pos_key)
-                ladder_closed = True
-                continue  # đóng rồi thì qua vị thế khác
+        # =====================================================
+        # ZONE 3 — pnl >= 10% (SERVER TRAILING ONLY)
+        # =====================================================
+        if has_active_trailing_for_position(okx, instId, posSide):
+            continue
 
-        # ---------- 12) compute max_pnl_window (để dùng trailing peak->tụt) ----------
-        max_pnl_window = 0.0
-        for close_px in closes[-TP_TRAIL_LOOKBACK_BARS:]:
-            if posSide == "long":
-                price_pct_i = (close_px - avg_px) / avg_px * 100.0
-            else:
-                price_pct_i = (avg_px - close_px) / avg_px * 100.0
-            pnl_pct_i = price_pct_i * FUT_LEVERAGE
-            if pnl_pct_i > max_pnl_window:
-                max_pnl_window = pnl_pct_i
-
-        # ---------- 13) server-side trailing khi pnl >= 10% ----------
-        if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-            callback_pct = dynamic_trail_callback_pct(pnl_pct)
-            #callback_pct = 7.0 / float(FUT_LEVERAGE)
-            current_px = c_now if c_now else closes[-1]
-            logging.info(
-                "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
-                "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
-                inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
-            )
-            if has_active_trailing_for_position(okx, inst_id, pos_side):
-                logging.info("[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> không đặt thêm lệnh mới.",
-                             inst_id, pos_side)
-                continue
-            try:
-                cancel_oco_before_trailing(okx, inst_id, pos_side)
-            except Exception as e:
-                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-
-            side_close = "sell" if pos_side == "long" else "buy"
-            try:
-                okx.place_trailing_stop(
-                    inst_id=inst_id,
-                    pos_side=pos_side,
-                    side_close=side_close,
-                    sz=sz,
-                    callback_ratio_pct=callback_pct,
-                    active_px=current_px,
-                    td_mode="isolated",
-                )
-                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
-                             inst_id, pnl_pct, callback_pct)
-            except Exception as e:
-                logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
-
-            continue  # đã giao cho sàn -> bỏ qua TP-DYN bên dưới
-
-        # ---------- 14) 4 tín hiệu TP-DYN ----------
-        if posSide == "long":
-            flat_move = not (c_now > c_prev1 > c_prev2)
-        else:
-            flat_move = not (c_now < c_prev1 < c_prev2)
-
-        body_now = abs(c_now - o_now)
-        body_prev = abs(c_prev1 - o_prev1)
-        if posSide == "long":
-            engulfing = (c_now < o_now) and (body_now > body_prev) and (c_now < l_prev1)
-        else:
-            engulfing = (c_now > o_now) and (body_now > body_prev) and (c_now > h_prev1)
-
-        vols_before = vols[-(TP_DYN_FLAT_BARS + 10):-1]
-        avg_vol10 = sum(vols_before) / max(1, len(vols_before))
-        vol_drop = (avg_vol10 > 0) and ((vol_now / avg_vol10) < TP_DYN_VOL_DROP_RATIO)
-
-        ema5 = calc_ema(closes[-(TP_DYN_EMA_LEN + 5):], TP_DYN_EMA_LEN)
-        ema_break = False
-        if ema5:
-            if posSide == "long":
-                ema_break = c_now < ema5
-            else:
-                ema_break = c_now > ema5
-
-        logging.info(
-            "[TP-DYN] %s pnl=%.2f%% (thr=%.2f%%, max_window=%.2f%%) | flat=%s | engulf=%s | vol_drop=%s | ema_break=%s",
-            instId, pnl_pct, tp_dyn_threshold, max_pnl_window,
-            flat_move, engulfing, vol_drop, ema_break,
+        cancel_oco_before_trailing(okx, instId, posSide)
+        side_close = "sell" if posSide == "long" else "buy"
+        okx.place_trailing_stop(
+            inst_id=instId,
+            pos_side=posSide,
+            side_close=side_close,
+            sz=sz,
+            callback_ratio_pct=dynamic_trail_callback_pct(pnl_pct),
+            active_px=c_now,
+            td_mode="isolated",
         )
+        continue  # END GAME
 
-        # ---------- 15) TP-DYN2: CHỈ khi đã BE ----------
-        if not TP_LADDER_BE_MOVED.get(pos_key, False):
-            continue
-
-        if (not ladder_closed) and (not above_10) and TP_LADDER_BE_MOVED.get(pos_key, False):
-            dyn_hits = (1 if flat_move else 0) + (1 if engulfing else 0) + (1 if vol_drop else 0) + (1 if ema_break else 0)
-            if dyn_hits >= 2:
-                logging.warning(
-                    "[TP-DYN2] %s %s pnl=%.2f%% hit=%d/4 (flat=%s engulf=%s vol=%s ema=%s) => CLOSE",
-                    instId, posSide, pnl_pct, dyn_hits, flat_move, engulfing, vol_drop, ema_break
-                )
-                try:
-                    mark_symbol_tp(instId)
-                    maker_close_position_with_timeout(
-                        okx=okx,
-                        inst_id=instId,
-                        pos_side=posSide,
-                        sz=sz,
-                        last_px=c_now,
-                        offset_bps=6.0,
-                        timeout_sec=3,
-                    )
-                except Exception as e:
-                    logging.error("[TP-DYN2] Lỗi đóng lệnh %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-
-        # ---------- 16) #7: chỉ trailing peak->tụt (KHÔNG đóng theo 1/4 tín hiệu) ----------
-        should_close_trailing = (max_pnl_window >= TP_TRAIL_START_PNL_PCT) and (pnl_pct <= TP_TRAIL_EXIT_PNL_PCT)
-        if should_close_trailing:
-            logging.info(
-                "[TP-TRAIL] %s đã từng lời >= %.2f%% (max=%.2f%%) nhưng hiện còn %.2f%% → CHỐT THEO TRAILING.",
-                instId, TP_TRAIL_START_PNL_PCT, max_pnl_window, pnl_pct
-            )
-            try:
-                mark_symbol_tp(instId)
-                used = maker_close_position_with_timeout(
-                    okx=okx,
-                    inst_id=instId,
-                    pos_side=posSide,
-                    sz=sz,
-                    last_px=c_now,
-                    offset_bps=6.0,
-                    timeout_sec=3,
-                )
-                logging.info("[CLOSE] reason=TRAILING pnl=%.2f%% inst=%s side=%s via=%s", pnl_pct, instId, posSide, used)
-            except Exception as e:
-                logging.error("[TP-TRAIL] Lỗi đóng lệnh %s: %s", instId, e)
-            _reset_state(pos_key)
-            continue
-        logging.info("[TP-DYN] Giữ lệnh %s – chưa đến điểm thoát.", instId)
     logging.info("[TP-DYN] ===== DYNAMIC TP DONE =====")
+
 
 
 def detect_market_regime(okx: "OKXClient"):
