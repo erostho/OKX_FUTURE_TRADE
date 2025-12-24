@@ -3761,51 +3761,23 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         # ---------- 13) server-side trailing khi pnl >= 10% ----------
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-        
-            # 13.0) ANTI-DUPLICATE: nếu đã có trailing server-side thì KHÔNG đặt thêm
-            if has_trailing_server(okx, inst_id, pos_side):
-                logging.info(
-                    "[TP-TRAIL] %s đã có trailing server-side đang chạy (posSide=%s), "
-                    "không đặt thêm.",
-                    inst_id,
-                    pos_side,
-                )
-                # Đã giao cho sàn quản lý -> bỏ qua TP_DYNAMIC phía dưới
-                continue
-        
-            # 13.1) Tính callback động theo PnL hiện tại
-            callback_pct = dynamic_trail_callback_pct(pnl_pct)
-        
-            # 13.2) Lấy GIÁ HIỆN TẠI làm activePx
-            try:
-                current_px = c_now
-            except Exception:
-                current_px = closes[-1]
-        
+            #callback_pct = dynamic_trail_callback_pct(pnl_pct)
+            callback_pct = 7.0 / float(FUT_LEVERAGE)
+            current_px = c_now if c_now else closes[-1]
             logging.info(
                 "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
                 "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
             )
-        
-            # 6.3) Hủy toàn bộ OCO TP/SL cũ trước khi đặt trailing
+            if has_active_trailing_for_position(okx, inst_id, pos_side):
+                logging.info("[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> không đặt thêm lệnh mới.",
+                             inst_id, pos_side)
+                continue
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
-                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s",
-                              inst_id, pos_side, e)
-        
-            # 13.3b) CHỐNG ĐẶT TRÙNG LỆNH TRAILING
-            if has_active_trailing_for_position(okx, inst_id, pos_side):
-                logging.info(
-                    "[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> "
-                    "không đặt thêm lệnh mới.",
-                    inst_id, pos_side,
-                )
-                # đã giao cho sàn trailing rồi thì bỏ qua TP_DYNAMIC phía dưới
-                continue
-        
-            # 13.4) Đặt trailing server-side trên OKX
+                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
+
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 okx.place_trailing_stop(
@@ -3813,24 +3785,16 @@ def run_dynamic_tp(okx: "OKXClient"):
                     pos_side=pos_side,
                     side_close=side_close,
                     sz=sz,
-                    callback_ratio_pct=callback_pct,  # dùng callback động
-                    active_px=current_px,             # GIÁ HIỆN TẠI, KHÔNG PHẢI ENTRY
+                    callback_ratio_pct=callback_pct,
+                    active_px=current_px,
                     td_mode="isolated",
                 )
-                logging.info(
-                    "[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
-                    inst_id, pnl_pct, callback_pct,
-                )
-
+                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
+                             inst_id, pnl_pct, callback_pct)
             except Exception as e:
-                logging.error(
-                    "[TP-TRAIL] Exception khi đặt trailing server cho %s: %s",
-                    inst_id, e,
-                )
-        
-            # khi đã giao trailing cho sàn thì bỏ qua TP_DYNAMIC phía dưới
-            continue
+                logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
 
+            continue  # đã giao cho sàn -> bỏ qua TP-DYN bên dưới
 
         # ---------- 14) 4 tín hiệu TP-DYN ----------
         if posSide == "long":
