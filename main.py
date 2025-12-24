@@ -388,14 +388,11 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     # 1) Nếu chưa đủ 40% thì để nguyên callback mặc định
     if pnl_pct < 40.0:
         return TRAIL_SERVER_CALLBACK_PCT
-
     # 2) Vùng dynamic 40–100%: 5% -> 3.5%
     cb_high = 0.8   # callback ở 40%
     cb_low  = 0.5   # callback ở 100%
-
     if pnl_pct >= 100.0:
         return cb_low
-
     # t từ 0 -> 1 khi pnl từ 40 -> 100
     t = (pnl_pct - 40.0) / (100.0 - 40.0)
     return cb_high + t * (cb_low - cb_high)
@@ -3764,29 +3761,22 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         # ---------- 13) server-side trailing khi pnl >= 10% ----------
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-            if has_trailing_server(okx, inst_id, pos_side):
-                logging.info("[TP-TRAIL] %s đã có trailing server-side đang chạy (posSide=%s), không đặt thêm.",
-                             inst_id, pos_side)
-                continue
-
-            callback_pct = dynamic_trail_callback_pct(pnl_pct)
+            #callback_pct = dynamic_trail_callback_pct(pnl_pct)
+            callback_pct = 7.0 / float(FUT_LEVERAGE)
             current_px = c_now if c_now else closes[-1]
-
             logging.info(
                 "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
                 "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
             )
-
-            try:
-                cancel_oco_before_trailing(okx, inst_id, pos_side)
-            except Exception as e:
-                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-
             if has_active_trailing_for_position(okx, inst_id, pos_side):
                 logging.info("[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> không đặt thêm lệnh mới.",
                              inst_id, pos_side)
                 continue
+            try:
+                cancel_oco_before_trailing(okx, inst_id, pos_side)
+            except Exception as e:
+                logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
 
             side_close = "sell" if pos_side == "long" else "buy"
             try:
