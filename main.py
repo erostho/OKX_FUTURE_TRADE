@@ -3761,8 +3761,8 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         # ---------- 13) server-side trailing khi pnl >= 10% ----------
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-            #callback_pct = dynamic_trail_callback_pct(pnl_pct)
-            callback_pct = 7.0 / float(FUT_LEVERAGE)
+            callback_pct = dynamic_trail_callback_pct(pnl_pct)
+            #callback_pct = 7.0 / float(FUT_LEVERAGE)
             current_px = c_now if c_now else closes[-1]
             logging.info(
                 "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
