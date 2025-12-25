@@ -148,6 +148,23 @@ UNLOCK_BTC_LIMIT = 50
 UNLOCK_VOL_MULT = float(os.getenv("UNLOCK_VOL_MULT", "1.5"))  # vol_now >= 1.5x median(vol_prev20)
 UNLOCK_BODY_RATIO_MIN = float(os.getenv("UNLOCK_BODY_RATIO_MIN", "0.5"))  # body2 >= 50% body1
 UNLOCK_HOLD_TOL = float(os.getenv("UNLOCK_HOLD_TOL", "0.005"))  # giữ giá: 0.5%
+# ===== DEADZONE OVERRIDE (only if STRONG EDGE) =====
+DEADZONE_OVERRIDE_ENABLED = True
+
+DEADZONE_OVERRIDE_BTC_INST = "BTC-USDT-SWAP"
+DEADZONE_OVERRIDE_BTC_BAR  = "15m"
+DEADZONE_OVERRIDE_ALT_BAR  = "5m"
+
+DEADZONE_OVERRIDE_MIN_ALTS = 2          # >=2 coin khác confirm FT cùng hướng BTC
+DEADZONE_OVERRIDE_ALT_TOPN = 120        # lấy top N theo 24h change để test nhanh
+
+# Follow-through strictness
+DEADZONE_FT_BODY_RATIO_MIN = 0.55       # body / range >= 55%
+DEADZONE_FT_MIN_CHANGE_PCT = 0.15       # mỗi nến phải đi >= 0.15% (tránh nhiễu)
+DEADZONE_FT_VOL_MULT       = 1.5        # vol candle2 >= 1.5x median(vol prev20)
+
+# Safety: nếu data thiếu thì coi như FAIL
+DEADZONE_OVERRIDE_FAILSAFE_LOCK = True
 
 # ===== PRO: ANTI-SWEEP per symbol (ALT) =====
 ALT_SWEEP_MOVE_PCT = 1.0            # mỗi chiều >=1% trong 1 nến 5m
@@ -1628,6 +1645,168 @@ def check_day_hard_stop(okx) -> tuple[bool, str]:
         return False, f"day_lock_trigger(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
 
     return True, f"day_ok(pnl={pnl_usdt:.2f})"
+def _candle_to_ohlcv(c):
+    # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+    o = float(c[1]); h = float(c[2]); l = float(c[3]); cl = float(c[4]); v = float(c[5])
+    return o, h, l, cl, v
+
+def _body_ratio(o, h, l, c):
+    rng = max(h - l, 1e-12)
+    body = abs(c - o)
+    return body / rng
+
+def _pct_change(a, b):
+    # from a -> b
+    if a == 0:
+        return 0.0
+    return (b - a) / a * 100.0
+
+def _ft_two_candles_same_dir(c1, c2, body_ratio_min, min_change_pct):
+    """
+    Follow-through: 2 nến đóng (c1, c2) cùng hướng.
+    Điều kiện strict:
+      - cả 2 nến cùng xanh hoặc cùng đỏ (close vs open)
+      - mỗi nến có |%change| >= min_change_pct
+      - candle2 body_ratio >= body_ratio_min (nến xác nhận phải "thật")
+    """
+    o1,h1,l1,cl1,v1 = _candle_to_ohlcv(c1)
+    o2,h2,l2,cl2,v2 = _candle_to_ohlcv(c2)
+
+    dir1 = 1 if cl1 > o1 else (-1 if cl1 < o1 else 0)
+    dir2 = 1 if cl2 > o2 else (-1 if cl2 < o2 else 0)
+    if dir1 == 0 or dir2 == 0 or dir1 != dir2:
+        return False, 0
+
+    chg1 = _pct_change(o1, cl1)
+    chg2 = _pct_change(o2, cl2)
+    if abs(chg1) < min_change_pct or abs(chg2) < min_change_pct:
+        return False, 0
+
+    if _body_ratio(o2, h2, l2, cl2) < body_ratio_min:
+        return False, 0
+
+    return True, dir2  # dir: +1 long, -1 short
+
+def _vol_confirm_strict(candles, idx_c2, vol_mult):
+    """
+    vol candle2 >= vol_mult * median(vol prev20)
+    candles: list newest->oldest hoặc oldest->newest đều được,
+    miễn idx_c2 là index của candle2 trong list đó.
+    """
+    # lấy 20 vol trước candle2
+    if idx_c2 < 20:
+        return False
+    vols = []
+    for j in range(idx_c2 - 20, idx_c2):
+        try:
+            vols.append(float(candles[j][5]))
+        except Exception:
+            pass
+    if not vols:
+        return False
+    vols_sorted = sorted(vols)
+    med = vols_sorted[len(vols_sorted)//2]
+    v2 = float(candles[idx_c2][5])
+    return v2 >= vol_mult * max(med, 1e-12)
+
+def _get_top_swap_symbols_by_change_24h(okx, topn: int):
+    """
+    Lấy danh sách instId SWAP top N theo 24h change (abs).
+    Dựa trên okx.get_swap_tickers().
+    """
+    try:
+        data = okx.get_swap_tickers()
+        rows = data.get("data", []) if isinstance(data, dict) else data
+        items = []
+        for r in rows:
+            inst = r.get("instId") or ""
+            if not inst.endswith("-USDT-SWAP"):
+                continue
+            chg = r.get("chg24h") or r.get("change24h") or r.get("chg")  # tùy payload
+            try:
+                chg = float(chg) * 100.0 if abs(float(chg)) < 2 else float(chg)  # phòng trường hợp dạng ratio
+            except Exception:
+                continue
+            items.append((inst, abs(chg)))
+        items.sort(key=lambda x: x[1], reverse=True)
+        return [x[0] for x in items[:topn]]
+    except Exception as e:
+        logging.error("[DEADZONE-OVERRIDE] get top symbols error: %s", e)
+        return []
+
+def deadzone_override_strong_edge(okx):
+    """
+    True nếu đủ điều kiện cực mạnh để override DEADZONE hard lock:
+      1) BTC 15m có 2 nến FT cùng hướng + candle2 body_ratio
+      2) volume candle2 confirm
+      3) >=2 alt FT 5m cùng hướng BTC trong topN 24h change
+    """
+    try:
+        # --- 1) BTC FT on 15m (need 2 closed candles) ---
+        btc = DEADZONE_OVERRIDE_BTC_INST
+        btc_c = okx.get_candles(btc, bar=DEADZONE_OVERRIDE_BTC_BAR, limit=30)
+        if not btc_c or len(btc_c) < 5:
+            return False, "btc_candles_insufficient"
+
+        # OKX candles thường newest->oldest. Ta đảo về oldest->newest cho dễ lấy 2 nến đóng cuối.
+        btc_c = list(reversed(btc_c))
+
+        c1 = btc_c[-3]  # nến đóng trước
+        c2 = btc_c[-2]  # nến đóng gần nhất (tránh dùng nến đang chạy)
+        ok_ft, dir_btc = _ft_two_candles_same_dir(
+            c1, c2,
+            body_ratio_min=DEADZONE_FT_BODY_RATIO_MIN,
+            min_change_pct=DEADZONE_FT_MIN_CHANGE_PCT
+        )
+        if not ok_ft:
+            return False, "btc_ft_fail"
+
+        # vol confirm strict on candle2
+        # idx_c2 = len(btc_c)-2
+        if not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT):
+            return False, "btc_vol_fail"
+
+        # --- 2) ALT confirm on 5m ---
+        universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
+        if not universe:
+            return False, "alt_universe_empty"
+
+        need = DEADZONE_OVERRIDE_MIN_ALTS
+        passed = 0
+
+        for inst in universe:
+            if inst == btc:
+                continue
+            alt_c = okx.get_candles(inst, bar=DEADZONE_OVERRIDE_ALT_BAR, limit=30)
+            if not alt_c or len(alt_c) < 5:
+                continue
+            alt_c = list(reversed(alt_c))
+            a1 = alt_c[-3]
+            a2 = alt_c[-2]
+            ok_alt, dir_alt = _ft_two_candles_same_dir(
+                a1, a2,
+                body_ratio_min=DEADZONE_FT_BODY_RATIO_MIN,
+                min_change_pct=DEADZONE_FT_MIN_CHANGE_PCT
+            )
+            if not ok_alt:
+                continue
+            # cùng hướng BTC
+            if dir_alt != dir_btc:
+                continue
+            # vol confirm trên alt cũng phải pass (strict)
+            if not _vol_confirm_strict(alt_c, len(alt_c)-2, DEADZONE_FT_VOL_MULT):
+                continue
+
+            passed += 1
+            if passed >= need:
+                side = "LONG" if dir_btc > 0 else "SHORT"
+                return True, f"deadzone_override_ok({side}, alts={passed})"
+
+        return False, f"alt_ft_insufficient({passed}/{need})"
+
+    except Exception as e:
+        logging.error("[DEADZONE-OVERRIDE] exception: %s", e)
+        return (False, "exception") if DEADZONE_OVERRIDE_FAILSAFE_LOCK else (True, "failsafe_unlock")
 
 
 def check_market_lock_unlock(okx) -> tuple[bool, str]:
@@ -1636,9 +1815,18 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
     - market BAD liên tiếp: soft lock (có UNLOCK)
     Lưu state vào SESSION sheet với session='MARKET'
     """
-    # 1) DEADZONE hard lock
+    # 1) DEADZONE hard lock (override unlock only if STRONG EDGE)
     if DEADZONE_HARD_LOCK_ENABLED and is_deadzone_time_vn():
+        if DEADZONE_OVERRIDE_ENABLED:
+            ok, reason = deadzone_override_strong_edge(okx)
+            if ok:
+                logging.warning("[UNLOCK] DEADZONE override unlocked: %s", reason)
+                return True, f"deadzone_override:{reason}"
+            else:
+                logging.warning("[LOCK] DEADZONE hard lock (no strong edge): %s", reason)
+                return False, f"deadzone_15_20_hard_lock({reason})"
         return False, "deadzone_15_20_hard_lock"
+
 
     if not MARKET_SOFT_LOCK_ENABLED:
         return True, "market_soft_lock_disabled"
