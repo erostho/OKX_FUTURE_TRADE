@@ -3245,20 +3245,53 @@ def calc_ema(prices, length):
         ema = alpha * p + (1 - alpha) * ema
     return ema
 
-def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
-    """
+#def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
+    #"""
     #price: last price
     #notional_usdt: desired position notional
     #ct_val: contract value (base coin)
     #lot_sz: minimum increment in contracts
+    #"""
+    #if price <= 0 or ct_val <= 0:
+        #return 0.0
+    #raw_contracts = notional_usdt / (price * ct_val)
+    #lots = math.floor(raw_contracts / lot_sz)
+    #contracts = lots * lot_sz
+    #if contracts < min_sz:
+        #return 0.0
+    #return contracts
+
+def _step_decimals(step: float) -> int:
+    d = Decimal(str(step)).normalize()
+    return max(-d.as_tuple().exponent, 0)
+
+def calc_contract_size(price, notional_usdt, ct_val, lot_sz, min_sz):
+    """
+    Return contract size (sz) that is a valid multiple of lot_sz and >= min_sz.
     """
     if price <= 0 or ct_val <= 0:
-        return 0.0
-    raw_contracts = notional_usdt / (price * ct_val)
-    lots = math.floor(raw_contracts / lot_sz)
-    contracts = lots * lot_sz
-    if contracts < min_sz:
-        return 0.0
+        return 0
+
+    raw_contracts = (notional_usdt / float(price)) / float(ct_val)
+
+    # floor to lot step with epsilon to avoid float artifacts
+    lots = math.floor((raw_contracts / float(lot_sz)) + 1e-12)
+    contracts = lots * float(lot_sz)
+
+    # harden float -> avoid 1.2000000000000002
+    dec = _step_decimals(float(lot_sz))
+    contracts = round(contracts, dec)
+
+    # enforce min_sz (also step-aligned)
+    if contracts < float(min_sz):
+        lots = math.ceil((float(min_sz) / float(lot_sz)) - 1e-12)
+        contracts = lots * float(lot_sz)
+        contracts = round(contracts, dec)
+
+    # if step is integer, send integer (OKX thích kiểu "1" hơn "1.0")
+    if dec == 0:
+        contracts = int(contracts)
+
     return contracts
 
 def build_open_position_map(okx: OKXClient):
