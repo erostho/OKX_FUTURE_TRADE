@@ -132,6 +132,22 @@ TP_TRAIL_PEAK_PNL = {}
 # ====== ANTI-SWEEP / SHORT-TERM DEADZONE CONFIG ======
 ANTI_SWEEP_MOVE_PCT = 1.0
 ANTI_SWEEP_LOCK_MINUTES = 10
+# ===== LOCK/UNLOCK CONFIG =====
+DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
+
+DAY_HARD_STOP_ENABLED = True
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "0.7"))  # lỗ ngày <= -0.7 USDT thì khóa mở lệnh mới
+
+MARKET_SOFT_LOCK_ENABLED = True
+MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "2"))  # BAD liên tiếp N lần thì lock
+MARKET_UNLOCK_COOLDOWN_MIN = int(os.getenv("MARKET_UNLOCK_COOLDOWN_MIN", "30"))  # tránh flip lock/unlock liên tục
+
+# UNLOCK rule (BTC 15m)
+UNLOCK_BTC_BAR = "15m"
+UNLOCK_BTC_LIMIT = 50
+UNLOCK_VOL_MULT = float(os.getenv("UNLOCK_VOL_MULT", "1.5"))  # vol_now >= 1.5x median(vol_prev20)
+UNLOCK_BODY_RATIO_MIN = float(os.getenv("UNLOCK_BODY_RATIO_MIN", "0.5"))  # body2 >= 50% body1
+UNLOCK_HOLD_TOL = float(os.getenv("UNLOCK_HOLD_TOL", "0.005"))  # giữ giá: 0.5%
 
 # ===== PRO: ANTI-SWEEP per symbol (ALT) =====
 ALT_SWEEP_MOVE_PCT = 1.0            # mỗi chiều >=1% trong 1 nến 5m
@@ -1499,6 +1515,197 @@ def check_session_circuit_breaker(okx) -> bool:
 
     logging.info("[SESSION] Circuit breaker OK -> tiếp tục cho phép mở lệnh.")
     return True
+def _median(nums):
+    nums = sorted([x for x in nums if x is not None])
+    if not nums:
+        return None
+    n = len(nums)
+    mid = n // 2
+    return nums[mid] if n % 2 == 1 else (nums[mid - 1] + nums[mid]) / 2.0
+
+
+def _get_closed_candles(candles):
+    """
+    OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
+    confirm == "1" => candle đã đóng
+    """
+    if not candles:
+        return []
+    c_sorted = sorted(candles, key=lambda x: int(x[0]))
+    closed = [c for c in c_sorted if len(c) >= 9 and str(c[8]) == "1"]
+    return closed
+
+
+def should_unlock_market(okx) -> tuple[bool, str]:
+    """
+    UNLOCK khi BTC 15m có follow-through + volume thật
+    """
+    try:
+        c = okx.get_candles("BTC-USDT-SWAP", bar=UNLOCK_BTC_BAR, limit=UNLOCK_BTC_LIMIT)
+        closed = _get_closed_candles(c)
+        if len(closed) < 3:
+            return False, "not_enough_closed_candles"
+
+        # spike = [-2], follow = [-1] (2 nến đã đóng gần nhất)
+        spike = closed[-2]
+        follow = closed[-1]
+
+        o1 = safe_float(spike[1]); c1 = safe_float(spike[4]); v1 = safe_float(spike[5])
+        o2 = safe_float(follow[1]); c2 = safe_float(follow[4]); v2 = safe_float(follow[5])
+
+        body1 = abs(c1 - o1)
+        body2 = abs(c2 - o2)
+
+        # 1) Cùng hướng
+        dir1_up = c1 > o1
+        dir2_up = c2 > o2
+        dir1_dn = c1 < o1
+        dir2_dn = c2 < o2
+        if not ((dir1_up and dir2_up) or (dir1_dn and dir2_dn)):
+            return False, "no_follow_through_direction"
+
+        # 2) body follow >= 50% body spike
+        if body1 <= 0:
+            return False, "body1_zero"
+        if body2 < UNLOCK_BODY_RATIO_MIN * body1:
+            return False, "follow_body_too_small"
+
+        # 3) giữ giá (không bị xả ngược mạnh)
+        if dir1_up and (c2 < c1 * (1 - UNLOCK_HOLD_TOL)):
+            return False, "hold_fail_long"
+        if dir1_dn and (c2 > c1 * (1 + UNLOCK_HOLD_TOL)):
+            return False, "hold_fail_short"
+
+        # 4) volume thật: v2 >= 1.5x median(prev20)
+        vols = []
+        # lấy 20 nến trước spike (tránh dùng spike/follow)
+        for cc in closed[-22:-2]:
+            vols.append(safe_float(cc[5]))
+        med = _median(vols)
+        if med is None or med <= 0:
+            return False, "no_vol_median"
+        if v2 < UNLOCK_VOL_MULT * med:
+            return False, "vol_not_strong"
+
+        return True, "btc_follow_through_ok"
+
+    except Exception as e:
+        return False, f"unlock_exception:{e}"
+
+
+def check_day_hard_stop(okx) -> tuple[bool, str]:
+    """
+    HARD STOP theo ngày (USDT). Lưu state vào SESSION sheet với session='DAY'
+    """
+    if not DAY_HARD_STOP_ENABLED:
+        return True, "day_stop_disabled"
+
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today = now_vn.date().isoformat()
+    session = "DAY"
+
+    equity = okx.get_total_equity_usdt()
+    state = load_session_state(today, session)
+
+    if state is None:
+        state = {"date": today, "session": session, "start_equity": equity, "blocked": False}
+        save_session_state(state)
+        return True, "day_state_init"
+
+    blocked = str(state.get("blocked", "")).upper() == "TRUE"
+    start_eq = float(state.get("start_equity", 0) or 0)
+    if start_eq <= 0:
+        start_eq = equity
+
+    pnl_usdt = equity - start_eq
+
+    if blocked:
+        return False, f"day_locked(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
+
+    if pnl_usdt <= -DAY_MAX_LOSS_USDT:
+        state = {"date": today, "session": session, "start_equity": start_eq, "blocked": True}
+        save_session_state(state)
+        return False, f"day_lock_trigger(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
+
+    return True, f"day_ok(pnl={pnl_usdt:.2f})"
+
+
+def check_market_lock_unlock(okx) -> tuple[bool, str]:
+    """
+    - DEADZONE 15-20: hard lock (không mở lệnh mới)
+    - market BAD liên tiếp: soft lock (có UNLOCK)
+    Lưu state vào SESSION sheet với session='MARKET'
+    """
+    # 1) DEADZONE hard lock
+    if DEADZONE_HARD_LOCK_ENABLED and is_deadzone_time_vn():
+        return False, "deadzone_15_20_hard_lock"
+
+    if not MARKET_SOFT_LOCK_ENABLED:
+        return True, "market_soft_lock_disabled"
+
+    now_vn = datetime.utcnow() + timedelta(hours=7)
+    today = now_vn.date().isoformat()
+    session = "MARKET"
+
+    state = load_session_state(today, session)
+    if state is None:
+        state = {"date": today, "session": session, "blocked": False, "bad_count": 0, "unlock_cooldown_until": 0}
+        save_session_state(state)
+
+    blocked = str(state.get("blocked", "")).upper() == "TRUE"
+    bad_count = int(state.get("bad_count", 0) or 0)
+    cooldown_until = int(state.get("unlock_cooldown_until", 0) or 0)
+
+    # 2) Detect market regime (GOOD/BAD)
+    regime = detect_market_regime(okx)  # bạn đang có sẵn
+    if regime == "BAD":
+        bad_count += 1
+    else:
+        bad_count = 0
+
+    # 3) Nếu đang blocked -> thử unlock theo rule
+    now_utc_ms = int(time.time() * 1000)
+    if blocked:
+        if now_utc_ms < cooldown_until:
+            state.update({"bad_count": bad_count})
+            save_session_state(state)
+            return False, f"market_locked_cooldown(regime={regime})"
+
+        ok_unlock, reason = should_unlock_market(okx)
+        if ok_unlock:
+            # unlock + set cooldown
+            cooldown = MARKET_UNLOCK_COOLDOWN_MIN * 60 * 1000
+            state = {
+                "date": today,
+                "session": session,
+                "blocked": False,
+                "bad_count": 0,
+                "unlock_cooldown_until": now_utc_ms + cooldown,
+                "last_unlock_reason": reason,
+            }
+            save_session_state(state)
+            return True, f"market_unlocked({reason})"
+        else:
+            state.update({"bad_count": bad_count})
+            save_session_state(state)
+            return False, f"market_locked(wait_unlock:{reason})"
+
+    # 4) Nếu chưa blocked -> lock khi BAD liên tiếp đủ ngưỡng
+    if regime == "BAD" and bad_count >= MARKET_BAD_LOCK_AFTER:
+        state = {
+            "date": today,
+            "session": session,
+            "blocked": True,
+            "bad_count": bad_count,
+            "unlock_cooldown_until": 0,
+            "last_lock_reason": f"regime_bad_x{bad_count}",
+        }
+        save_session_state(state)
+        return False, f"market_lock_trigger(regime=BAD x{bad_count})"
+
+    state.update({"bad_count": bad_count})
+    save_session_state(state)
+    return True, f"market_ok(regime={regime}, bad_count={bad_count})"
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
 def load_real_trades_for_backtest(okx):
@@ -3971,6 +4178,20 @@ def run_full_bot(okx):
         logging.info("[BOT] Circuit breaker kích hoạt → KHÔNG SCAN/MỞ LỆNH mới phiên này.")
         return
     logging.info("[BOT] Circuit breaker OK → tiếp tục chạy bot.")
+    # 1.5) HARD STOP theo ngày (USDT)
+    ok_day, day_reason = check_day_hard_stop(okx)
+    if not ok_day:
+        logging.warning(f"[LOCK] DAY HARD STOP -> {day_reason}. Chỉ chạy quản lý lệnh (TP-DYN) thôi.")
+        return
+    
+    # 1.6) DEADZONE hard lock + MARKET soft lock/unlock
+    ok_mkt, mkt_reason = check_market_lock_unlock(okx)
+    if not ok_mkt:
+        logging.warning(f"[LOCK] MARKET/DEADZONE -> {mkt_reason}. Không SCAN/MỞ lệnh mới.")
+        return
+    else:
+        logging.info(f"[UNLOCK] -> {mkt_reason}")
+
     regime = detect_market_regime(okx)
     logging.info(f"[REGIME] Thị trường hiện tại: {regime}")
     if regime == "GOOD":
@@ -4036,15 +4257,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 6 - 20 - 36 - 50 phút thì chạy thêm FULL BOT
-    if minute in (6, 20, 36, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (6, 20, 36, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
