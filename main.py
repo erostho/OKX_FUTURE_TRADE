@@ -1815,7 +1815,7 @@ def deadzone_override_strong_edge(okx):
             if btc_vol_fail:
                 return False, "btc_vol_fail"
             return False, f"alt_ft_insufficient({passed}/{need})"
-            
+        return False, "override_not_triggered"
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] exception: %s", e)
         return (False, "exception") if DEADZONE_OVERRIDE_FAILSAFE_LOCK else (True, "failsafe_unlock")
