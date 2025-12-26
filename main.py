@@ -1720,7 +1720,11 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
     try:
         data = okx.get_swap_tickers()
         rows = data.get("data", []) if isinstance(data, dict) else data
+        logging.warning(f"[DEADZONE-OVERRIDE] swap_tickers rows={len(rows)} type={type(data)}")
+
         items = []
+        cnt_suffix = sum(1 for r in rows if (r.get("instId","") or "").endswith("-USDT-SWAP"))
+        logging.warning(f"[DEADZONE-OVERRIDE] suffix -USDT-SWAP count={cnt_suffix}")
         for r in rows:
             inst = r.get("instId") or ""
             if not inst.endswith("-USDT-SWAP"):
@@ -1732,10 +1736,13 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
                 continue
             items.append((inst, abs(chg)))
         items.sort(key=lambda x: x[1], reverse=True)
+
+        logging.warning(f"[DEADZONE-OVERRIDE] sample row keys={list(rows[0].keys()) if rows else None}")
         return [x[0] for x in items[:topn]]
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] get top symbols error: %s", e)
         return []
+    
 
 def deadzone_override_strong_edge(okx):
     """
@@ -4477,15 +4484,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
