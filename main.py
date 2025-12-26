@@ -1729,11 +1729,15 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
             inst = r.get("instId") or ""
             if not inst.endswith("-USDT-SWAP"):
                 continue
-            chg = r.get("chg24h") or r.get("change24h") or r.get("chg")  # tùy payload
             try:
-                chg = float(chg) * 100.0 if abs(float(chg)) < 2 else float(chg)  # phòng trường hợp dạng ratio
+                last = float(r.get("last"))
+                open24h = float(r.get("open24h"))
+                if open24h <= 0:
+                    continue
+                chg = (last - open24h) / open24h * 100.0
             except Exception:
                 continue
+
             items.append((inst, abs(chg)))
         items.sort(key=lambda x: x[1], reverse=True)
 
