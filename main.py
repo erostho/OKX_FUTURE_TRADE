@@ -1757,6 +1757,7 @@ def deadzone_override_strong_edge(okx):
     """
     try:
         # --- 1) BTC FT on 15m (need 2 closed candles) ---
+        side = None  
         btc = DEADZONE_OVERRIDE_BTC_INST
         btc_c = okx.get_candles(btc, bar=DEADZONE_OVERRIDE_BTC_BAR, limit=30)
         if not btc_c or len(btc_c) < 5:
