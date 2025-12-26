@@ -1750,10 +1750,8 @@ def deadzone_override_strong_edge(okx):
         btc_c = okx.get_candles(btc, bar=DEADZONE_OVERRIDE_BTC_BAR, limit=30)
         if not btc_c or len(btc_c) < 5:
             return False, "btc_candles_insufficient"
-
         # OKX candles thường newest->oldest. Ta đảo về oldest->newest cho dễ lấy 2 nến đóng cuối.
         btc_c = list(reversed(btc_c))
-
         c1 = btc_c[-3]  # nến đóng trước
         c2 = btc_c[-2]  # nến đóng gần nhất (tránh dùng nến đang chạy)
         ok_ft, dir_btc = _ft_two_candles_same_dir(
@@ -1761,13 +1759,12 @@ def deadzone_override_strong_edge(okx):
             body_ratio_min=DEADZONE_FT_BODY_RATIO_MIN,
             min_change_pct=DEADZONE_FT_MIN_CHANGE_PCT
         )
-        if not ok_ft:
-            return False, "btc_ft_fail"
-
+        btc_ft_fail = (not ok_ft)   # <-- chỉ đánh dấu, KHÔNG return
         # vol confirm strict on candle2
         # idx_c2 = len(btc_c)-2
-        if not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT):
-            return False, "btc_vol_fail"
+        btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT))
+        # KHÔNG return ở đây, để còn check ALT
+            
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
         if not universe:
@@ -1801,13 +1798,16 @@ def deadzone_override_strong_edge(okx):
             if passed >= need:
                 side = "LONG" if dir_btc > 0 else "SHORT"
                 return True, f"deadzone_override_ok({side}, alts={passed})"
-
-        return False, f"alt_ft_insufficient({passed}/{need})"
-
+            
+            if btc_ft_fail:
+                return False, "btc_ft_fail"
+            if btc_vol_fail:
+                return False, "btc_vol_fail"
+            return False, f"alt_ft_insufficient({passed}/{need})"
+            
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] exception: %s", e)
         return (False, "exception") if DEADZONE_OVERRIDE_FAILSAFE_LOCK else (True, "failsafe_unlock")
-
 
 def check_market_lock_unlock(okx) -> tuple[bool, str]:
     """
