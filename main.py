@@ -145,9 +145,9 @@ MARKET_UNLOCK_COOLDOWN_MIN = int(os.getenv("MARKET_UNLOCK_COOLDOWN_MIN", "30")) 
 # UNLOCK rule (BTC 15m)
 UNLOCK_BTC_BAR = "15m"
 UNLOCK_BTC_LIMIT = 50
-UNLOCK_VOL_MULT = float(os.getenv("UNLOCK_VOL_MULT", "1.5"))  # vol_now >= 1.5x median(vol_prev20)
-UNLOCK_BODY_RATIO_MIN = float(os.getenv("UNLOCK_BODY_RATIO_MIN", "0.5"))  # body2 >= 50% body1
-UNLOCK_HOLD_TOL = float(os.getenv("UNLOCK_HOLD_TOL", "0.005"))  # giữ giá: 0.5%
+UNLOCK_VOL_MULT = float(os.getenv("UNLOCK_VOL_MULT", "1.25"))  # vol_now >= 1.25x median(vol_prev20)
+UNLOCK_BODY_RATIO_MIN = float(os.getenv("UNLOCK_BODY_RATIO_MIN", "0.4"))  # body2 >= 40% body1
+UNLOCK_HOLD_TOL = float(os.getenv("UNLOCK_HOLD_TOL", "0.006"))  # giữ giá: 0.6%
 # ===== DEADZONE OVERRIDE (only if STRONG EDGE) =====
 DEADZONE_OVERRIDE_ENABLED = True
 
@@ -1555,8 +1555,12 @@ def _get_closed_candles(candles):
 
 def should_unlock_market(okx) -> tuple[bool, str]:
     """
-    UNLOCK khi BTC 15m có follow-through + volume thật
+    UNLOCK khi BTC 15m có tín hiệu mạnh.
+    Logic mới: 2/3 (direction + body + volume) => UNLOCK
+    Lưu ý: điều kiện HOLD vẫn là "bắt buộc" để tránh unlock lúc bị giật ngược.
     """
+    UNLOCK_MIN_PASS = 2  # 2/3
+
     try:
         c = okx.get_candles("BTC-USDT-SWAP", bar=UNLOCK_BTC_BAR, limit=UNLOCK_BTC_LIMIT)
         closed = _get_closed_candles(c)
@@ -1567,47 +1571,51 @@ def should_unlock_market(okx) -> tuple[bool, str]:
         spike = closed[-2]
         follow = closed[-1]
 
-        o1 = safe_float(spike[1]); c1 = safe_float(spike[4]); v1 = safe_float(spike[5])
+        o1 = safe_float(spike[1]);  c1 = safe_float(spike[4]);  v1 = safe_float(spike[5])
         o2 = safe_float(follow[1]); c2 = safe_float(follow[4]); v2 = safe_float(follow[5])
 
         body1 = abs(c1 - o1)
         body2 = abs(c2 - o2)
 
-        # 1) Cùng hướng
+        # 1) direction: cùng hướng
         dir1_up = c1 > o1
         dir2_up = c2 > o2
         dir1_dn = c1 < o1
         dir2_dn = c2 < o2
-        if not ((dir1_up and dir2_up) or (dir1_dn and dir2_dn)):
-            return False, "no_follow_through_direction"
+        dir_ok = ((dir1_up and dir2_up) or (dir1_dn and dir2_dn))
 
-        # 2) body follow >= 50% body spike
-        if body1 <= 0:
-            return False, "body1_zero"
-        if body2 < UNLOCK_BODY_RATIO_MIN * body1:
-            return False, "follow_body_too_small"
+        # 2) body follow đủ mạnh
+        # body1<=0: coi như fail body, nhưng KHÔNG return sớm (vì 2/3)
+        body_ok = (body1 > 0) and (body2 >= UNLOCK_BODY_RATIO_MIN * body1)
 
-        # 3) giữ giá (không bị xả ngược mạnh)
+        # 3) HOLD (bắt buộc): không bị xả ngược mạnh
+        # Nếu direction chưa rõ (dir_ok=False) thì vẫn check hold theo hướng nến spike (dir1_up/dir1_dn)
         if dir1_up and (c2 < c1 * (1 - UNLOCK_HOLD_TOL)):
             return False, "hold_fail_long"
         if dir1_dn and (c2 > c1 * (1 + UNLOCK_HOLD_TOL)):
             return False, "hold_fail_short"
 
-        # 4) volume thật: v2 >= 1.5x median(prev20)
+        # 4) volume thật
         vols = []
-        # lấy 20 nến trước spike (tránh dùng spike/follow)
-        for cc in closed[-22:-2]:
+        for cc in closed[-22:-2]:  # 20 nến trước spike
             vols.append(safe_float(cc[5]))
         med = _median(vols)
-        if med is None or med <= 0:
-            return False, "no_vol_median"
-        if v2 < UNLOCK_VOL_MULT * med:
-            return False, "vol_not_strong"
+        vol_ok = (med is not None) and (med > 0) and (v2 >= UNLOCK_VOL_MULT * med)
 
-        return True, "btc_follow_through_ok"
+        # ---- 2/3 scoring (dir/body/vol) ----
+        score = int(dir_ok) + int(body_ok) + int(vol_ok)
+        if score >= UNLOCK_MIN_PASS:
+            return True, f"btc_unlock_ok(score={score}/3,dir={int(dir_ok)},body={int(body_ok)},vol={int(vol_ok)})"
+
+        fails = []
+        if not dir_ok:  fails.append("no_follow_through_direction")
+        if not body_ok: fails.append("follow_body_too_small" if body1 > 0 else "body1_zero")
+        if not vol_ok:  fails.append("vol_not_strong" if (med is not None and med > 0) else "no_vol_median")
+        return False, "wait_unlock:" + ",".join(fails)
 
     except Exception as e:
         return False, f"unlock_exception:{e}"
+
 
 
 def check_day_hard_stop(okx) -> tuple[bool, str]:
