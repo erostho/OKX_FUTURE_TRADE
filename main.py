@@ -155,8 +155,8 @@ DEADZONE_OVERRIDE_BTC_INST = "BTC-USDT-SWAP"
 DEADZONE_OVERRIDE_BTC_BAR  = "15m"
 DEADZONE_OVERRIDE_ALT_BAR  = "5m"
 
-DEADZONE_OVERRIDE_MIN_ALTS = 2          # >=2 coin khác confirm FT cùng hướng BTC
-DEADZONE_OVERRIDE_ALT_TOPN = 120        # lấy top N theo 24h change để test nhanh
+DEADZONE_OVERRIDE_MIN_ALTS = 1          # >=1 coin khác confirm FT cùng hướng BTC
+DEADZONE_OVERRIDE_ALT_TOPN = 200        # lấy top N theo 24h change để test nhanh
 
 # Follow-through strictness
 DEADZONE_FT_BODY_RATIO_MIN = 0.55       # body / range >= 55%
@@ -1768,15 +1768,12 @@ def deadzone_override_strong_edge(okx):
         # idx_c2 = len(btc_c)-2
         if not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT):
             return False, "btc_vol_fail"
-
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
         if not universe:
             return False, "alt_universe_empty"
-
         need = DEADZONE_OVERRIDE_MIN_ALTS
         passed = 0
-
         for inst in universe:
             if inst == btc:
                 continue
@@ -1829,7 +1826,6 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
                 logging.warning("[LOCK] DEADZONE hard lock (no strong edge): %s", reason)
                 return False, f"deadzone_15_20_hard_lock({reason})"
         return False, "deadzone_15_20_hard_lock"
-
 
     if not MARKET_SOFT_LOCK_ENABLED:
         return True, "market_soft_lock_disabled"
