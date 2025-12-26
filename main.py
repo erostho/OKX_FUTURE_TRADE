@@ -183,8 +183,8 @@ PUMP_MIN_CHANGE_1H      = 0.5       # %change 1h tối thiểu (tránh sóng qu�
 PUMP_MAX_CHANGE_1H      = 100.0     # %change 1h tối đa (tránh đu quá trễ)
 DEADZONE_MIN_ATR_PCT    = 0.2       # ví dụ: 0.2%/5m trở lên mới chơi
 
-S16_20_SKIP_PROB=0.45
-S20_24_SKIP_PROB=0.70
+S16_20_SKIP_PROB=0.40
+S20_24_SKIP_PROB=0.80
 
 # ================== HELPERS CHUNG ==================
 # =========================
@@ -260,7 +260,7 @@ def _allow_trade_session_20_24(market_regime=None, confidence=None, trend_score=
     if _is_strong_trend(market_regime, confidence, trend_score):
         return True, "ok:strong_trend_20_24"
 
-    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.70"))  # 0.70 -> 1.00
+    skip_prob = float(os.getenv("S20_24_SKIP_PROB", "0.8"))  # 0.8 -> 1.00
     if random.random() < skip_prob:
         return False, f"skip:20_24_throttle({skip_prob:.2f})"
 
