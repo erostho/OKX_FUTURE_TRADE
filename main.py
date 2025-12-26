@@ -136,10 +136,10 @@ ANTI_SWEEP_LOCK_MINUTES = 10
 DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
 
 DAY_HARD_STOP_ENABLED = True
-DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "2.0"))  # lỗ ngày <= -2.0 USDT thì khóa mở lệnh mới
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "4.0"))  # lỗ ngày <= -4.0 USDT thì khóa mở lệnh mới
 
 MARKET_SOFT_LOCK_ENABLED = True
-MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "2"))  # BAD liên tiếp N lần thì lock
+MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "3"))  # BAD liên tiếp N lần thì lock
 MARKET_UNLOCK_COOLDOWN_MIN = int(os.getenv("MARKET_UNLOCK_COOLDOWN_MIN", "30"))  # tránh flip lock/unlock liên tục
 
 # UNLOCK rule (BTC 15m)
