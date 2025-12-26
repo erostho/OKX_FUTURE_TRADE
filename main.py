@@ -136,7 +136,7 @@ ANTI_SWEEP_LOCK_MINUTES = 10
 DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
 
 DAY_HARD_STOP_ENABLED = True
-DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "0.7"))  # lỗ ngày <= -0.7 USDT thì khóa mở lệnh mới
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "1.0"))  # lỗ ngày <= -1.0 USDT thì khóa mở lệnh mới
 
 MARKET_SOFT_LOCK_ENABLED = True
 MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "2"))  # BAD liên tiếp N lần thì lock
@@ -1620,22 +1620,17 @@ def check_day_hard_stop(okx) -> tuple[bool, str]:
     now_vn = datetime.utcnow() + timedelta(hours=7)
     today = now_vn.date().isoformat()
     session = "DAY"
-
     equity = okx.get_total_equity_usdt()
     state = load_session_state(today, session)
-
     if state is None:
         state = {"date": today, "session": session, "start_equity": equity, "blocked": False}
         save_session_state(state)
         return True, "day_state_init"
-
     blocked = str(state.get("blocked", "")).upper() == "TRUE"
     start_eq = float(state.get("start_equity", 0) or 0)
     if start_eq <= 0:
         start_eq = equity
-
     pnl_usdt = equity - start_eq
-
     if blocked:
         return False, f"day_locked(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
 
@@ -1643,8 +1638,8 @@ def check_day_hard_stop(okx) -> tuple[bool, str]:
         state = {"date": today, "session": session, "start_equity": start_eq, "blocked": True}
         save_session_state(state)
         return False, f"day_lock_trigger(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
-
     return True, f"day_ok(pnl={pnl_usdt:.2f})"
+    
 def _candle_to_ohlcv(c):
     # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
     o = float(c[1]); h = float(c[2]); l = float(c[3]); cl = float(c[4]); v = float(c[5])
