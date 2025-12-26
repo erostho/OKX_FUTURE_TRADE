@@ -1747,58 +1747,68 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
         logging.error("[DEADZONE-OVERRIDE] get top symbols error: %s", e)
         return []
     
-
 def deadzone_override_strong_edge(okx):
     """
     True nếu đủ điều kiện cực mạnh để override DEADZONE hard lock:
       1) BTC 15m có 2 nến FT cùng hướng + candle2 body_ratio
       2) volume candle2 confirm
-      3) >=2 alt FT 5m cùng hướng BTC trong topN 24h change
+      3) >=N alt FT 5m cùng hướng BTC trong topN 24h change
     """
+    side = None
+    btc_ft_fail = True
+    btc_vol_fail = True
+    passed = 0
+    need = DEADZONE_OVERRIDE_MIN_ALTS
+
     try:
         # --- 1) BTC FT on 15m (need 2 closed candles) ---
-        side = None  
         btc = DEADZONE_OVERRIDE_BTC_INST
         btc_c = okx.get_candles(btc, bar=DEADZONE_OVERRIDE_BTC_BAR, limit=30)
         if not btc_c or len(btc_c) < 5:
             return False, "btc_candles_insufficient"
-        # OKX candles thường newest->oldest. Ta đảo về oldest->newest cho dễ lấy 2 nến đóng cuối.
+
         btc_c = list(reversed(btc_c))
-        c1 = btc_c[-3]  # nến đóng trước
-        c2 = btc_c[-2]  # nến đóng gần nhất (tránh dùng nến đang chạy)
+        c1 = btc_c[-3]
+        c2 = btc_c[-2]
+
         ok_ft, dir_btc = _ft_two_candles_same_dir(
             c1, c2,
             body_ratio_min=DEADZONE_FT_BODY_RATIO_MIN,
             min_change_pct=DEADZONE_FT_MIN_CHANGE_PCT
         )
-        btc_ft_fail = (not ok_ft)   # <-- chỉ đánh dấu, KHÔNG return
-        # vol confirm strict on candle2
-        # idx_c2 = len(btc_c)-2
-        btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT))
-        logging.warning(f"[DEADZONE-OVERRIDE] btc_side={side} btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}")
+        btc_ft_fail = (not ok_ft)
+        btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c) - 2, DEADZONE_FT_VOL_MULT))
 
-        # KHÔNG return ở đây, để còn check ALT
-            
+        # Log đúng: dir_btc thay vì side
+        logging.warning(
+            f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
+            f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
+        )
+
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
         logging.warning(
-            f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} universe_len={len(universe)} sample={universe[:5]}"
+            f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} "
+            f"universe_len={len(universe)} sample={universe[:5]}"
         )
         if not universe:
             return False, "alt_universe_empty"
-        need = DEADZONE_OVERRIDE_MIN_ALTS
-        passed = 0
+
         for inst in universe:
             if inst == btc:
                 continue
+
             alt_c = okx.get_candles(inst, bar=DEADZONE_OVERRIDE_ALT_BAR, limit=30)
             if not alt_c or len(alt_c) < 5:
-                logging.warning(f"[DEADZONE-OVERRIDE][ALT-SKIP] {inst} candles_insufficient len={len(alt_c) if alt_c else 0}")
+                logging.warning(
+                    f"[DEADZONE-OVERRIDE][ALT-SKIP] {inst} candles_insufficient len={len(alt_c) if alt_c else 0}"
+                )
                 continue
 
             alt_c = list(reversed(alt_c))
             a1 = alt_c[-3]
             a2 = alt_c[-2]
+
             ok_alt, dir_alt = _ft_two_candles_same_dir(
                 a1, a2,
                 body_ratio_min=DEADZONE_FT_BODY_RATIO_MIN,
@@ -1806,30 +1816,38 @@ def deadzone_override_strong_edge(okx):
             )
             if not ok_alt:
                 continue
-            # cùng hướng BTC
+
+            # phải có dir_btc hợp lệ mới so hướng
+            if not ok_ft:
+                continue
+
             if dir_alt != dir_btc:
                 continue
-            # vol confirm trên alt cũng phải pass (strict)
-            if not _vol_confirm_strict(alt_c, len(alt_c)-2, DEADZONE_FT_VOL_MULT):
+
+            if not _vol_confirm_strict(alt_c, len(alt_c) - 2, DEADZONE_FT_VOL_MULT):
                 continue
-            logging.warning(
-                f"[DEADZONE-OVERRIDE][ALT] passed={passed}/{need} universe_len={len(universe)}"
-            )
 
             passed += 1
-            if passed >= need:
+            logging.warning(
+                f"[DEADZONE-OVERRIDE][ALT] inst={inst} passed={passed}/{need}"
+            )
+
+            if passed >= need and (not btc_ft_fail) and (not btc_vol_fail):
                 side = "LONG" if dir_btc > 0 else "SHORT"
                 return True, f"deadzone_override_ok({side}, alts={passed})"
-            
-            if btc_ft_fail:
-                return False, "btc_ft_fail"
-            if btc_vol_fail:
-                return False, "btc_vol_fail"
-            return False, f"alt_ft_insufficient({passed}/{need})"
-        return False, "override_not_triggered"
+
+        # --- 3) KẾT LUẬN CUỐI (đặt SAU for) ---
+        if btc_ft_fail:
+            return False, "btc_ft_fail"
+        if btc_vol_fail:
+            return False, "btc_vol_fail"
+
+        return False, f"alt_ft_insufficient({passed}/{need})"
+
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] exception: %s", e)
         return (False, "exception") if DEADZONE_OVERRIDE_FAILSAFE_LOCK else (True, "failsafe_unlock")
+
 
 def check_market_lock_unlock(okx) -> tuple[bool, str]:
     """
