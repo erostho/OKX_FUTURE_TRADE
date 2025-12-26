@@ -1774,10 +1774,15 @@ def deadzone_override_strong_edge(okx):
         # vol confirm strict on candle2
         # idx_c2 = len(btc_c)-2
         btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c)-2, DEADZONE_FT_VOL_MULT))
+        logging.warning(f"[DEADZONE-OVERRIDE] btc_side={side} btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}")
+
         # KHÔNG return ở đây, để còn check ALT
             
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
+        logging.warning(
+            f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} universe_len={len(universe)} sample={universe[:5]}"
+        )
         if not universe:
             return False, "alt_universe_empty"
         need = DEADZONE_OVERRIDE_MIN_ALTS
@@ -1787,7 +1792,9 @@ def deadzone_override_strong_edge(okx):
                 continue
             alt_c = okx.get_candles(inst, bar=DEADZONE_OVERRIDE_ALT_BAR, limit=30)
             if not alt_c or len(alt_c) < 5:
+                logging.warning(f"[DEADZONE-OVERRIDE][ALT-SKIP] {inst} candles_insufficient len={len(alt_c) if alt_c else 0}")
                 continue
+
             alt_c = list(reversed(alt_c))
             a1 = alt_c[-3]
             a2 = alt_c[-2]
@@ -1804,6 +1811,9 @@ def deadzone_override_strong_edge(okx):
             # vol confirm trên alt cũng phải pass (strict)
             if not _vol_confirm_strict(alt_c, len(alt_c)-2, DEADZONE_FT_VOL_MULT):
                 continue
+            logging.warning(
+                f"[DEADZONE-OVERRIDE][ALT] passed={passed}/{need} universe_len={len(universe)}"
+            )
 
             passed += 1
             if passed >= need:
