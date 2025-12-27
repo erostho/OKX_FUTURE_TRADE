@@ -468,14 +468,14 @@ def decide_risk_config(regime: str | None, session_flag: str | None):
             "max_trades_per_run": 10,
         }
 
-    # 3) Market BAD, session GOOD
+    # 3) Market BAD, session GOOD  -> DEFENSE (mở nhẹ + ít lệnh)
     if regime == "BAD" and session_flag == "GOOD":
         return {
-            "leverage": 4,
-            "notional": 20.0,
+            "leverage": 3,
+            "notional": 10.0,
             "tp_dyn_min_profit": 3.0,
-            "max_sl_pnl_pct": 4.0,
-            "max_trades_per_run": 10,
+            "max_sl_pnl_pct": 3.0,
+            "max_trades_per_run": 6,
         }
 
     # 4) Market BAD, session BAD → HARD DEFENSE
@@ -4367,51 +4367,58 @@ def run_dynamic_tp(okx: "OKXClient"):
     logging.info("[TP-DYN] ===== DYNAMIC TP DONE =====")
 
 def detect_market_regime(okx: "OKXClient"):
-    #GOOD MARKET khi:
-    #- BTC 5m body đẹp (body_ratio > 0.55)
-    #- Wick không quá dài
-    #- Volume đều, không spike bất thường
-    #- Trend 5m/15m đồng pha
-    #BAD MARKET nếu ngược lại.
+    # GOOD/BAD dựa trên BTC 5m + đồng pha trend 15m
     try:
-        c5 = okx.get_candles("BTC-USDT-SWAP", bar="5m", limit=3)
-        c15 = okx.get_candles("BTC-USDT-SWAP", bar="15m", limit=3)
+        # lấy dư 1 cây để chắc có 2 cây ĐÃ ĐÓNG
+        c5  = okx.get_candles("BTC-USDT-SWAP", bar="5m",  limit=4)
+        c15 = okx.get_candles("BTC-USDT-SWAP", bar="15m", limit=4)
     except:
         return "BAD"
 
-    if not c5 or len(c5) < 2:
+    if not c5 or len(c5) < 3:
         return "BAD"
 
-    # ==== 5m ====
+    # ==== 5m (dùng nến đã đóng) ====
     c5_s = sorted(c5, key=lambda x: int(x[0]))
-    o5 = safe_float(c5_s[-1][1])
-    h5 = safe_float(c5_s[-1][2])
-    l5 = safe_float(c5_s[-1][3])
-    c5_now = safe_float(c5_s[-1][4])
+    k = -2   # nến 5m đã đóng gần nhất
+    p = -3   # nến trước đó (đã đóng)
 
-    body = abs(c5_now - o5)
+    o5 = safe_float(c5_s[k][1])
+    h5 = safe_float(c5_s[k][2])
+    l5 = safe_float(c5_s[k][3])
+    c5_close = safe_float(c5_s[k][4])
+
+    body = abs(c5_close - o5)
     rng  = max(h5 - l5, 1e-8)
     body_ratio = body / rng
 
-    # wick check
-    upper_wick = h5 - max(o5, c5_now)
-    lower_wick = min(o5, c5_now) - l5
+    upper_wick = h5 - max(o5, c5_close)
+    lower_wick = min(o5, c5_close) - l5
     wick_ratio = (upper_wick + lower_wick) / rng
 
-    # trend check 5m
-    c_prev = safe_float(c5_s[-2][4])
-    trend_5_up = c5_now > c_prev
-    trend_5_dn = c5_now < c_prev
+    # trend 5m: đóng-đóng
+    c5_prev_close = safe_float(c5_s[p][4])
+    trend_5_up = c5_close > c5_prev_close
+    trend_5_dn = c5_close < c5_prev_close
 
-    # ==== 15m trend ====
-    if c15 and len(c15) >= 2:
+    # ==== 15m trend (cũng dùng nến đã đóng) ====
+    trend_15_up = trend_15_dn = False
+    if c15 and len(c15) >= 3:
         c15_s = sorted(c15, key=lambda x: int(x[0]))
-        c15_now = safe_float(c15_s[-1][4])
-        c15_prev = safe_float(c15_s[-2][4])
-        trend_15_up = c15_now > c15_prev
-        trend_15_dn = c15_now < c15_prev
-    else:
-        trend_15_up = trend_15_dn = False
+        c15_close = safe_float(c15_s[-2][4])   # đã đóng
+        c15_prev  = safe_float(c15_s[-3][4])   # đã đóng
+        trend_15_up = c15_close > c15_prev
+        trend_15_dn = c15_close < c15_prev
+
+    if (
+        body_ratio > 0.55 and
+        wick_ratio < 0.45 and
+        ((trend_5_up and trend_15_up) or (trend_5_dn and trend_15_dn))
+    ):
+        return "GOOD"
+
+    return "BAD"
+
 
     # ======= RULES =======
     if (
