@@ -1784,16 +1784,16 @@ def deadzone_override_strong_edge(okx):
         btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c) - 2, DEADZONE_FT_VOL_MULT))
 
         #logging.warning(
-            f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
-            f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
-        )
+            #f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
+            #f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
+        #)
 
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
         #logging.warning(
-            f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} "
-            f"universe_len={len(universe)} sample={universe[:5]}"
-        )
+            #f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} "
+            #f"universe_len={len(universe)} sample={universe[:5]}"
+        #)
         if not universe:
             return False, "alt_universe_empty"
 
