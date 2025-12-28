@@ -484,7 +484,7 @@ def decide_risk_config(regime: str | None, session_flag: str | None):
         "notional": 10.0,
         "tp_dyn_min_profit": 3.0,
         "max_sl_pnl_pct": 3.0,
-        "max_trades_per_run": 7,
+        "max_trades_per_run": 5,
     }
 
 
@@ -2715,12 +2715,15 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         if len(highs_15) >= 20 and len(lows_15) >= 20:
             recent_high = max(highs_15[-20:])
             recent_low  = min(lows_15[-20:])
-            if direction == "LONG" and c_now > recent_high * 1.005:
-                # quá xa đỉnh gần -> dễ đu đỉnh
+            # ===== WINRATE FILTER: siết chase entry (lọc gắt) =====
+            # 1.005/0.995 vào muộn dễ SL -> siết còn 1.002/0.998
+            if direction == "LONG" and c_now > recent_high * 1.002:
+                logging.info("[FILTER] %s skip chase LONG (overextended).", inst_id)
                 continue
-            if direction == "SHORT" and c_now < recent_low * 0.995:
-                # quá xa đáy gần -> dễ đu đáy
+            if direction == "SHORT" and c_now < recent_low * 0.998:
+                logging.info("[FILTER] %s skip chase SHORT (overextended).", inst_id)
                 continue
+
 
         # ===== V2 FILTER 5: EMA multi-TF align (5m, 15m, 1H) =====
         # 5m EMA9
@@ -3097,8 +3100,15 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
     if df.empty:
         return planned
 
-    top_df = df.head(MAX_TRADES_PER_RUN)
-
+    # ===== WINRATE FILTER: chỉ lấy kèo chắc, trade ít =====
+    df = df[df["score"] >= 7].copy()
+    if df.empty:
+        logging.info("[FILTER] Không có tín hiệu đạt score>=7 -> skip run")
+        return planned
+    
+    # chỉ trade 3 lệnh/run để giảm overtrade (tăng winrate)
+    top_df = df.head(3)
+    
     logging.info("[INFO] Top signals:")
     logging.info(
         "%-4s %-12s %-8s %-8s %-10s %-10s",
@@ -4473,6 +4483,11 @@ def run_full_bot(okx):
         logging.info(f"[UNLOCK] -> {mkt_reason}")
 
     regime = detect_market_regime(okx)
+    # ===== WINRATE FILTER: ngoài deadzone chỉ trade khi market GOOD =====
+    if (not is_deadzone_time_vn()) and regime != "GOOD":
+        logging.warning("[FILTER] regime != GOOD ngoài deadzone -> không SCAN/MỞ lệnh (tăng winrate)")
+        return
+
     logging.info(f"[REGIME] Thị trường hiện tại: {regime}")
     if regime == "GOOD":
         current_notional = 30
