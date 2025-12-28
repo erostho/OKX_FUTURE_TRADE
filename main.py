@@ -1870,12 +1870,12 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
             if ok and "ALT_ONLY" in str(reason):
                 global NOTIONAL_PER_TRADE
                 NOTIONAL_PER_TRADE = 5
-                logging.warning("[DEADZONE-OVERRIDE] ALT_ONLY -> set NOTIONAL_PER_TRADE=5")
+                #logging.warning("[DEADZONE-OVERRIDE] ALT_ONLY -> set NOTIONAL_PER_TRADE=5")
             if ok:
-                logging.warning("[UNLOCK] DEADZONE override unlocked: %s", reason)
+                #logging.warning("[UNLOCK] DEADZONE override unlocked: %s", reason)
                 return True, f"deadzone_override:{reason}"
             else:
-                logging.warning("[LOCK] DEADZONE hard lock (no strong edge): %s", reason)
+                #logging.warning("[LOCK] DEADZONE hard lock (no strong edge): %s", reason)
                 return False, f"deadzone_15_20_hard_lock({reason})"
         return False, "deadzone_15_20_hard_lock"
 
