@@ -965,6 +965,41 @@ class OKXClient:
         }
         data = self._request("GET", path, params=params)
         return data.get("data", [])
+
+    def get_mark_price(self, inst_id: str) -> float | None:
+        """
+        Lấy mark price realtime cho SWAP.
+        OKX: /api/v5/public/mark-price?instType=SWAP&instId=XXX
+        """
+        try:
+            path = "/api/v5/public/mark-price"
+            params = {"instType": "SWAP", "instId": inst_id}
+            data = self._request("GET", path, params=params)
+            rows = (data or {}).get("data", [])
+            if not rows:
+                return None
+            mp = rows[0].get("markPx")
+            return float(mp) if mp is not None else None
+        except Exception:
+            return None
+
+    def get_last_price(self, inst_id: str) -> float | None:
+        """
+        Lấy last price realtime.
+        OKX: /api/v5/market/ticker?instId=XXX
+        """
+        try:
+            path = "/api/v5/market/ticker"
+            params = {"instId": inst_id}
+            data = self._request("GET", path, params=params)
+            rows = (data or {}).get("data", [])
+            if not rows:
+                return None
+            last = rows[0].get("last")
+            return float(last) if last is not None else None
+        except Exception:
+            return None
+
         
     def get_swap_tickers(self):
         path = "/api/v5/market/tickers"
@@ -1119,7 +1154,7 @@ class OKXClient:
             "sz": sz,
             "callbackRatio": f"{ratio:.6f}",   # ví dụ 0.050000 cho 5%
             "activePx": f"{active_px:.6f}",    # giá kích hoạt trailing
-            "triggerPxType": "last",
+            "triggerPxType": "mark",
         }
     
         logging.info(
@@ -3942,20 +3977,20 @@ def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
 
     return False
         
-def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
+def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: str, return_info: bool = False):
     """
-    Trả về True nếu đã có ÍT NHẤT 1 lệnh trailing (move_order_stop)
-    đang hoạt động cho inst_id + posSide này.
+    True nếu có ít nhất 1 trailing (move_order_stop) đang hoạt động cho inst_id + posSide.
+    Nếu return_info=True -> trả (True, order_dict) để đọc algoId/activePx/callbackRatio.
     """
     try:
-        # Hàm wrapper đã dùng cho OCO, giờ tái dùng cho trailing
         pending = okx.get_algo_pending(inst_id=inst_id, ord_type="move_order_stop")
     except Exception as e:
         logging.error("[TP-TRAIL] Lỗi get_algo_pending trailing cho %s: %s", inst_id, e)
-        return False
+        return (False, None) if return_info else False
 
     if not pending:
-        return False
+        return (False, None) if return_info else False
+
     data = pending.get("data", [])
     for o in data:
         try:
@@ -3963,13 +3998,18 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
                 continue
             if o.get("posSide") != pos_side:
                 continue
-            # các state còn hiệu lực
-            if o.get("state") not in ("live", "effective"):
+
+            # OKX thường trả state kiểu: live/effective (có thể khác casing)
+            st = (o.get("state") or "").lower()
+            if st not in ("live", "effective"):
                 continue
-            return True
+
+            return (True, o) if return_info else True
         except Exception:
             continue
-    return False
+
+    return (False, None) if return_info else False
+
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -4261,32 +4301,61 @@ def run_dynamic_tp(okx: "OKXClient"):
             if pnl_pct_i > max_pnl_window:
                 max_pnl_window = pnl_pct_i
 
-        # ---------- 13) server-side trailing khi pnl >= 10% ----------
+        # ---------- 13) server-side trailing khi pnl >= 8% ----------
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
-            #callback_pct = 7.0 / float(FUT_LEVERAGE)
-            current_px = c_now if c_now else closes[-1]
-            logging.warning(
-              "[TP-TRAIL][CHK] %s pos=%s mark=%.6f activePx=%.6f callback=%.2f%%",
-              inst_id, pos_side, current_px, current_px, callback_pct
-            )
+        
+            # >>> lấy giá realtime để set activePx (ưu tiên mark, fallback last, cuối cùng mới fallback candle close)
+            mark_px = okx.get_mark_price(inst_id)
+            last_px = okx.get_last_price(inst_id) if mark_px is None else None
+            current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
+        
             logging.info(
-                "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
-                "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
+                "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%% >= %.2f%%). callback=%.2f%%, activePx=%.6f (mark=%s, last=%s)",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
+                f"{mark_px:.6f}" if mark_px is not None else "None",
+                f"{last_px:.6f}" if last_px is not None else "None",
             )
-            if has_active_trailing_for_position(okx, inst_id, pos_side):
-                logging.info("[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> không đặt thêm lệnh mới.",
-                             inst_id, pos_side)
-                continue
-                
+        
+            # >>> nếu đã có trailing, kiểm tra có cần UPDATE không
+            exists, info = has_active_trailing_for_position(okx, inst_id, pos_side, return_info=True)
+            if exists and info:
+                old_algo_id = info.get("algoId")
+                old_active = safe_float(info.get("activePx") or 0.0)
+                old_cb = safe_float(info.get("callbackRatio") or 0.0)
+        
+                # ngưỡng update: activePx lệch > 0.2% hoặc callback lệch > 0.05%
+                need_update = False
+                if old_active > 0 and abs(old_active - current_px) / current_px > 0.002:
+                    need_update = True
+                if abs(old_cb - callback_pct) > 0.05:
+                    need_update = True
+        
+                if not need_update:
+                    logging.info(
+                        "[TP-TRAIL] Đã có trailing (%s) và vẫn hợp lệ -> không update (old_active=%.6f old_cb=%.2f%%).",
+                        inst_id, old_active, old_cb
+                    )
+                    continue
+        
+                # >>> HỦY trailing cũ để đặt trailing mới (update thực sự)
+                try:
+                    okx.cancel_algos(inst_id=inst_id, algo_ids=[old_algo_id])
+                    logging.info("[TP-TRAIL] Cancel trailing cũ algoId=%s để update (%s).", old_algo_id, inst_id)
+                except Exception as e:
+                    logging.error("[TP-TRAIL] Lỗi cancel trailing cũ %s algoId=%s: %s", inst_id, old_algo_id, e)
+                    # nếu không hủy được thì thôi tránh spam đặt mới
+                    continue
+        
+            # Hủy OCO trước khi đặt trailing mới
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
                 logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-
+        
             side_close = "sell" if pos_side == "long" else "buy"
             try:
+                # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
@@ -4296,12 +4365,13 @@ def run_dynamic_tp(okx: "OKXClient"):
                     active_px=current_px,
                     td_mode="isolated",
                 )
-                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%).",
-                             inst_id, pnl_pct, callback_pct)
+                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%, activePx=%.6f).",
+                             inst_id, pnl_pct, callback_pct, current_px)
             except Exception as e:
                 logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
+        
+            continue  # đã giao cho sàn
 
-            continue  # đã giao cho sàn -> bỏ qua TP-DYN bên dưới
 
         # ---------- 14) 4 tín hiệu TP-DYN ----------
         if posSide == "long":
@@ -4568,15 +4638,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
