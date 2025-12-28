@@ -1720,11 +1720,11 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
     try:
         data = okx.get_swap_tickers()
         rows = data.get("data", []) if isinstance(data, dict) else data
-        logging.warning(f"[DEADZONE-OVERRIDE] swap_tickers rows={len(rows)} type={type(data)}")
+        #logging.warning(f"[DEADZONE-OVERRIDE] swap_tickers rows={len(rows)} type={type(data)}")
 
         items = []
         cnt_suffix = sum(1 for r in rows if (r.get("instId","") or "").endswith("-USDT-SWAP"))
-        logging.warning(f"[DEADZONE-OVERRIDE] suffix -USDT-SWAP count={cnt_suffix}")
+        #logging.warning(f"[DEADZONE-OVERRIDE] suffix -USDT-SWAP count={cnt_suffix}")
         for r in rows:
             inst = r.get("instId") or ""
             if not inst.endswith("-USDT-SWAP"):
@@ -1783,14 +1783,14 @@ def deadzone_override_strong_edge(okx):
         btc_ft_fail = (not ok_ft)
         btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c) - 2, DEADZONE_FT_VOL_MULT))
 
-        logging.warning(
+        #logging.warning(
             f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
             f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
         )
 
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
-        logging.warning(
+        #logging.warning(
             f"[DEADZONE-OVERRIDE][UNIV] topn={DEADZONE_OVERRIDE_ALT_TOPN} "
             f"universe_len={len(universe)} sample={universe[:5]}"
         )
@@ -4569,15 +4569,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
