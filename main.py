@@ -3100,14 +3100,22 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
     if df.empty:
         return planned
 
-    # ===== WINRATE FILTER: chỉ lấy kèo chắc, trade ít =====
-    df = df[df["score"] >= 7].copy()
+    # ===== WINRATE FILTER: BAD trade nhẹ -> lọc gắt hơn =====
+    # Nếu đang trade nhẹ (NOTIONAL_PER_TRADE=6) thì chỉ lấy kèo rất chắc (score>=7)
+    try:
+        is_light = (float(NOTIONAL_PER_TRADE) <= 6)
+    except Exception:
+        is_light = False
+    
+    min_score = 7 if is_light else 6
+    df = df[df["score"] >= min_score].copy()
     if df.empty:
-        logging.info("[FILTER] Không có tín hiệu đạt score>=7 -> skip run")
+        logging.info(f"[FILTER] Không có tín hiệu đạt score>={min_score} -> skip run")
         return planned
     
-    # chỉ trade 3 lệnh/run để giảm overtrade (tăng winrate)
+    # Trade nhẹ: luôn chỉ 3 lệnh/run
     top_df = df.head(3)
+
     
     logging.info("[INFO] Top signals:")
     logging.info(
@@ -4484,9 +4492,14 @@ def run_full_bot(okx):
 
     regime = detect_market_regime(okx)
     # ===== WINRATE FILTER: ngoài deadzone chỉ trade khi market GOOD =====
+    # Ngoài deadzone: nếu market BAD thì vẫn trade nhưng giảm rủi ro mạnh
     if (not is_deadzone_time_vn()) and regime != "GOOD":
-        logging.warning("[FILTER] regime != GOOD ngoài deadzone -> không SCAN/MỞ lệnh (tăng winrate)")
-        return
+        global NOTIONAL_PER_TRADE
+        NOTIONAL_PER_TRADE = 6
+        logging.warning("[FILTER] regime != GOOD ngoài deadzone -> BAD TRADE NHẸ: NOTIONAL_PER_TRADE=6")
+    else:
+        # regime GOOD -> dùng notional như cấu hình bình thường (nếu bạn set ở đâu đó)
+        logging.info("[FILTER] regime GOOD -> trade normal")
 
     logging.info(f"[REGIME] Thị trường hiện tại: {regime}")
     if regime == "GOOD":
