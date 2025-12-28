@@ -3970,7 +3970,6 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
             return True
         except Exception:
             continue
-
     return False
 
 def run_dynamic_tp(okx: "OKXClient"):
@@ -4268,6 +4267,10 @@ def run_dynamic_tp(okx: "OKXClient"):
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
             #callback_pct = 7.0 / float(FUT_LEVERAGE)
             current_px = c_now if c_now else closes[-1]
+            logging.warning(
+              "[TP-TRAIL][CHK] %s pos=%s mark=%.6f activePx=%.6f callback=%.2f%%",
+              inst_id, pos_side, current_px, current_px, callback_pct
+            )
             logging.info(
                 "[TP-TRAIL] %s đang trong vùng trailing server (pnl=%.2f%% >= %.2f%%). "
                 "Dùng callback=%.2f%%, activePx=%.6f -> HỦY OCO + ĐẶT TRAILING.",
@@ -4277,6 +4280,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 logging.info("[TP-TRAIL] ĐÃ CÓ trailing server cho %s (posSide=%s) -> không đặt thêm lệnh mới.",
                              inst_id, pos_side)
                 continue
+                
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
