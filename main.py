@@ -1741,7 +1741,7 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
             items.append((inst, abs(chg)))
         items.sort(key=lambda x: x[1], reverse=True)
 
-        logging.warning(f"[DEADZONE-OVERRIDE] sample row keys={list(rows[0].keys()) if rows else None}")
+        #logging.warning(f"[DEADZONE-OVERRIDE] sample row keys={list(rows[0].keys()) if rows else None}")
         return [x[0] for x in items[:topn]]
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] get top symbols error: %s", e)
@@ -1782,10 +1782,10 @@ def deadzone_override_strong_edge(okx):
         )
         btc_ft_fail = (not ok_ft)
         btc_vol_fail = (not _vol_confirm_strict(btc_c, len(btc_c) - 2, DEADZONE_FT_VOL_MULT))
-        logging.warning(
-            f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
-            f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
-        )
+        #logging.warning(
+            #f"[DEADZONE-OVERRIDE][BTC] ok_ft={ok_ft} dir_btc={dir_btc if ok_ft else None} "
+            #f"btc_ft_fail={btc_ft_fail} btc_vol_fail={btc_vol_fail}"
+        #)
 
         # --- 2) ALT confirm on 5m ---
         universe = _get_top_swap_symbols_by_change_24h(okx, DEADZONE_OVERRIDE_ALT_TOPN)
@@ -1804,9 +1804,9 @@ def deadzone_override_strong_edge(okx):
 
             alt_c = okx.get_candles(inst, bar=DEADZONE_OVERRIDE_ALT_BAR, limit=30)
             if not alt_c or len(alt_c) < 5:
-                logging.warning(
-                    f"[DEADZONE-OVERRIDE][ALT-SKIP] {inst} candles_insufficient len={len(alt_c) if alt_c else 0}"
-                )
+                #logging.warning(
+                    #f"[DEADZONE-OVERRIDE][ALT-SKIP] {inst} candles_insufficient len={len(alt_c) if alt_c else 0}"
+                #)
                 continue
 
             alt_c = list(reversed(alt_c))
@@ -1830,9 +1830,9 @@ def deadzone_override_strong_edge(okx):
                 continue
 
             passed += 1
-            logging.warning(
-                f"[DEADZONE-OVERRIDE][ALT] inst={inst} passed={passed}/{need} ok_ft={ok_ft}"
-            )
+            #logging.warning(
+                #f"[DEADZONE-OVERRIDE][ALT] inst={inst} passed={passed}/{need} ok_ft={ok_ft}"
+            #)
 
             if passed >= need:
                 if ok_ft:
