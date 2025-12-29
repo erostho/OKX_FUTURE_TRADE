@@ -59,9 +59,6 @@ TP_DYN_FLAT_BARS        = 3     # số nến 5m đi ngang trước khi thoát
 TP_DYN_ENGULF           = True  # bật thoát khi có engulfing
 TP_DYN_VOL_DROP         = True  # bật thoát khi vol giảm mạnh
 TP_DYN_EMA_TOUCH        = True  # bật thoát khi chạm EMA5
-GLOBAL_STATE = {
-    "pos_prev_map": {}
-}
 
 # ======== TRAILING TP CONFIG ========
 TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 5% PnL
@@ -297,77 +294,6 @@ def normalize_swap_sz(okx, inst_id: str, sz: float) -> float:
     if min_sz > 0:
         sz2 = max(sz2, min_sz)
     return sz2
-
-def _norm_pos_key(inst_id: str, pos_side: str) -> str:
-    return f"{inst_id}|{pos_side}"
-
-def _fetch_positions_map(okx) -> dict:
-    # okx.get_open_positions() phải trả list positions có instId, posSide, pos, avgPx...
-    pos_list = okx.get_open_positions()
-    m = {}
-    for p in (pos_list or []):
-        inst_id = p.get("instId")
-        pos_side = p.get("posSide")
-        sz = float(p.get("pos", 0) or 0)
-        if inst_id and pos_side and abs(sz) > 0:
-            m[_norm_pos_key(inst_id, pos_side)] = p
-    return m
-
-def _infer_close_reason_from_fills(okx, inst_id: str, pos_side: str, since_ts_ms: int | None = None) -> tuple[str, dict]:
-    """
-    Truy vết fills gần đây để suy ra reason đóng.
-    Return: (reason, extra)
-    """
-    try:
-        fills = okx.get_fills(inst_id=inst_id, limit=50, since_ts_ms=since_ts_ms)  # bạn wrap endpoint /trade/fills
-    except Exception as e:
-        return ("CLOSE_UNKNOWN_FETCH_FAIL", {"err": str(e)})
-
-    # tìm fill mới nhất
-    if not fills:
-        return ("CLOSE_UNKNOWN_NO_FILLS", {})
-
-    # OKX thường trả newest-first hoặc ngược, bạn sort cho chắc
-    fills_sorted = sorted(fills, key=lambda x: int(x.get("ts", 0)))
-
-    last = fills_sorted[-1]
-    ord_type = (last.get("ordType") or "").lower()
-    exec_type = (last.get("execType") or "").lower()
-    # một số wrapper sẽ trả "source" / "category" / "tag"
-    tag = (last.get("tag") or "").lower()
-
-    # Trailing server-side (algo)
-    if "move_order_stop" in ord_type or "trailing" in ord_type:
-        return ("CLOSE_TRAIL_SERVER", {"ordType": last.get("ordType"), "fill": last})
-
-    # TP/SL trigger thường có dấu hiệu trong ordType/execType/tag (tùy wrapper)
-    if "trigger" in ord_type or "tp" in tag or "sl" in tag:
-        return ("CLOSE_TPSL_SERVER", {"ordType": last.get("ordType"), "fill": last})
-
-    return ("CLOSE_OTHER_SERVER", {"ordType": last.get("ordType"), "fill": last})
-
-def watch_and_log_server_closures(okx, state: dict):
-    """
-    state giữ snapshot positions vòng trước.
-    Gọi mỗi loop, ngay sau khi bạn refresh data.
-    """
-    prev = state.get("pos_prev_map") or {}
-    now = _fetch_positions_map(okx)
-
-    # detect closed: có trong prev nhưng mất trong now
-    closed_keys = [k for k in prev.keys() if k not in now]
-    for k in closed_keys:
-        inst_id, pos_side = k.split("|", 1)
-        # nếu bạn có lưu open_ts cho từng position thì truyền vào since_ts_ms để lọc nhanh
-        reason, extra = _infer_close_reason_from_fills(okx, inst_id, pos_side, since_ts_ms=None)
-        logging.info("[CLOSE-DETECT] %s %s -> %s", inst_id, pos_side, reason)
-
-        # TODO: chỗ này bạn cập nhật thống kê/backtest log của bạn:
-        # e.g. append vào trade_cache / sheet / telegram summary
-        # extra có thể lưu để debug
-
-    state["pos_prev_map"] = now
-
 
 def _load_guard_state():
     try:
@@ -4705,11 +4631,7 @@ def main():
         api_secret=os.getenv("OKX_API_SECRET"),
         passphrase=os.getenv("OKX_API_PASSPHRASE")
     )
-    # (A) gọi watcher NGAY ĐẦU vòng chạy
-    # nó sẽ so snapshot vòng trước với vòng này
-    watch_and_log_server_closures(okx, GLOBAL_STATE)
-    # (B) phần còn lại của bạn: fetch candles, filter, scan, open/close...
-    run_scan_and_trade(okx)
+
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
     
