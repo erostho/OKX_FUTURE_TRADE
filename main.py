@@ -302,8 +302,8 @@ def _norm_pos_key(inst_id: str, pos_side: str) -> str:
     return f"{inst_id}|{pos_side}"
 
 def _fetch_positions_map(okx) -> dict:
-    # okx.get_positions() phải trả list positions có instId, posSide, pos, avgPx...
-    pos_list = okx.get_positions()
+    # okx.get_open_positions() phải trả list positions có instId, posSide, pos, avgPx...
+    pos_list = okx.get_open_positions()
     m = {}
     for p in (pos_list or []):
         inst_id = p.get("instId")
