@@ -2345,9 +2345,19 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
     """
     state = _load_json_file(SERVER_CLOSE_STATE_FILE, {"last_ctime_ms": 0})
     last_ctime_ms = int(state.get("last_ctime_ms") or 0)
+    # ===== CUTOFF: chỉ quét từ hôm nay (giờ VN) =====
+    now_utc = datetime.now(timezone.utc)
+    now_vn = now_utc + timedelta(hours=7)
+    start_today_vn = datetime(now_vn.year, now_vn.month, now_vn.day, 0, 0, 0)
+    # đổi về UTC timestamp ms (vì OKX cTime là ms epoch UTC)
+    start_today_utc = start_today_vn - timedelta(hours=7)
+    cutoff_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    
+    # Nếu muốn "từ lần chạy trước" nhưng không vượt quá hôm nay:
+    # (đảm bảo restart vẫn không kéo quá sâu)
+    cutoff_ms = max(cutoff_ms, last_ctime_ms)
 
     existing_posids = _load_close_event_posid_set()
-
     newest_ctime_ms = last_ctime_ms
     appended = 0
 
@@ -2369,22 +2379,29 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             after = last_row.get("cTime") or last_row.get("uTime") or after
         except Exception:
             pass
-
-        for d in data:
-            try:
-                ctime_ms = int(float(d.get("cTime") or 0))
-            except Exception:
-                ctime_ms = 0
-
-            if ctime_ms <= 0:
+        rows = data.get("data", []) or []
+        if not rows:
+            break
+        
+        # OKX thường trả newest -> oldest trong mỗi page.
+        # Nếu gặp item đầu tiên đã < cutoff => cả page này đều cũ -> break luôn.
+        first_ctime = int(float(rows[0].get("cTime") or 0))
+        if first_ctime and first_ctime < cutoff_ms:
+            break
+        
+        for p in rows:
+            ctime = int(float(p.get("cTime") or 0))
+        
+            # nếu record này cũ hơn cutoff => dừng luôn (vì càng dưới càng cũ)
+            if ctime and ctime < cutoff_ms:
+                break
+        
+            # nếu record <= last_ctime_ms thì bỏ qua (đã xử lý lần trước)
+            if ctime and ctime <= last_ctime_ms:
                 continue
-
-            # chỉ xử lý cái mới hơn lần trước
-            if ctime_ms <= last_ctime_ms:
-                continue
-
+            # ... logic hiện tại của mày append CLOSE_EVENTS ở đây ...
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
-
+            
             pos_id = str(d.get("posId") or "").strip()
             if not pos_id:
                 continue
