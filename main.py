@@ -50,6 +50,7 @@ TOP_N_BY_CHANGE = 300         # universe: top 300 theo độ biến động
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 CLOSE_EVENTS_SHEET_NAME = os.getenv("CLOSE_EVENTS_SHEET_NAME", "CLOSE_EVENTS")
+SERVER_CLOSE_STATE_FILE = os.getenv("SERVER_CLOSE_STATE_FILE", "server_close_state.json")
 
 # ======== DYNAMIC TP CONFIG ========
 TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 4.0%
@@ -1494,6 +1495,48 @@ def get_bt_cache_worksheet():
         logging.info("[BT-CACHE] Tạo sheet %s mới.", BT_CACHE_SHEET_NAME)
 
     return ws
+def get_close_events_worksheet():
+    gc = get_gspread_client()
+    if not gc:
+        return None
+
+    sheet_id = os.getenv("BT_SHEET_ID") or os.getenv("SHEET_ID") or os.getenv("GSHEET_ID")
+    if not sheet_id:
+        logging.error("[CLOSE-EVENTS] BT_SHEET_ID (hoặc SHEET_ID/GSHEET_ID) chưa cấu hình.")
+        return None
+
+    sh = gc.open_by_key(sheet_id)
+
+    try:
+        ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
+    except Exception:
+        ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=1000, cols=10)
+        ws.append_row(["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"])
+        logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
+
+    return ws
+
+
+def append_close_event_to_sheet(ev: dict):
+    """
+    ev keys: posId, ts, instId, posSide, openPx, sz, closeType
+    """
+    ws = get_close_events_worksheet()
+    if not ws:
+        return
+
+    try:
+        ws.append_row([
+            str(ev.get("posId", "")),
+            str(ev.get("ts", "")),
+            str(ev.get("instId", "")),
+            str(ev.get("posSide", "")),
+            str(ev.get("openPx", "")),
+            str(ev.get("sz", "")),
+            str(ev.get("closeType", "")),
+        ], value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] append row error: %s", e)
 
 # ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
 
@@ -2241,6 +2284,149 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
     return True, f"market_ok(regime={regime}, bad_count={bad_count})"
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
+def _load_json_file(path: str, default):
+    try:
+        import json
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+
+def _save_json_file(path: str, obj):
+    try:
+        import json
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _load_close_event_posid_set(limit_rows: int = 3000) -> set:
+    """
+    Load posId đã có trong CLOSE_EVENTS để tránh ghi trùng.
+    """
+    ws = get_close_events_worksheet()
+    if not ws:
+        return set()
+
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return set()
+
+        # header: posId, ts, instId, posSide, openPx, sz, closeType
+        posid_idx = 0
+        out = set()
+        data = values[1:]
+        if limit_rows and len(data) > limit_rows:
+            data = data[-limit_rows:]
+
+        for row in data:
+            if len(row) > posid_idx:
+                pid = str(row[posid_idx]).strip()
+                if pid:
+                    out.add(pid)
+        return out
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] load posId set error: %s", e)
+        return set()
+
+
+def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, limit: int = 100):
+    """
+    Chạy đầu mỗi cron:
+    - kéo positions history
+    - nếu posId chưa từng được bot ghi vào CLOSE_EVENTS => coi là 'đóng bởi sàn' (OCO/TP-SL)
+    - append CLOSE_EVENTS với closeType='OCO_SL'
+    """
+    state = _load_json_file(SERVER_CLOSE_STATE_FILE, {"last_ctime_ms": 0})
+    last_ctime_ms = int(state.get("last_ctime_ms") or 0)
+
+    existing_posids = _load_close_event_posid_set()
+
+    newest_ctime_ms = last_ctime_ms
+    appended = 0
+
+    after = None
+    for _ in range(int(lookback_pages)):
+        try:
+            data = okx.get_positions_history(limit=limit, after=after)
+        except Exception as e:
+            logging.error("[WATCH-OCO] get_positions_history error: %s", e)
+            break
+
+        if not data:
+            break
+
+        # OKX thường trả list theo thời gian giảm dần; lấy cursor cho trang sau:
+        # dùng cTime cuối trang làm after (ổn định nhất kiểu pagination thô)
+        try:
+            last_row = data[-1]
+            after = last_row.get("cTime") or last_row.get("uTime") or after
+        except Exception:
+            pass
+
+        for d in data:
+            try:
+                ctime_ms = int(float(d.get("cTime") or 0))
+            except Exception:
+                ctime_ms = 0
+
+            if ctime_ms <= 0:
+                continue
+
+            # chỉ xử lý cái mới hơn lần trước
+            if ctime_ms <= last_ctime_ms:
+                continue
+
+            newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
+
+            pos_id = str(d.get("posId") or "").strip()
+            if not pos_id:
+                continue
+
+            # nếu đã có trong CLOSE_EVENTS => bot đã ghi (EMERGENCY/TP_DYN/TRAILING/...) => bỏ qua
+            if pos_id in existing_posids:
+                continue
+
+            inst_id = str(d.get("instId") or "").strip()
+            pos_side = str(d.get("posSide") or d.get("side") or "").strip()  # long/short
+
+            try:
+                open_px = float(d.get("openAvgPx") or d.get("avgPx") or d.get("openPx") or 0)
+            except Exception:
+                open_px = 0.0
+
+            # sz/pos
+            try:
+                sz = float(d.get("pos") or d.get("sz") or d.get("size") or 0)
+            except Exception:
+                sz = 0.0
+
+            ev = {
+                "posId": pos_id,
+                "ts": ctime_ms,
+                "instId": inst_id,
+                "posSide": pos_side,
+                "openPx": open_px,
+                "sz": sz,
+                "closeType": "OCO_SL",
+            }
+
+            append_close_event_to_sheet(ev)
+            existing_posids.add(pos_id)
+            appended += 1
+
+    if newest_ctime_ms > last_ctime_ms:
+        state["last_ctime_ms"] = newest_ctime_ms
+        _save_json_file(SERVER_CLOSE_STATE_FILE, state)
+
+    if appended > 0:
+        logging.info("[WATCH-OCO] appended %s server-close events into %s", appended, CLOSE_EVENTS_SHEET_NAME)
+
 def load_close_event_map_by_posid():
     ws = get_close_events_worksheet()
     if not ws:
@@ -5066,7 +5252,8 @@ def main():
     )
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
-    
+    # WATCHER: phát hiện lệnh đóng bởi sàn (OCO/TP-SL) và ghi vào CLOSE_EVENTS
+    watch_server_closures_and_append_close_events(okx)  
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
