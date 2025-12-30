@@ -2407,6 +2407,8 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             if ctime and ctime <= last_ctime_ms:
                 continue
             # ... logic hiện tại của mày append CLOSE_EVENTS ở đây ...
+            # lấy thời gian đóng/ghi nhận từ OKX positions_history
+            ctime_ms = int(row.get("cTime") or row.get("ctime") or row.get("ts") or 0)
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
             
             pos_id = str(d.get("posId") or "").strip()
