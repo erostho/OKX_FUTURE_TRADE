@@ -1557,6 +1557,32 @@ def append_close_event_to_sheet(ev: dict):
         ], value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error("[CLOSE-EVENTS] append row error: %s", e)
+def read_close_events_sheet(limit: int = 5000):
+    """
+    Đọc sheet CLOSE_EVENTS và trả về list[dict] theo header.
+    limit: số dòng tối đa kéo về (chống treo)
+    """
+    try:
+        sh = _get_gsheet()  # hoặc client.open_by_key(...), dùng đúng hàm mày đang có
+        ws = sh.worksheet("CLOSE_EVENTS")
+        values = ws.get_all_values()
+
+        if not values or len(values) < 2:
+            return []
+
+        header = values[0]
+        data_rows = values[1:1+limit]
+
+        out = []
+        for r in data_rows:
+            row = {}
+            for i, k in enumerate(header):
+                row[k] = r[i] if i < len(r) else ""
+            out.append(row)
+        return out
+    except Exception as e:
+        logging.error("[GSHEET] read_close_events_sheet error: %s", e)
+        return []
 
 # ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
 
