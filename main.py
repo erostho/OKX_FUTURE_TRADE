@@ -844,7 +844,7 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 18, 20) and 4 <= m <= 9:
+    if h in (9, 19, 20) and 4 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -4698,7 +4698,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_sl(instId, "early_fail")
-                    log_close_type(instId, posSide, avg_px, sz, "EARLY", posId=posId)
+                    log_close_type(posId, instId, posSide, avg_px, sz, "EARLY")
                     maker_close_position_with_timeout(
                         okx=okx,
                         posId=posId,
@@ -4725,7 +4725,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
             try:
                 mark_symbol_sl(instId, "emergency_sl")
-                log_close_type(instId, posSide, avg_px, sz, "EMERGENCY", posId=posId)
+                log_close_type(posId, instId, posSide, avg_px, sz, "EMERGENCY")
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
@@ -4789,7 +4789,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     )
                     try:
                         mark_symbol_tp(instId)
-                        log_close_type(instId, posSide, avg_px, sz, "LADDER", posId=posId)
+                        log_close_type(posId, instId, posSide, avg_px, sz, "LADDER")
                         maker_close_position_with_timeout(
                             okx=okx,
                             posId=posId,
@@ -4903,7 +4903,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, current_px, hard_floor)
                 try:
                     mark_symbol_tp(instId)
-                    log_close_type(instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR", posId=posId)
+                    log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
                     maker_close_position_with_timeout(
                         okx=okx,
                         posId=posId,
@@ -4932,7 +4932,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                         dt_sec, instId, posSide, current_px, stop_px)
                         try:
                             mark_symbol_tp(instId)
-                            log_close_type(instId, posSide, avg_px, sz, "PUMP_UNDER_STOP", posId=posId)
+                            log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
                             maker_close_position_with_timeout(
                                 okx=okx,
                                 posId=posId,
@@ -5011,7 +5011,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
-                log_close_type(instId, posSide, avg_px, sz, "TRAILING", posId=posId)
+                log_close_type(posId, instId, posSide, avg_px, sz, "TRAILING")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
@@ -5073,7 +5073,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_tp(instId)
-                    log_close_type(instId, posSide, avg_px, sz, "TP_DYN", posId=posId)
+                    log_close_type(posId, instId, posSide, avg_px, sz, "TP_DYN")
                     maker_close_position_with_timeout(
                         okx=okx,
                         posId=posId,
@@ -5098,7 +5098,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
             try:
                 mark_symbol_tp(instId)
-                log_close_type(instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP", posId=posId)
+                log_close_type(posId, instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
                 used = maker_close_position_with_timeout(
                     okx=okx,
                     posId=posId,
