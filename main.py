@@ -87,6 +87,17 @@ MAX_EMERGENCY_SL_PNL_PCT = 4.5  # qua -4.5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 8.0   # chỉ bật trailing server khi PnL >= 8%
 TRAIL_SERVER_CALLBACK_PCT = 1.5   # giá rút lại 7% từ đỉnh thì cắt
+# ===== PUMP/DUMP DETECT + CONTROLLED TRAIL WIDEN =====
+PUMP_CHG_5M_PCT      = 2.8    # % biến động 5m để coi là giật mạnh
+PUMP_VOL_RATIO       = 2.5    # vol_now / avg_vol20
+PUMP_RANGE_RATIO     = 1.8    # (high-low)_now / avg_range20
+PUMP_WINDOW_SEC      = 5 * 60 # giữ "pump mode" trong 5 phút
+
+PUMP_CB_MULT         = 1.8    # nới callback = base * mult khi pump
+PUMP_CB_MAX_PCT      = 3.0    # cap callback khi pump
+
+HARD_STOP_PCT        = 4.0    # A) hard floor theo peak (%)
+TIME_UNDER_STOP_SEC  = 30     # B) giá dưới stop liên tục bao lâu mới thoát
 
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
@@ -598,6 +609,55 @@ def safe_float(x, default=0.0):
         return float(x)
     except Exception:
         return default
+        
+# ===== PUMP MODE + SOFT TRAIL STATES =====
+PUMP_MODE_UNTIL_MS = {}           # pos_key -> timestamp ms
+SOFT_TRAIL_PEAK_PX = {}           # pos_key -> peak price (bot-managed when pump mode)
+UNDER_STOP_SINCE_MS = {}          # pos_key -> timestamp ms (for time-under-stop)
+
+def detect_pump_dump_2of3(closes, highs, lows, vols):
+    """
+    Detect pump/dump regime theo 2/3:
+      1) |chg_5m| >= PUMP_CHG_5M_PCT
+      2) vol_ratio >= PUMP_VOL_RATIO
+      3) range_ratio >= PUMP_RANGE_RATIO
+    """
+    try:
+        if not closes or len(closes) < 25:
+            return False, {}
+
+        c0 = float(closes[-2])
+        c1 = float(closes[-1])
+        if c0 <= 0:
+            return False, {}
+
+        chg_5m_pct = abs((c1 / c0 - 1.0) * 100.0)
+
+        # vol ratio
+        vol_now = float(vols[-1])
+        vol_base = vols[-21:-1]
+        avg_vol20 = (sum(vol_base) / 20.0) if len(vol_base) >= 20 else (sum(vol_base) / max(1, len(vol_base)))
+        vol_ratio = (vol_now / avg_vol20) if avg_vol20 > 0 else 0.0
+
+        # range ratio
+        r_now = float(highs[-1]) - float(lows[-1])
+        r_base = [(float(highs[i]) - float(lows[i])) for i in range(len(highs)-21, len(highs)-1)]
+        avg_r20 = (sum(r_base) / len(r_base)) if r_base else 0.0
+        range_ratio = (r_now / avg_r20) if avg_r20 > 0 else 0.0
+
+        score = 0
+        if chg_5m_pct >= PUMP_CHG_5M_PCT: score += 1
+        if vol_ratio >= PUMP_VOL_RATIO: score += 1
+        if range_ratio >= PUMP_RANGE_RATIO: score += 1
+
+        return (score >= 2), {
+            "chg_5m_pct": chg_5m_pct,
+            "vol_ratio": vol_ratio,
+            "range_ratio": range_ratio,
+            "score": score
+        }
+    except Exception:
+        return False, {}
 
 def calc_realtime_pnl_pct(pos: dict, fut_leverage: float) -> Optional[float]:
     """
@@ -4302,6 +4362,136 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
 
         # ---------- 13) server-side trailing khi pnl >= 8% ----------
+        # ---------- 13.1) trailing (pump-mode: bot-managed + protections A/B) ----------
+        now_ms = int(time.time() * 1000)
+
+        is_pump, pump_meta = detect_pump_dump_2of3(closes, highs, lows, vols)
+        if is_pump:
+            until = now_ms + int(PUMP_WINDOW_SEC * 1000)
+            prev_until = PUMP_MODE_UNTIL_MS.get(pos_key, 0)
+            PUMP_MODE_UNTIL_MS[pos_key] = max(prev_until, until)
+
+        pump_mode = now_ms < PUMP_MODE_UNTIL_MS.get(pos_key, 0)
+
+        if pump_mode and pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
+            # 1) current price (giữ đúng logic bạn đang dùng)
+            current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
+
+            # 2) callback pump (nới có kiểm soát + cap)
+            pump_cb = min(callback_pct * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
+
+            # 3) peak như cũ: có đỉnh mới là update
+            if posSide == "long":
+                peak_now = max(highs[-TP_TRAIL_LOOKBACK_BARS:]) if len(highs) >= TP_TRAIL_LOOKBACK_BARS else max(highs)
+                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
+                peak_px = max(prev_peak, peak_now, current_px)
+                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
+
+                stop_px = peak_px * (1.0 - pump_cb / 100.0)
+                hard_floor = peak_px * (1.0 - HARD_STOP_PCT / 100.0)
+
+                hard_breach = current_px <= hard_floor
+                under_stop = current_px <= stop_px
+                safe_again = current_px > stop_px
+
+            else:  # short
+                peak_now = min(lows[-TP_TRAIL_LOOKBACK_BARS:]) if len(lows) >= TP_TRAIL_LOOKBACK_BARS else min(lows)
+                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
+                peak_px = peak_now if prev_peak == 0.0 else min(prev_peak, peak_now, current_px)
+                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
+
+                stop_px = peak_px * (1.0 + pump_cb / 100.0)
+                hard_floor = peak_px * (1.0 + HARD_STOP_PCT / 100.0)
+
+                hard_breach = current_px >= hard_floor
+                under_stop = current_px >= stop_px
+                safe_again = current_px < stop_px
+
+            logging.info(
+                "[PUMP-TRAIL] %s pump_mode=YES score=%s chg=%.2f%% volR=%.2f rangeR=%.2f | cb=%.2f%% peak=%.6f stop=%.6f hard=%.6f px=%.6f",
+                instId,
+                pump_meta.get("score"),
+                pump_meta.get("chg_5m_pct", 0.0),
+                pump_meta.get("vol_ratio", 0.0),
+                pump_meta.get("range_ratio", 0.0),
+                pump_cb, peak_px, stop_px, hard_floor, current_px
+            )
+
+            # 4) Nếu trước đó đã đặt trailing server (hoặc còn algo), hủy để tránh sàn đóng sớm
+            try:
+                exists, info = has_active_trailing_for_position(okx, instId, posSide, return_info=True)
+                if exists and info:
+                    old_algo_id = info.get("algoId")
+                    try:
+                        okx.cancel_algo_order(instId, old_algo_id)
+                        logging.info("[PUMP-TRAIL] cancel trailing server cũ %s algoId=%s", instId, old_algo_id)
+                    except Exception as e:
+                        logging.error("[PUMP-TRAIL] cancel trailing server cũ lỗi %s algoId=%s: %s", instId, old_algo_id, e)
+            except Exception:
+                pass
+
+            # 5) (Tuỳ bạn) hủy OCO để khỏi bị chốt sớm trong pump
+            try:
+                cancel_oco_before_trailing(okx, instId, posSide)
+            except Exception as e:
+                logging.error("[PUMP-TRAIL] lỗi khi hủy OCO trước soft-trail %s (%s): %s", instId, posSide, e)
+
+            # ===== A) HARD FLOOR: breach là đóng ngay =====
+            if hard_breach:
+                logging.warning("[PUMP-TRAIL] HARD_FLOOR breach => CLOSE NOW %s %s (px=%.6f hard=%.6f)",
+                                instId, posSide, current_px, hard_floor)
+                try:
+                    mark_symbol_tp(instId)
+                    maker_close_position_with_timeout(
+                        okx=okx,
+                        inst_id=instId,
+                        pos_side=posSide,
+                        sz=sz,
+                        last_px=current_px,
+                        timeout_sec=3,
+                    )
+                except Exception as e:
+                    logging.error("[PUMP-TRAIL] close HARD_FLOOR error %s: %s", instId, e)
+                _reset_state(pos_key)
+                continue
+
+            # ===== B) TIME-UNDER-STOP: dưới stop liên tục TIME_UNDER_STOP_SEC mới đóng =====
+            if under_stop:
+                since = UNDER_STOP_SINCE_MS.get(pos_key, 0)
+                if since <= 0:
+                    UNDER_STOP_SINCE_MS[pos_key] = now_ms
+                    logging.info("[PUMP-TRAIL] UNDER_STOP hit1 mark %s %s (px=%.6f stop=%.6f)",
+                                 instId, posSide, current_px, stop_px)
+                else:
+                    dt_sec = (now_ms - since) / 1000.0
+                    if dt_sec >= TIME_UNDER_STOP_SEC:
+                        logging.warning("[PUMP-TRAIL] UNDER_STOP %.1fs => CLOSE %s %s (px=%.6f stop=%.6f)",
+                                        dt_sec, instId, posSide, current_px, stop_px)
+                        try:
+                            mark_symbol_tp(instId)
+                            maker_close_position_with_timeout(
+                                okx=okx,
+                                inst_id=instId,
+                                pos_side=posSide,
+                                sz=sz,
+                                last_px=current_px,
+                                timeout_sec=3,
+                            )
+                        except Exception as e:
+                            logging.error("[PUMP-TRAIL] close UNDER_STOP error %s: %s", instId, e)
+                        _reset_state(pos_key)
+                        UNDER_STOP_SINCE_MS.pop(pos_key, None)
+                        continue
+            elif safe_again:
+                # hồi lên lại trên stop => reset mark
+                if UNDER_STOP_SINCE_MS.get(pos_key, 0) > 0:
+                    logging.info("[PUMP-TRAIL] UNDER_STOP reset %s %s (px=%.6f stop=%.6f)",
+                                 instId, posSide, current_px, stop_px)
+                UNDER_STOP_SINCE_MS.pop(pos_key, None)
+
+            # pump mode: không đặt trailing server, để soft-trail tiếp tục quản lý
+            continue
+
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
         
@@ -4638,15 +4828,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
