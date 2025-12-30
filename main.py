@@ -4656,9 +4656,10 @@ def run_dynamic_tp(okx: "OKXClient"):
             if age_min >= 120 and pnl_pct < 5.0:
                 logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
                                 instId, posSide, age_min, pnl_pct)
+                posId = str(p.get("posId") or "").strip()
                 try:
                     mark_symbol_sl(instId, "timeout_120m")
-                    log_close_type(posId, instId, posSide, avg_px, sz, "OUTTIME")
+                    log_close_type(instId, posSide, avg_px, sz, "OUTTIME", posId=posId)
                     okx.close_swap_position(instId, posSide)
                 except Exception as e:
                     logging.error("[TIMEOUT] Lỗi đóng lệnh %s: %s", instId, e)
