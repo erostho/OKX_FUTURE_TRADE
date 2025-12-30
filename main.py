@@ -86,7 +86,7 @@ MAX_SL_PNL_PCT = 6
 MAX_EMERGENCY_SL_PNL_PCT = 4.5  # qua -4.5% là cắt khẩn cấp
 # ===== TRAILING SERVER-SIDE (OKX ALGO) =====
 TP_TRAIL_SERVER_MIN_PNL_PCT = 8.0   # chỉ bật trailing server khi PnL >= 8%
-TRAIL_SERVER_CALLBACK_PCT = 1.3   # giá rút lại 7% từ đỉnh thì cắt
+TRAIL_SERVER_CALLBACK_PCT = 1.5   # giá rút lại 7% từ đỉnh thì cắt
 
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
@@ -123,7 +123,7 @@ EARLY_FAIL_CUT_LOSS_PCT = -4              # mà đã xuống -4% => cắt ngay
 
 # ======== TRAILING TP CONFIG ========
 TP_TRAIL_MIN_PNL_PCT   = 8.0   # chỉ bắt đầu trailing khi pnl >= 8%
-TP_TRAIL_CALLBACK_PCT  = 1.3    # giá rút lại 7%pnl từ đỉnh thì cắt
+TP_TRAIL_CALLBACK_PCT  = 1.5    # giá rút lại 7%pnl từ đỉnh thì cắt
 
 # Lưu đỉnh PnL cho từng vị thế để trailing local
 # key: f"{instId}_{posSide}_{posId}" -> value: peak_pnl_pct (float)
@@ -430,8 +430,8 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     if pnl_pct < 40.0:
         return TRAIL_SERVER_CALLBACK_PCT
     # 2) Vùng dynamic 40–100%: 5% -> 3.5%
-    cb_high = 0.8   # callback ở 40%
-    cb_low  = 0.5   # callback ở 100%
+    cb_high = 1   # callback ở 40%
+    cb_low  = 0.7   # callback ở 100%
     if pnl_pct >= 100.0:
         return cb_low
     # t từ 0 -> 1 khi pnl từ 40 -> 100
