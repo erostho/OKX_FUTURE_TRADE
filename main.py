@@ -26,7 +26,7 @@ SESSION_STATE_SHEET_NAME = os.getenv("SESSION_STATE_SHEET_NAME", "SESSION_STATE"
 # ========== CONFIG ==========
 OKX_BASE_URL = "https://www.okx.com"
 CACHE_FILE = os.getenv("TRADE_CACHE_FILE", "trade_cache.json")
-
+CLOSED_POSID_SET = set()
 # Trading config
 FUT_LEVERAGE = 6              # x6 isolated
 NOTIONAL_PER_TRADE = 30.0     # 30 USDT position size (ký quỹ ~5$ với x6)
@@ -605,16 +605,25 @@ def is_symbol_locked(inst_id: str) -> bool:
         return False
     return True
 CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
-
 def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: float, closeType: str):
+    posId = str(posId or "").strip()
+    if not posId:
+        return
+
+    # ✅ CHỐNG GHI TRÙNG
+    if posId in CLOSED_POSID_SET:
+        return
+
+    CLOSED_POSID_SET.add(posId)
+
     ev = {
-        "posId": str(posId or "").strip(),
+        "posId": posId,
         "ts": int(time.time() * 1000),
-        "instId": str(instId or "").strip(),
-        "posSide": str(posSide or "").strip().lower(),   # normalize
+        "instId": instId,
+        "posSide": posSide.lower(),
         "openPx": float(openPx or 0),
         "sz": float(sz or 0),
-        "closeType": str(closeType or "UNKNOWN").strip().upper(),
+        "closeType": closeType.upper(),
     }
 
     # 1) giữ in-memory để match ngay (khỏi phải reload)
@@ -633,6 +642,15 @@ def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: flo
     except Exception:
         pass
 
+def load_closed_posids_from_sheet():
+    try:
+        rows = read_close_events_sheet()  # list of dict
+        for r in rows:
+            pid = str(r.get("posId") or "").strip()
+            if pid:
+                CLOSED_POSID_SET.add(pid)
+    except Exception as e:
+        logging.error("load_closed_posids_from_sheet error: %s", e)
 
 
 # ===== CLOSE TYPE MATCHER (for positions-history -> BT_TRADES_CACHE) =====
@@ -2431,7 +2449,9 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             pos_side = p.get("posSide")
             open_px = p.get("openPx")
             sz = p.get("sz")
-        
+            if pos_id in CLOSED_POSID_SET:
+                continue
+
             append_close_event_to_sheet({
                 "posId": pos_id,
                 "ts": ctime_ms,
@@ -5304,6 +5324,7 @@ def main():
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
     # WATCHER: phát hiện lệnh đóng bởi sàn (OCO/TP-SL) và ghi vào CLOSE_EVENTS
+    load_closed_posids_from_sheet()
     watch_server_closures_and_append_close_events(okx)  
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
