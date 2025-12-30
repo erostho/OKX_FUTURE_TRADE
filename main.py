@@ -602,7 +602,118 @@ def is_symbol_locked(inst_id: str) -> bool:
         ALT_SWEEP_LOCKS.pop(inst_id, None)
         return False
     return True
+CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
 
+def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeType: str):
+    ev = {
+        "ts": int(time.time() * 1000),
+        "instId": str(instId),
+        "posSide": str(posSide),
+        "openPx": float(openPx or 0),
+        "sz": float(sz or 0),
+        "closeType": str(closeType or "UNKNOWN"),
+    }
+    try:
+        with open(CLOSE_EVENT_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logging.error("[CLOSE-TYPE] write error: %s", e)
+
+# ===== CLOSE TYPE MATCHER (for positions-history -> BT_TRADES_CACHE) =====
+_CLOSE_EVENTS = []
+
+def _load_close_events(limit=12000):
+    global _CLOSE_EVENTS
+    _CLOSE_EVENTS = []
+    try:
+        if not os.path.exists(CLOSE_EVENT_FILE):
+            return
+        with open(CLOSE_EVENT_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    _CLOSE_EVENTS.append(json.loads(line))
+                except Exception:
+                    continue
+        if len(_CLOSE_EVENTS) > limit:
+            _CLOSE_EVENTS = _CLOSE_EVENTS[-limit:]
+    except Exception as e:
+        logging.error("[CLOSE-TYPE] load events error: %s", e)
+
+def _rel_diff(a: float, b: float) -> float:
+    if a <= 0 or b <= 0:
+        return 999.0
+    return abs(a - b) / a
+
+def match_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTimeMs: int) -> str:
+    """
+    Match history trade -> closeType dựa trên event bot đã log.
+    Priority: instId+posSide, openPx gần đúng, sz gần đúng, thời gian gần.
+    """
+    instId = str(instId or "")
+    posSide = str(posSide or "")
+    openPx = float(openPx or 0.0)
+    sz = float(sz or 0.0)
+    closeTimeMs = int(closeTimeMs or 0)
+
+    if not instId or not posSide or closeTimeMs <= 0:
+        return "UNKNOWN"
+
+    # scan ngược để ăn event mới nhất
+    best_type = None
+    best_score = 1e18
+
+    for ev in reversed(_CLOSE_EVENTS[-8000:]):
+        try:
+            if str(ev.get("instId")) != instId:
+                continue
+            if str(ev.get("posSide")) != posSide:
+                continue
+
+            ev_open = float(ev.get("openPx") or 0.0)
+            ev_sz = float(ev.get("sz") or 0.0)
+            ev_ts = int(ev.get("ts") or 0)
+
+            # openPx tolerance: 0.35%
+            if openPx > 0 and ev_open > 0:
+                if _rel_diff(openPx, ev_open) > 0.0035:
+                    continue
+
+            # sz tolerance: 3%
+            if sz > 0 and ev_sz > 0:
+                if abs(ev_sz - sz) / max(sz, 1e-12) > 0.03:
+                    continue
+
+            dt_min = abs(closeTimeMs - ev_ts) / 60000.0
+
+            tag = str(ev.get("closeType") or "UNKNOWN").upper()
+
+            # cửa sổ thời gian:
+            # - CLOSE nội bộ thường gần (<=45 phút)
+            # - TRAILING có thể lâu (<=24h)
+            if tag == "TRAILING":
+                if dt_min > 24 * 60:
+                    continue
+            else:
+                if dt_min > 45:
+                    continue
+
+            # score: ưu tiên gần thời gian; cộng nhẹ penalty openPx lệch
+            px_pen = 0.0
+            if openPx > 0 and ev_open > 0:
+                px_pen = _rel_diff(openPx, ev_open) * 100.0  # %
+            score = dt_min * 10.0 + px_pen
+
+            if score < best_score:
+                best_score = score
+                best_type = tag
+
+        except Exception:
+            continue
+
+    return best_type or "UNKNOWN"
 
 def safe_float(x, default=0.0):
     try:
@@ -1391,7 +1502,7 @@ def get_bt_cache_worksheet():
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=BT_CACHE_SHEET_NAME, rows=10, cols=10)
         ws.append_row(["posId", "instId", "side", "sz",
-                       "openPx", "closePx", "pnl", "cTime"])
+                       "openPx", "closePx", "pnl", "cTime", "closeType"])
         logging.info("[BT-CACHE] Tạo sheet %s mới.", BT_CACHE_SHEET_NAME)
 
     return ws
@@ -1411,7 +1522,7 @@ def load_bt_cache():
         # Ép header chuẩn, bỏ qua mấy cột trống phía sau
         rows = ws.get_all_records(
             expected_headers=["posId", "instId", "side", "sz",
-                              "openPx", "closePx", "pnl", "cTime"]
+                              "openPx", "closePx", "pnl", "cTime", "closeType"]
         )
     except Exception as e:
         logging.error("[BT-CACHE] Lỗi get_all_records: %s", e)
@@ -1422,8 +1533,8 @@ def load_bt_cache():
         data_rows = values[1:]  # bỏ dòng header
         rows = []
         for r in data_rows:
-            # pad cho đủ 8 cột
-            r = (r + [""] * 8)[:8]
+            # pad cho đủ 9 cột
+            r = (r + [""] * 9)[:9]
             rows.append({
                 "posId":   r[0],
                 "instId":  r[1],
@@ -1433,6 +1544,7 @@ def load_bt_cache():
                 "closePx": r[5],
                 "pnl":     r[6],
                 "cTime":   r[7],
+                "closeType": r[8],
             })
 
     trades = []
@@ -1449,6 +1561,7 @@ def load_bt_cache():
                 "closeAvgPx": float(r.get("closePx", 0) or 0),
                 "pnl":        float(r.get("pnl", 0) or 0),
                 "cTime":      str(r.get("cTime", 0) or 0),
+                "closeType":  str(r.get("closeType", "") or "UNKNOWN"),
             })
         except Exception as e:
             logging.error("[BT-CACHE] Lỗi parse row %s: %s", r, e)
@@ -1500,6 +1613,7 @@ def append_bt_cache(new_trades):
             t.get("closePx") or t.get("closeAvgPx", ""),
             t.get("pnl", ""),
             ctime,
+            t.get("closeType", "UNKNOWN"),   # ✅ NEW
         ])
         added += 1
 
@@ -2119,18 +2233,22 @@ def load_real_trades_for_backtest(okx):
         if key in cached_keys:
             # đã lưu lệnh này vào BT_TRADES_CACHE rồi
             continue
+        close_ms = int(float(ctime_str or 0))
+        close_type = match_close_type(inst_id, pos_side, open_px, sz, close_ms)
 
         try:
             new_trades.append(
                 {
                     "posId": pid,
                     "instId": d.get("instId"),
-                    "side": d.get("side"),
+                    #"side": d.get("side"),
+                    "side": pos_side,   # long / short
                     "sz": float(d.get("sz") or 0),
                     "openPx": float(d.get("openAvgPx") or d.get("avgPx") or 0),
                     "closePx": float(d.get("closePx") or 0),
                     "pnl": float(d.get("pnl") or 0),
                     "cTime": ctime_str,   # dùng làm phần còn lại của key
+                    "closeType": close_type,
                 }
             )
         except Exception as e:
@@ -2197,6 +2315,28 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
         win = (tp / total * 100.0) if total > 0 else 0.0
         return total, tp, sl, even, pnl_sum, win
+    from collections import defaultdict
+
+    def format_close_type_breakdown(trades: list, limit: int = 10) -> str:
+        """
+        trades: list[dict] có keys: closeType, pnl
+        output: '5 EMERGENCY (-3.10) | 3 TRAILING (+7.20) | ...'
+        """
+        buckets = defaultdict(lambda: {"cnt": 0, "pnl": 0.0})
+        for t in trades:
+            ct = str(t.get("closeType") or "UNKNOWN").upper()
+            pnl = float(t.get("pnl") or 0.0)
+            buckets[ct]["cnt"] += 1
+            buckets[ct]["pnl"] += pnl
+    
+        items = [(ct, v["cnt"], v["pnl"]) for ct, v in buckets.items()]
+        # sort: nhiều lệnh trước, nếu bằng nhau thì pnl lớn trước
+        items.sort(key=lambda x: (-x[1], -x[2]))
+    
+        parts = []
+        for ct, cnt, pnl in items[:limit]:
+            parts.append(f"{cnt} {ct} ({pnl:+.2f})")
+        return " | ".join(parts) if parts else "(none)"
 
     def get_vn_dt(t: dict):
         ctime_str = t.get("cTime") or t.get("uTime")
@@ -2240,6 +2380,7 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
         f"win={t_win:.1f}% | "
         f"PNL={t_pnl:+.2f} USDT"
     )
+    msg_today += "\n📌 CLOSE TYPE: " + format_close_type_breakdown(only_today, limit=12)
 
     # ================== SESSION TODAY ==================
     sessions = [
@@ -4213,6 +4354,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, age_min, pnl_pct)
                 try:
                     mark_symbol_sl(instId, "timeout_120m")
+                    log_close_type(instId, posSide, avg_px, sz, "OUTTIME")
                     okx.close_swap_position(instId, posSide)
                 except Exception as e:
                     logging.error("[TIMEOUT] Lỗi đóng lệnh %s: %s", instId, e)
@@ -4243,6 +4385,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_sl(instId, "early_fail")
+                    log_close_type(instId, posSide, avg_px, sz, "EARLY")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -4268,6 +4411,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
             try:
                 mark_symbol_sl(instId, "emergency_sl")
+                log_close_type(instId, posSide, avg_px, sz, "EMERGENCY")
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
@@ -4331,6 +4475,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     )
                     try:
                         mark_symbol_tp(instId)
+                        log_close_type(instId, posSide, avg_px, sz, "LADDER")
                         maker_close_position_with_timeout(
                             okx=okx,
                             inst_id=instId,
@@ -4442,6 +4587,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, current_px, hard_floor)
                 try:
                     mark_symbol_tp(instId)
+                    log_close_type(instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -4469,6 +4615,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                         dt_sec, instId, posSide, current_px, stop_px)
                         try:
                             mark_symbol_tp(instId)
+                            log_close_type(instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
                             maker_close_position_with_timeout(
                                 okx=okx,
                                 inst_id=instId,
@@ -4546,6 +4693,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
+                log_close_type(instId, posSide, avg_px, sz, "TRAILING")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
@@ -4607,6 +4755,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_tp(instId)
+                    log_close_type(instId, posSide, avg_px, sz, "TP_DYN")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -4630,6 +4779,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
             try:
                 mark_symbol_tp(instId)
+                log_close_type(instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
                 used = maker_close_position_with_timeout(
                     okx=okx,
                     inst_id=instId,
@@ -4821,7 +4971,7 @@ def main():
         api_secret=os.getenv("OKX_API_SECRET"),
         passphrase=os.getenv("OKX_API_PASSPHRASE")
     )
-
+    _load_close_events()
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
     
