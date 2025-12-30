@@ -4838,7 +4838,8 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         if pump_mode and pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             # 1) current price (giữ đúng logic bạn đang dùng)
-            mark_px = None
+            mark_px = okx.get_mark_price(inst_id)
+            last_px = okx.get_last_price(inst_id) if mark_px is None else None
             current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
 
             # 2) callback pump (nới có kiểm soát + cap)
@@ -4963,6 +4964,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             continue
 
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
+            posId = str(p.get("posId") or "").strip()
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
         
             # >>> lấy giá realtime để set activePx (ưu tiên mark, fallback last, cuối cùng mới fallback candle close)
@@ -5017,7 +5019,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
                 posId = str(p.get("posId") or "").strip()
-                log_close_type(posId, instId, posSide, avg_px, sz, "TRAILING")
+                log_close_type(posId, inst_id, pos_side, avg_px, sz, "TRAILING")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
