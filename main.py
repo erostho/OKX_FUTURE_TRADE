@@ -606,8 +606,9 @@ def is_symbol_locked(inst_id: str) -> bool:
     return True
 CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
 
-def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeType: str):
+def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: float, closeType: str):
     ev = {
+        "posId": str(posId or "").strip(),
         "ts": int(time.time() * 1000),
         "instId": str(instId or "").strip(),
         "posSide": str(posSide or "").strip().lower(),   # normalize
@@ -4633,7 +4634,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, age_min, pnl_pct)
                 try:
                     mark_symbol_sl(instId, "timeout_120m")
-                    log_close_type(instId, posSide, avg_px, sz, "OUTTIME")
+                    log_close_type(posId, instId, posSide, avg_px, sz, "OUTTIME")
                     okx.close_swap_position(instId, posSide)
                 except Exception as e:
                     logging.error("[TIMEOUT] Lỗi đóng lệnh %s: %s", instId, e)
@@ -4664,7 +4665,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_sl(instId, "early_fail")
-                    log_close_type(instId, posSide, avg_px, sz, "EARLY")
+                    log_close_type(posId, instId, posSide, avg_px, sz, "EARLY")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -4690,7 +4691,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
             try:
                 mark_symbol_sl(instId, "emergency_sl")
-                log_close_type(instId, posSide, avg_px, sz, "EMERGENCY")
+                log_close_type(posId, instId, posSide, avg_px, sz, "EMERGENCY")
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
                 logging.error("[TP-DYN] Lỗi đóng lệnh %s: %s", instId, e)
@@ -4754,7 +4755,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     )
                     try:
                         mark_symbol_tp(instId)
-                        log_close_type(instId, posSide, avg_px, sz, "LADDER")
+                        log_close_type(posId, instId, posSide, avg_px, sz, "LADDER")
                         maker_close_position_with_timeout(
                             okx=okx,
                             inst_id=instId,
@@ -4799,6 +4800,7 @@ def run_dynamic_tp(okx: "OKXClient"):
 
         if pump_mode and pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             # 1) current price (giữ đúng logic bạn đang dùng)
+            mark_px = None
             current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
 
             # 2) callback pump (nới có kiểm soát + cap)
@@ -4866,7 +4868,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, current_px, hard_floor)
                 try:
                     mark_symbol_tp(instId)
-                    log_close_type(instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
+                    log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -4894,7 +4896,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                         dt_sec, instId, posSide, current_px, stop_px)
                         try:
                             mark_symbol_tp(instId)
-                            log_close_type(instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
+                            log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
                             maker_close_position_with_timeout(
                                 okx=okx,
                                 inst_id=instId,
@@ -4972,7 +4974,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
-                log_close_type(instId, posSide, avg_px, sz, "TRAILING")
+                log_close_type(posId, instId, posSide, avg_px, sz, "TRAILING")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
@@ -5034,7 +5036,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_tp(instId)
-                    log_close_type(instId, posSide, avg_px, sz, "TP_DYN")
+                    log_close_type(posId, instId, posSide, avg_px, sz, "TP_DYN")
                     maker_close_position_with_timeout(
                         okx=okx,
                         inst_id=instId,
@@ -5058,7 +5060,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
             try:
                 mark_symbol_tp(instId)
-                log_close_type(instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
+                log_close_type(posId, instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
                 used = maker_close_position_with_timeout(
                     okx=okx,
                     inst_id=instId,
