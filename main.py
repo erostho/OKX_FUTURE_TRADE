@@ -113,7 +113,7 @@ TP_BE_TIER = {}  # key -> tier đã set (0/1/2/3...)
 
 TP_BE_TIERS = [
     #(3.0, 0.15),  # >=2%  -> BE +0.15%
-    (5.0, 0.25),  # >=5%  -> BE +0.25% 
+    (5.0, 0.25),  # >=5%  -> BE +0.25%
     (8.0, 0.35),  # >=8%  -> BE +0.35%
 ]
 
@@ -221,12 +221,13 @@ def _vn_now():
 
 def _vn_hour():
     return datetime.fromtimestamp(_vn_now()).hour
-    
+
 def _is_session_16_20(now=None):
     if now is None:
         now = datetime.utcnow() + timedelta(hours=7)
     h = now.hour
     return 16 <= h < 20
+
 def _is_session_20_24():
     h = _vn_hour()
     return 20 <= h < 24
@@ -298,6 +299,7 @@ def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     except:
         pass
     return False
+
 def _allow_trade_session_16_20(market_regime=None, confidence=None, trend_score=None):
     if not _is_session_16_20():
         return True, "ok:not_16_20"
@@ -416,6 +418,7 @@ def is_anti_sweep_locked() -> bool:
         ANTI_SWEEP_LOCK_UNTIL = None
         return False
     return True
+
 def _load_symbol_cooldown_state() -> dict:
     if not os.path.exists(SYMBOL_COOLDOWN_FILE):
         return {}
@@ -633,6 +636,7 @@ def in_short_term_vol_deadzone(closes_5m, threshold_pct: float = 1.0) -> bool:
         return True
 
     return False
+
 def _utc_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
@@ -658,6 +662,7 @@ def is_symbol_locked(inst_id: str) -> bool:
         return False
     return True
 CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
+
 def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: float, closeType: str):
     posId = str(posId or "").strip()
     if not posId:
@@ -732,7 +737,6 @@ def match_close_type(instId: str, posSide: str, openPx: float, sz: float, closeT
                 continue
             if str(ev.get("posSide") or "").strip().lower() != posSide:   # ✅ normalize compare
                 continue
-            ...
             ev_open = float(ev.get("openPx") or 0.0)
             ev_sz = float(ev.get("sz") or 0.0)
             ev_ts = int(ev.get("ts") or 0)
@@ -781,7 +785,7 @@ def safe_float(x, default=0.0):
         return float(x)
     except Exception:
         return default
-        
+
 # ===== PUMP MODE + SOFT TRAIL STATES =====
 PUMP_MODE_UNTIL_MS = {}           # pos_key -> timestamp ms
 SOFT_TRAIL_PEAK_PX = {}           # pos_key -> peak price (bot-managed when pump mode)
@@ -896,11 +900,9 @@ def now_str_vn():
     return (datetime.utcnow() + timedelta(hours=7)).strftime("%d/%m/%Y %H:%M")
 
 
-
-
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 23 or now_vn.hour < 6
+    return now_vn.hour >= 24 or now_vn.hour < 6
 
 
 def is_backtest_time_vn():
@@ -908,14 +910,14 @@ def is_backtest_time_vn():
     Chạy backtest theo PHIÊN:
       - 09:05  -> tổng kết phiên 0–9
       - 15:05  -> tổng kết phiên 9–15
-      - 20:05  -> tổng kết phiên 15–20 
+      - 20:05  -> tổng kết phiên 15–20
       - 22:50  -> tổng kết phiên 20–24
     """
     now_vn = datetime.utcnow() + timedelta(hours=7)
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 15, 20) and 4 <= m <= 9:
+    if h in (9, 15, 23) and 4 <= m <= 9:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -951,12 +953,10 @@ def get_current_session_vn():
         return "20-24"
 
 
-
-
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
-        
+
     def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
         self.api_secret = api_secret
@@ -1009,13 +1009,13 @@ class OKXClient:
     def _request(self, method, path, params=None, body_dict=None):
         """
         Wrapper gọi OKX API, KÝ ĐÚNG CHUỖI cho cả GET (có query) & POST.
-    
+
         - GET  : prehash = ts + method + path + '?' + query_str
         - POST : prehash = ts + method + path + body_str
         """
         # Base URL thô chưa query
         base_url = OKX_BASE_URL + path
-    
+
         # Chuẩn bị query / body + chuỗi dùng để ký
         if method.upper() == "GET":
             # build query string (nếu có params)
@@ -1032,35 +1032,35 @@ class OKXClient:
             url = base_url
             sign_path = path
             body_str = json.dumps(body_dict) if body_dict is not None else ""
-    
+
         # Headers với chuỗi sign_path & body_str đã chuẩn
         headers = self._headers(method.upper(), sign_path, body_str)
-    
+
         try:
             if method.upper() == "GET":
                 # query đã gắn vào url, nên params=None
                 r = requests.get(url, headers=headers, timeout=15)
             else:
                 r = requests.post(url, headers=headers, data=body_str, timeout=15)
-    
+
             if r.status_code != 200:
                 logging.error("✗ OKX REQUEST FAILED")
                 logging.error("URL: %s", r.url)
                 logging.error("Status Code: %s", r.status_code)
                 logging.error("Response: %s", r.text)
                 r.raise_for_status()
-    
+
             data = r.json()
             code = data.get("code")
             msg = data.get("msg", "")
-            
+
             if code != "0":
                 logging.error("❌ OKX RESPONSE ERROR code=%s msg=%s", code, msg)
                 logging.error("Full response: %s", data)
                 raise Exception(f"OKX API error code={code} msg={msg} resp={data}")
             return data
 
-    
+
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
             raise
@@ -1188,7 +1188,7 @@ class OKXClient:
     def get_candles(self, inst_id, bar="15m", limit=100):
         if inst_id.endswith("-USDT") and not inst_id.endswith("-USDT-SWAP"):
             inst_id = f"{inst_id}-SWAP"
-    
+
         path = "/api/v5/market/candles"
         params = {
             "instId": inst_id,
@@ -1232,7 +1232,7 @@ class OKXClient:
         except Exception:
             return None
 
-        
+
     def get_swap_tickers(self):
         path = "/api/v5/market/tickers"
         params = {"instType": "SWAP"}
@@ -1363,19 +1363,19 @@ class OKXClient:
     ):
         """
         Đặt trailing stop server-side (ordType = move_order_stop)
-    
+
         callback_ratio_pct: nhập theo % (vd 7.0) -> tự đổi sang ratio 0.07
         OKX yêu cầu callbackRatio nằm trong [0.001, 1].
         """
         # 1) đổi % sang ratio
         ratio = callback_ratio_pct / 100.0  # 7.0 -> 0.07
-    
+
         # 2) kẹp trong range hợp lệ
         if ratio < 0.001:
             ratio = 0.001
         elif ratio > 1.0:
             ratio = 1.0
-    
+
         path = "/api/v5/trade/order-algo"
         body = {
             "instId": inst_id,
@@ -1388,7 +1388,7 @@ class OKXClient:
             "activePx": f"{active_px:.6f}",    # giá kích hoạt trailing
             "triggerPxType": "mark",
         }
-    
+
         logging.info(
             "[TP-TRAIL] Gửi trailing server-side %s sz=%s callbackRatio=%.4f activePx=%.6f",
             inst_id,
@@ -1396,7 +1396,7 @@ class OKXClient:
             ratio,
             active_px,
         )
-    
+
         return self._request("POST", path, body_dict=body)
 
 
@@ -1436,10 +1436,10 @@ class OKXClient:
 
 
 # ========= CÁC HÀM CACHE TRADES CHO BACKTEST REAL =========
-    
 
 
 # ===== SESSION SHEET (circuit breaker) =====
+
 def maker_close_position_with_timeout(
     okx: OKXClient,
     posId: str,
@@ -1568,6 +1568,7 @@ def get_bt_cache_worksheet():
         logging.info("[BT-CACHE] Tạo sheet %s mới.", BT_CACHE_SHEET_NAME)
 
     return ws
+
 def get_close_events_worksheet():
     gc = get_gspread_client()
     if not gc:
@@ -1610,6 +1611,7 @@ def append_close_event_to_sheet(ev: dict):
         ], value_input_option="USER_ENTERED")
     except Exception as e:
         logging.error("[CLOSE-EVENTS] append row error: %s", e)
+
 def read_close_events_sheet(limit: int = 5000):
     """
     Đọc sheet CLOSE_EVENTS và trả về list[dict] theo header.
@@ -1684,7 +1686,7 @@ def append_close_event_to_sheet(ev: dict):
         return
     try:
         ws.append_row([
-            str(ev.get("posId", "")), 
+            str(ev.get("posId", "")),
             str(ev.get("ts", "")),
             str(ev.get("instId", "")),
             str(ev.get("posSide", "")),
@@ -1795,6 +1797,7 @@ def load_bt_cache():
 
     logging.info("[BT-CACHE] Load cache: %d trades.", len(trades))
     return trades
+
 def append_bt_cache(new_trades):
     if not new_trades:
         return
@@ -1968,6 +1971,7 @@ def check_session_circuit_breaker(okx) -> bool:
 
     logging.info("[SESSION] Circuit breaker OK -> tiếp tục cho phép mở lệnh.")
     return True
+
 def _median(nums):
     nums = sorted([x for x in nums if x is not None])
     if not nums:
@@ -2053,7 +2057,6 @@ def should_unlock_market(okx) -> tuple[bool, str]:
         return False, f"unlock_exception:{e}"
 
 
-
 def check_day_hard_stop(okx) -> tuple[bool, str]:
     """
     HARD STOP theo ngày (USDT). Lưu state vào SESSION sheet với session='DAY'
@@ -2083,7 +2086,7 @@ def check_day_hard_stop(okx) -> tuple[bool, str]:
         save_session_state(state)
         return False, f"day_lock_trigger(pnl={pnl_usdt:.2f}<=-{DAY_MAX_LOSS_USDT:.2f})"
     return True, f"day_ok(pnl={pnl_usdt:.2f})"
-    
+
 def _candle_to_ohlcv(c):
     # OKX candles: [ts, o, h, l, c, vol, volCcy, volCcyQuote, confirm]
     o = float(c[1]); h = float(c[2]); l = float(c[3]); cl = float(c[4]); v = float(c[5])
@@ -2182,7 +2185,7 @@ def _get_top_swap_symbols_by_change_24h(okx, topn: int):
     except Exception as e:
         logging.error("[DEADZONE-OVERRIDE] get top symbols error: %s", e)
         return []
-    
+
 def deadzone_override_strong_edge(okx):
     """
     True nếu đủ điều kiện để override DEADZONE hard lock.
@@ -2292,7 +2295,6 @@ def deadzone_override_strong_edge(okx):
         return (False, "exception") if DEADZONE_OVERRIDE_FAILSAFE_LOCK else (True, "failsafe_unlock")
 
 
-
 def check_market_lock_unlock(okx) -> tuple[bool, str]:
     """
     - DEADZONE 15-20: hard lock (không mở lệnh mới)
@@ -2383,6 +2385,7 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
     return True, f"market_ok(regime={regime}, bad_count={bad_count})"
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
+
 def _load_json_file(path: str, default):
     try:
         import json
@@ -2450,7 +2453,7 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
     # đổi về UTC timestamp ms (vì OKX cTime là ms epoch UTC)
     start_today_utc = start_today_vn - timedelta(hours=7)
     cutoff_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
-    
+
     # Nếu muốn "từ lần chạy trước" nhưng không vượt quá hôm nay:
     # (đảm bảo restart vẫn không kéo quá sâu)
     cutoff_ms = max(cutoff_ms, last_ctime_ms)
@@ -2486,17 +2489,17 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             rows = []
         if not rows:
             break
-        
+
         # OKX thường trả newest -> oldest trong mỗi page.
         # Nếu gặp item đầu tiên đã < cutoff => cả page này đều cũ -> break luôn.
         first_ctime = int(float(rows[0].get("cTime") or 0))
         if first_ctime and first_ctime < cutoff_ms:
             break
-        
+
         for p in rows:
             if not isinstance(p, dict):
                 continue
-        
+
             # lấy thời gian đóng từ OKX
             ctime_ms = int(float(
                 p.get("cTime")
@@ -2504,26 +2507,26 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
                 or p.get("ts")
                 or 0
             ))
-        
+
             # cũ hơn cutoff thì dừng (càng dưới càng cũ)
             if ctime_ms and ctime_ms < cutoff_ms:
                 break
-        
+
             # đã xử lý rồi thì bỏ
             if ctime_ms and ctime_ms <= last_ctime_ms:
                 continue
-        
+
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
-        
+
             # ===== POS ID (QUAN TRỌNG) =====
             pos_id = str(p.get("posId") or "").strip()
             if not pos_id:
                 continue
-        
+
             # nếu posId đã được ghi rồi thì bỏ
             if pos_id in existing_posids:
                 continue
-        
+
             inst_id = p.get("instId")
             pos_side = p.get("posSide")
             open_px = p.get("openPx")
@@ -2540,7 +2543,7 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
                 "sz": sz,
                 "closeType": "OCO_SL"
             })
-        
+
             existing_posids.add(pos_id)
             appended += 1
 
@@ -2639,7 +2642,7 @@ def load_real_trades_for_backtest(okx):
         inst_id  = d.get("instId")
         pos_side = str(d.get("posSide") or "").strip().lower()   # ✅ normalize
         open_px  = float(d.get("openAvgPx") or d.get("avgPx") or 0)
-        sz       = float(d.get("sz") or 0)        
+        sz       = float(d.get("sz") or 0)
         if not pid or not ctime_str:
             continue
         key = f"{pid}_{ctime_str}"
@@ -2740,11 +2743,11 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
             pnl = float(t.get("pnl") or 0.0)
             buckets[ct]["cnt"] += 1
             buckets[ct]["pnl"] += pnl
-    
+
         items = [(ct, v["cnt"], v["pnl"]) for ct, v in buckets.items()]
         # sort: nhiều lệnh trước, nếu bằng nhau thì pnl lớn trước
         items.sort(key=lambda x: (-x[1], -x[2]))
-    
+
         parts = []
         for ct, cnt, pnl in items[:limit]:
             parts.append(f"{cnt} {ct} ({pnl:+.2f})")
@@ -2876,8 +2879,6 @@ def prepare_worksheet():
     return ws
 
 
-
-
 def append_signals(ws, trades):
     rows = []
     for t in trades:
@@ -2946,6 +2947,7 @@ def load_history_from_drive():
     except Exception as e:
         logging.error("[DRIVE] Lỗi load_history_from_drive: %s", e)
         return []
+
 def append_trade_to_drive(trade: dict):
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
     if not file_id:
@@ -3027,6 +3029,7 @@ def send_telegram_message(text):
 
 
 # ========== SCANNER LOGIC ==========
+
 def build_signals_pump_dump_pro(okx: "OKXClient"):
 
     # -------- B0: BTC 5m cho market filter --------
@@ -3076,7 +3079,6 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         logging.warning("[PUMP_PRO_V2] Lỗi anti-sweep BTC 5m: %s", e)
 
 
-        
     # -------- B1: pre-filter bằng FUTURES tickers 24h (SWAP) --------
     try:
         fut_tickers = okx.get_swap_tickers()
@@ -3290,23 +3292,23 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
         if PUMP_FOLLOW_THROUGH_ENABLED:
             if len(c5_sorted) < 4:
                 continue
-        
+
             sp = c5_sorted[-3]   # spike candle (closed)
             cf = c5_sorted[-2]   # confirm candle (closed)
-        
+
             sp_o, sp_h, sp_l, sp_c, sp_v = safe_float(sp[1]), safe_float(sp[2]), safe_float(sp[3]), safe_float(sp[4]), safe_float(sp[5])
             cf_o, cf_h, cf_l, cf_c, cf_v = safe_float(cf[1]), safe_float(cf[2]), safe_float(cf[3]), safe_float(cf[4]), safe_float(cf[5])
-        
+
             sp_rng = max(sp_h - sp_l, 1e-8)
             cf_rng = max(cf_h - cf_l, 1e-8)
             sp_body = abs(sp_c - sp_o)
             cf_body = abs(cf_c - cf_o)
             cf_close_pos = (cf_c - cf_l) / cf_rng  # 0..1
-        
+
             # ratio check
             body_ok = (sp_body <= 0) or (cf_body >= sp_body * PUMP_FT_BODY_MIN_RATIO)
             vol_ok  = (sp_v   <= 0) or (cf_v   >= sp_v   * PUMP_FT_VOL_MIN_RATIO)
-        
+
             if direction == "LONG":
                 # confirm phải là nến xanh + close nằm cao
                 if not (cf_c > cf_o and cf_close_pos >= PUMP_FT_CLOSEPOS_LONG_MIN and body_ok and vol_ok):
@@ -3458,6 +3460,7 @@ def build_signals_pump_dump_pro(okx: "OKXClient"):
     df = df.sort_values("score", ascending=False)
     logging.info("[PUMP_PRO_V2] Sau refine còn %d coin pass filter.", len(df))
     return df
+
 def build_signals_sideway_deadzone(okx: "OKXClient"):
     """
     #Scanner phiên DEADZONE (10h30–15h30 VN):
@@ -3641,7 +3644,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         # coin quá lì, mỗi nến dao động < DEADZONE_MIN_ATR_PCT% -> bỏ
         if atr_pct_5m < DEADZONE_MIN_ATR_PCT:
             continue
-            
+
         # EMA20 5m để làm "trục" cho mean-reversion
         ema20_5m = calc_ema(closes[-25:], 20) if len(closes) >= 25 else None
         if ema20_5m is None or ema20_5m <= 0:
@@ -3661,13 +3664,12 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
         # LONG: giá vừa "chọc xuống EMA20" rồi đóng trên EMA20, lệch không quá xa
         # require dist_pct nằm trong [-0.3%; +0.3%]
         DEADZONE_MAX_DIST = 0.5
-        
-        ...
+
         dist_ok = abs(dist_pct) <= DEADZONE_MAX_DIST
         small_range = range_5m / ema20_5m < 1  # bỏ nến quá dài (có thể là pump/dump mini)
-        
+
         direction = None
-        
+
         # LONG
         if (
             dist_ok
@@ -3676,7 +3678,7 @@ def build_signals_sideway_deadzone(okx: "OKXClient"):
             and small_range
         ):
             direction = "LONG"
-        
+
         # SHORT
         if (
             dist_ok
@@ -3744,17 +3746,17 @@ def plan_trades_from_signals(df, okx: "OKXClient"):
         is_light = (float(NOTIONAL_PER_TRADE) <= 6)
     except Exception:
         is_light = False
-    
+
     min_score = 7 if is_light else 6
     df = df[df["score"] >= min_score].copy()
     if df.empty:
         logging.info(f"[FILTER] Không có tín hiệu đạt score>={min_score} -> skip run")
         return planned
-    
+
     # Trade nhẹ: luôn chỉ 3 lệnh/run
     top_df = df.head(3)
 
-    
+
     logging.info("[INFO] Top signals:")
     logging.info(
         "%-4s %-12s %-8s %-8s %-10s %-10s",
@@ -3883,12 +3885,12 @@ def calc_atr_15m(okx: "OKXClient", inst_id: str, period: int = 14, limit: int = 
     atr = sum(trs[-period:]) / period
     return atr if atr > 0 else None
 
-    
+
 def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: float):
     """
     #TP/SL theo ATR 15m (phiên PUMP/DUMP):
       #- risk_pct ~ ATR/price, kẹp [1%; 4%]
-      #- RR = 2 (TP ≈ 2R, SL ≈ 1R) 
+      #- RR = 2 (TP ≈ 2R, SL ≈ 1R)
     """
     atr = calc_atr_15m(okx, inst_id)
     if not atr or atr <= 0:
@@ -3930,7 +3932,7 @@ def calc_tp_sl_from_atr(okx: "OKXClient", inst_id: str, direction: str, entry: f
 
     return tp, sl
 
-    
+
 def calc_scalp_tp_sl(entry: float, direction: str):
     tp_pct = 0.02  # 2%
     sl_pct = 0.01  # 1%
@@ -4029,6 +4031,7 @@ def build_open_position_map(okx: OKXClient):
             continue
     return pos_map
 # ========== EXECUTE FUTURES TRADES ==========
+
 def maker_first_open_position(
     okx: OKXClient,
     inst_id: str,
@@ -4270,7 +4273,7 @@ def execute_futures_trades(okx: OKXClient, trades):
                 "Không set được leverage cho %s, vẫn thử vào lệnh với leverage hiện tại.",
                 swap_inst,
             )
-        #NET MODE       
+        #NET MODE
         # 2) MỞ VỊ THẾ (MAKER-FIRST)
         time.sleep(0.2)
 
@@ -4307,7 +4310,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         else:
             tp_hard = real_entry * 0.2 # -80% cho SHORT
         lev = float(this_lever)  # hoặc lev = float(lever)
-        
+
         max_price_move = (MAX_SL_PNL_PCT / 100.0) / lev  # vd 7%/4 = 1.75% giá
 
         # SL theo plan
@@ -4318,7 +4321,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         else:
             sl_cap = real_entry * (1.0 + max_price_move)
             sl_px = min(sl_px, sl_cap)
-        
+
         logging.warning(f"[SL-CAP] {swap_inst} {signal} entry={real_entry:.8f} plan_sl={sl_px:.8f} cap_sl={sl_cap:.8f} lev={lev}")
 
         oco_resp = okx.place_oco_tp_sl(
@@ -4354,7 +4357,7 @@ def execute_futures_trades(okx: OKXClient, trades):
 
         # Nếu muốn vẫn giữ cache JSON local thì có thể gọi cả 2:
         # append_trade_to_cache(trade_cache_item)
-        
+
         # 🔥 Lưu lịch sử lên Google Drive (CSV)
         append_trade_to_drive(trade_cache_item)
 
@@ -4371,6 +4374,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         send_telegram_message(msg)
     else:
         logging.info("[INFO] Không có lệnh futures nào được mở thành công.")
+
 def cancel_oco_before_trailing(okx: OKXClient, inst_id: str, pos_side: str):
     """
     Tìm tất cả lệnh OCO TP/SL cùng instId + posSide và hủy
@@ -4529,13 +4533,13 @@ def infer_be_from_oco(okx: OKXClient, inst_id: str, pos_side: str, entry_px: flo
         off_pct = (sl_now / entry_px - 1.0) * 100.0
     else:
         off_pct = (1.0 - sl_now / entry_px) * 100.0
-    
+
     # Tier theo offset (nếu có TP_BE_TIERS)
     tier = 0
     for i, (_thr, off) in enumerate(TP_BE_TIERS, start=1):
         if off_pct >= float(off):
             tier = i
-    
+
     # Offset tối thiểu coi là "đã BE"
     # BE tối thiểu phải khớp với offset nhỏ nhất mà bot có thể dùng để dời SL
     min_off_from_tiers = 999.0
@@ -4545,12 +4549,12 @@ def infer_be_from_oco(okx: OKXClient, inst_id: str, pos_side: str, entry_px: flo
         pass
     min_be_off = min(float(TP_LADDER_BE_OFFSET_PCT), float(min_off_from_tiers))
 
-    
+
     # tolerance nhỏ để tránh nhiễu giá (0.01% là đủ)
     tol_pct = 0.01
-    
+
     is_be = off_pct >= (min_be_off - tol_pct)
-    
+
     return bool(is_be), int(tier), float(sl_now)
 
 def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
@@ -4580,7 +4584,7 @@ def has_trailing_server(okx: "OKXClient", inst_id: str, pos_side: str) -> bool:
         pass
 
     return False
-        
+
 def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: str, return_info: bool = False):
     """
     True nếu có ít nhất 1 trailing (move_order_stop) đang hoạt động cho inst_id + posSide.
@@ -4842,9 +4846,9 @@ def run_dynamic_tp(okx: "OKXClient"):
             if is_be:
                 TP_LADDER_BE_MOVED[pos_key] = True
                 TP_BE_TIER[pos_key] = max(int(TP_BE_TIER.get(pos_key, 0) or 0), int(inferred_tier or 0))
-        
+
             current_tier = int(TP_BE_TIER.get(pos_key, 0) or 0)
-        
+
             # (B) Nếu đã BE rồi thì SKIP (chỉ nâng khi lên tier cao hơn)
             if TP_LADDER_BE_MOVED.get(pos_key, False):
                 logging.info(
@@ -4860,7 +4864,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                         if pnl_pct >= thr:
                             desired_tier = i
                             desired_offset = off
-        
+
                     # chỉ move nếu tier > current (và current lúc này là 0)
                     if desired_tier > current_tier:
                         moved = move_oco_sl_to_be(okx, instId, posSide, sz, avg_px, desired_offset)
@@ -4879,7 +4883,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 TP_TRAIL_PEAK_PNL.get(pos_key, pnl_pct),
                 "YES" if TP_LADDER_BE_MOVED.get(pos_key, False) else "NO",
                 TP_BE_TIER.get(pos_key, 0),
-            ) 
+            )
             # 11.2) Ladder close theo peak_pnl
             closed_by_ladder = False
             for peak_thr, floor_thr in TP_LADDER_RULES:
@@ -5065,40 +5069,40 @@ def run_dynamic_tp(okx: "OKXClient"):
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             posId = str(p.get("posId") or "").strip()
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
-        
+
             # >>> lấy giá realtime để set activePx (ưu tiên mark, fallback last, cuối cùng mới fallback candle close)
             mark_px = okx.get_mark_price(inst_id)
             last_px = okx.get_last_price(inst_id) if mark_px is None else None
             current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
-        
+
             logging.info(
                 "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%% >= %.2f%%). callback=%.2f%%, activePx=%.6f (mark=%s, last=%s)",
                 inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
                 f"{mark_px:.6f}" if mark_px is not None else "None",
                 f"{last_px:.6f}" if last_px is not None else "None",
             )
-        
+
             # >>> nếu đã có trailing, kiểm tra có cần UPDATE không
             exists, info = has_active_trailing_for_position(okx, inst_id, pos_side, return_info=True)
             if exists and info:
                 old_algo_id = info.get("algoId")
                 old_active = safe_float(info.get("activePx") or 0.0)
                 old_cb = safe_float(info.get("callbackRatio") or 0.0)
-        
+
                 # ngưỡng update: activePx lệch > 0.2% hoặc callback lệch > 0.05%
                 need_update = False
                 if old_active > 0 and abs(old_active - current_px) / current_px > 0.002:
                     need_update = True
                 if abs(old_cb - callback_pct) > 0.05:
                     need_update = True
-        
+
                 if not need_update:
                     logging.info(
                         "[TP-TRAIL] Đã có trailing (%s) và vẫn hợp lệ -> không update (old_active=%.6f old_cb=%.2f%%).",
                         inst_id, old_active, old_cb
                     )
                     continue
-        
+
                 # >>> HỦY trailing cũ để đặt trailing mới (update thực sự)
                 try:
                     okx.cancel_algos(inst_id=inst_id, algo_ids=[old_algo_id])
@@ -5107,13 +5111,13 @@ def run_dynamic_tp(okx: "OKXClient"):
                     logging.error("[TP-TRAIL] Lỗi cancel trailing cũ %s algoId=%s: %s", inst_id, old_algo_id, e)
                     # nếu không hủy được thì thôi tránh spam đặt mới
                     continue
-        
+
             # Hủy OCO trước khi đặt trailing mới
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
                 logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-        
+
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
@@ -5132,7 +5136,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                              inst_id, pnl_pct, callback_pct, current_px)
             except Exception as e:
                 logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
-        
+
             continue  # đã giao cho sàn
 
 
@@ -5323,7 +5327,7 @@ def run_full_bot(okx):
     if not ok_day:
         logging.warning(f"[LOCK] DAY HARD STOP -> {day_reason}. Chỉ chạy quản lý lệnh (TP-DYN) thôi.")
         return
-    
+
     # 1.6) DEADZONE hard lock + MARKET soft lock/unlock
     ok_mkt, mkt_reason = check_market_lock_unlock(okx)
     if not ok_mkt:
@@ -5357,7 +5361,7 @@ def run_full_bot(okx):
         )
         return
     logging.info("[BOT] Anti-sweep check OK -> tiếp tục scan/mở lệnh.")
-    
+
     # 2) CHỌN SCANNER THEO GIỜ
     if is_deadzone_time_vn():
         logging.info("[MODE] 10h30–15h30 VN -> dùng scanner SIDEWAY DEADZONE.")
@@ -5388,7 +5392,7 @@ def run_full_bot(okx):
 
     # 6) Futures + Telegram
     execute_futures_trades(okx, planned_trades)
-    
+
 def main():
     setup_logging()
     now_utc = datetime.now(timezone.utc)
@@ -5404,19 +5408,19 @@ def main():
     apply_risk_config(okx)
     # WATCHER: phát hiện lệnh đóng bởi sàn (OCO/TP-SL) và ghi vào CLOSE_EVENTS
     load_closed_posids_from_sheet()
-    watch_server_closures_and_append_close_events(okx)  
+    watch_server_closures_and_append_close_events(okx)
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
-    
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
