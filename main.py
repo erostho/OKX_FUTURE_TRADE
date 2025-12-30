@@ -902,7 +902,7 @@ def now_str_vn():
 
 def is_quiet_hours_vn():
     now_vn = datetime.utcnow() + timedelta(hours=7)
-    return now_vn.hour >= 24 or now_vn.hour < 6
+    return now_vn.hour >= 23 or now_vn.hour < 6
 
 
 def is_backtest_time_vn():
@@ -917,7 +917,7 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 15, 23) and 4 <= m <= 9:
+    if h in (9, 15, 20) and 4 <= m <= 9:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
