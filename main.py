@@ -607,11 +607,11 @@ CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
 def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeType: str):
     ev = {
         "ts": int(time.time() * 1000),
-        "instId": str(instId),
-        "posSide": str(posSide),
+        "instId": str(instId or "").strip(),
+        "posSide": str(posSide or "").strip().lower(),   # ✅ normalize
         "openPx": float(openPx or 0),
         "sz": float(sz or 0),
-        "closeType": str(closeType or "UNKNOWN"),
+        "closeType": str(closeType or "UNKNOWN").strip().upper(),
     }
     _CLOSE_EVENTS.append(ev)
     try:
@@ -619,6 +619,7 @@ def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTyp
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
     except Exception as e:
         logging.error("[CLOSE-TYPE] write error: %s", e)
+
 
 # ===== CLOSE TYPE MATCHER (for positions-history -> BT_TRADES_CACHE) =====
 _CLOSE_EVENTS = []
@@ -649,12 +650,8 @@ def _rel_diff(a: float, b: float) -> float:
     return abs(a - b) / a
 
 def match_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTimeMs: int) -> str:
-    """
-    Match history trade -> closeType dựa trên event bot đã log.
-    Priority: instId+posSide, openPx gần đúng, sz gần đúng, thời gian gần.
-    """
-    instId = str(instId or "")
-    posSide = str(posSide or "")
+    instId = str(instId or "").strip()
+    posSide = str(posSide or "").strip().lower()         # ✅ normalize
     openPx = float(openPx or 0.0)
     sz = float(sz or 0.0)
     closeTimeMs = int(closeTimeMs or 0)
@@ -662,17 +659,16 @@ def match_close_type(instId: str, posSide: str, openPx: float, sz: float, closeT
     if not instId or not posSide or closeTimeMs <= 0:
         return "UNKNOWN"
 
-    # scan ngược để ăn event mới nhất
     best_type = None
     best_score = 1e18
 
     for ev in reversed(_CLOSE_EVENTS[-8000:]):
         try:
-            if str(ev.get("instId")) != instId:
+            if str(ev.get("instId") or "").strip() != instId:
                 continue
-            if str(ev.get("posSide")) != posSide:
+            if str(ev.get("posSide") or "").strip().lower() != posSide:   # ✅ normalize compare
                 continue
-
+            ...
             ev_open = float(ev.get("openPx") or 0.0)
             ev_sz = float(ev.get("sz") or 0.0)
             ev_ts = int(ev.get("ts") or 0)
@@ -2227,7 +2223,7 @@ def load_real_trades_for_backtest(okx):
         pid = str(d.get("posId") or "").strip()
         ctime_str = str(d.get("cTime") or d.get("uTime") or "").strip()
         inst_id  = d.get("instId")
-        pos_side = d.get("posSide")  # long/short
+        pos_side = str(d.get("posSide") or "").strip().lower()   # ✅ normalize
         open_px  = float(d.get("openAvgPx") or d.get("avgPx") or 0)
         sz       = float(d.get("sz") or 0)        
         if not pid or not ctime_str:
