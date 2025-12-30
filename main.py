@@ -1371,6 +1371,7 @@ class OKXClient:
 # ===== SESSION SHEET (circuit breaker) =====
 def maker_close_position_with_timeout(
     okx: OKXClient,
+    posId: str,
     inst_id: str,
     pos_side: str,
     sz: float,
@@ -4685,6 +4686,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     log_close_type(posId, instId, posSide, avg_px, sz, "EARLY")
                     maker_close_position_with_timeout(
                         okx=okx,
+                        posId=posId
                         inst_id=instId,
                         pos_side=posSide,
                         sz=sz,
@@ -4775,6 +4777,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                         log_close_type(posId, instId, posSide, avg_px, sz, "LADDER")
                         maker_close_position_with_timeout(
                             okx=okx,
+                            posId=posId
                             inst_id=instId,
                             pos_side=posSide,
                             sz=sz,
@@ -4888,6 +4891,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
                     maker_close_position_with_timeout(
                         okx=okx,
+                        posId=posId
                         inst_id=instId,
                         pos_side=posSide,
                         sz=sz,
@@ -4916,6 +4920,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                             log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
                             maker_close_position_with_timeout(
                                 okx=okx,
+                                posId=posId
                                 inst_id=instId,
                                 pos_side=posSide,
                                 sz=sz,
@@ -5056,6 +5061,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     log_close_type(posId, instId, posSide, avg_px, sz, "TP_DYN")
                     maker_close_position_with_timeout(
                         okx=okx,
+                        posId=posId
                         inst_id=instId,
                         pos_side=posSide,
                         sz=sz,
@@ -5080,6 +5086,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 log_close_type(posId, instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
                 used = maker_close_position_with_timeout(
                     okx=okx,
+                    posId=posId
                     inst_id=instId,
                     pos_side=posSide,
                     sz=sz,
