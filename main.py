@@ -854,7 +854,7 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 12, 20) and 4 <= m <= 59:
+    if h in (9, 15, 20) and 4 <= m <= 9:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -2225,10 +2225,12 @@ def load_real_trades_for_backtest(okx):
     for d in all_raw:
         pid = str(d.get("posId") or "").strip()
         ctime_str = str(d.get("cTime") or d.get("uTime") or "").strip()
-
+        inst_id  = d.get("instId")
+        pos_side = d.get("posSide")  # long/short
+        open_px  = float(d.get("openAvgPx") or d.get("avgPx") or 0)
+        sz       = float(d.get("sz") or 0)        
         if not pid or not ctime_str:
             continue
-
         key = f"{pid}_{ctime_str}"
         if key in cached_keys:
             # đã lưu lệnh này vào BT_TRADES_CACHE rồi
@@ -4978,15 +4980,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    run_full_bot(okx)
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    #if minute in (5, 20, 35, 50):
-        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        #run_full_bot(okx)
-    #else:
-        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    if minute in (5, 20, 35, 50):
+        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        run_full_bot(okx)
+    else:
+        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
