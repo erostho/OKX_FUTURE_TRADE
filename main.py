@@ -2397,53 +2397,51 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             break
         
         for p in rows:
-            ctime = int(float(p.get("cTime") or 0))
+            if not isinstance(p, dict):
+                continue
         
-            # nếu record này cũ hơn cutoff => dừng luôn (vì càng dưới càng cũ)
-            if ctime and ctime < cutoff_ms:
+            # lấy thời gian đóng từ OKX
+            ctime_ms = int(float(
+                p.get("cTime")
+                or p.get("ctime")
+                or p.get("ts")
+                or 0
+            ))
+        
+            # cũ hơn cutoff thì dừng (càng dưới càng cũ)
+            if ctime_ms and ctime_ms < cutoff_ms:
                 break
         
-            # nếu record <= last_ctime_ms thì bỏ qua (đã xử lý lần trước)
-            if ctime and ctime <= last_ctime_ms:
+            # đã xử lý rồi thì bỏ
+            if ctime_ms and ctime_ms <= last_ctime_ms:
                 continue
-            # ... logic hiện tại của mày append CLOSE_EVENTS ở đây ...
-            # lấy thời gian đóng/ghi nhận từ OKX positions_history
-            ctime_ms = int(rows.get("cTime") or rows.get("ctime") or rows.get("ts") or 0)
+        
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
-            
-            pos_id = str(d.get("posId") or "").strip()
+        
+            # ===== POS ID (QUAN TRỌNG) =====
+            pos_id = str(p.get("posId") or "").strip()
             if not pos_id:
                 continue
-
-            # nếu đã có trong CLOSE_EVENTS => bot đã ghi (EMERGENCY/TP_DYN/TRAILING/...) => bỏ qua
+        
+            # nếu posId đã được ghi rồi thì bỏ
             if pos_id in existing_posids:
                 continue
-
-            inst_id = str(d.get("instId") or "").strip()
-            pos_side = str(d.get("posSide") or d.get("side") or "").strip()  # long/short
-
-            try:
-                open_px = float(d.get("openAvgPx") or d.get("avgPx") or d.get("openPx") or 0)
-            except Exception:
-                open_px = 0.0
-
-            # sz/pos
-            try:
-                sz = float(d.get("pos") or d.get("sz") or d.get("size") or 0)
-            except Exception:
-                sz = 0.0
-
-            ev = {
+        
+            inst_id = p.get("instId")
+            pos_side = p.get("posSide")
+            open_px = p.get("openPx")
+            sz = p.get("sz")
+        
+            append_close_event_to_sheet({
                 "posId": pos_id,
                 "ts": ctime_ms,
                 "instId": inst_id,
                 "posSide": pos_side,
                 "openPx": open_px,
                 "sz": sz,
-                "closeType": "OCO_SL",
-            }
-
-            append_close_event_to_sheet(ev)
+                "closeType": "OCO_SL"
+            })
+        
             existing_posids.add(pos_id)
             appended += 1
 
