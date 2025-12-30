@@ -230,6 +230,59 @@ def _is_session_16_20(now=None):
 def _is_session_20_24():
     h = _vn_hour()
     return 20 <= h < 24
+# ===== GSHEET HELPERS (FIX _get_gsheet NOT DEFINED) =====
+_GSHEET_OBJ = None
+
+def _get_gsheet():
+    """
+    Trả về spreadsheet object (gspread Spreadsheet).
+    Ưu tiên dùng hàm có sẵn nếu project đã có get_gsheet().
+    """
+    global _GSHEET_OBJ
+
+    # Nếu project mày đã có get_gsheet() thì dùng luôn
+    if "get_gsheet" in globals() and callable(globals()["get_gsheet"]):
+        return globals()["get_gsheet"]()
+
+    if _GSHEET_OBJ is not None:
+        return _GSHEET_OBJ
+
+    # 1) Lấy spreadsheet key: ưu tiên biến env, fallback SESSION_SHEET_KEY
+    sheet_key = (
+        os.getenv("GSHEET_KEY")
+        or os.getenv("SHEET_KEY")
+        or os.getenv("SPREADSHEET_KEY")
+        or SESSION_SHEET_KEY
+    )
+    if not sheet_key:
+        raise Exception("Missing spreadsheet key: set GSHEET_KEY (or SHEET_KEY/SPREADSHEET_KEY)")
+
+    # 2) Lấy service account json: ưu tiên env JSON, fallback file path
+    sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    if sa_json:
+        info = json.loads(sa_json)
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+    elif sa_file:
+        creds = Credentials.from_service_account_file(sa_file, scopes=scopes)
+    else:
+        # nếu mày đang dùng biến khác (ví dụ SERVICE_ACCOUNT_JSON / GOOGLE_CREDENTIALS)
+        alt = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_CREDENTIALS")
+        if alt:
+            info = json.loads(alt)
+            creds = Credentials.from_service_account_info(info, scopes=scopes)
+        else:
+            raise Exception("Missing Google service account: set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE")
+
+    gc = gspread.authorize(creds)
+    _GSHEET_OBJ = gc.open_by_key(sheet_key)
+    return _GSHEET_OBJ
 
 def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     """
