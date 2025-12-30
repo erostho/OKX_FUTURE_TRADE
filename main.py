@@ -851,7 +851,7 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 13, 20) and 4 <= m <= 59:
+    if h in (9, 15, 20) and 4 <= m <= 9:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -4977,15 +4977,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    run_full_bot(okx)
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    #if minute in (5, 20, 35, 50):
-        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        #run_full_bot(okx)
-    #else:
-        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    if minute in (5, 20, 35, 50):
+        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        run_full_bot(okx)
+    else:
+        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
