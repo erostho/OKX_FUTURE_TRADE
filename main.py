@@ -4698,6 +4698,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_sl(instId, "early_fail")
+                    posId = str(p.get("posId") or "").strip()
                     log_close_type(posId, instId, posSide, avg_px, sz, "EARLY")
                     maker_close_position_with_timeout(
                         okx=okx,
@@ -4725,6 +4726,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             logging.info("[CLOSE] reason=EMERGENCY_SL pnl=%.2f%% inst=%s side=%s", pnl_pct, inst_id, pos_side)
             try:
                 mark_symbol_sl(instId, "emergency_sl")
+                posId = str(p.get("posId") or "").strip()
                 log_close_type(posId, instId, posSide, avg_px, sz, "EMERGENCY")
                 okx.close_swap_position(instId, posSide)
             except Exception as e:
@@ -4789,6 +4791,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                     )
                     try:
                         mark_symbol_tp(instId)
+                        posId = str(p.get("posId") or "").strip()
                         log_close_type(posId, instId, posSide, avg_px, sz, "LADDER")
                         maker_close_position_with_timeout(
                             okx=okx,
@@ -4903,6 +4906,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                 instId, posSide, current_px, hard_floor)
                 try:
                     mark_symbol_tp(instId)
+                    posId = str(p.get("posId") or "").strip()
                     log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
                     maker_close_position_with_timeout(
                         okx=okx,
@@ -4932,6 +4936,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                                         dt_sec, instId, posSide, current_px, stop_px)
                         try:
                             mark_symbol_tp(instId)
+                            posId = str(p.get("posId") or "").strip()
                             log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
                             maker_close_position_with_timeout(
                                 okx=okx,
@@ -5011,6 +5016,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             side_close = "sell" if pos_side == "long" else "buy"
             try:
                 # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
+                posId = str(p.get("posId") or "").strip()
                 log_close_type(posId, instId, posSide, avg_px, sz, "TRAILING")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
@@ -5073,6 +5079,7 @@ def run_dynamic_tp(okx: "OKXClient"):
                 )
                 try:
                     mark_symbol_tp(instId)
+                    posId = str(p.get("posId") or "").strip()
                     log_close_type(posId, instId, posSide, avg_px, sz, "TP_DYN")
                     maker_close_position_with_timeout(
                         okx=okx,
@@ -5098,6 +5105,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             )
             try:
                 mark_symbol_tp(instId)
+                posId = str(p.get("posId") or "").strip()
                 log_close_type(posId, instId, posSide, avg_px, sz, "TRAIL_PEAK_DROP")
                 used = maker_close_position_with_timeout(
                     okx=okx,
