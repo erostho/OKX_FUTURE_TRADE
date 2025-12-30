@@ -49,6 +49,7 @@ TOP_N_BY_CHANGE = 300         # universe: top 300 theo độ biến động
 # Google Sheet headers
 SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
+CLOSE_EVENTS_SHEET_NAME = os.getenv("CLOSE_EVENTS_SHEET_NAME", "CLOSE_EVENTS")
 
 # ======== DYNAMIC TP CONFIG ========
 TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 4.0%
@@ -608,17 +609,28 @@ def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTyp
     ev = {
         "ts": int(time.time() * 1000),
         "instId": str(instId or "").strip(),
-        "posSide": str(posSide or "").strip().lower(),   # ✅ normalize
+        "posSide": str(posSide or "").strip().lower(),   # normalize
         "openPx": float(openPx or 0),
         "sz": float(sz or 0),
         "closeType": str(closeType or "UNKNOWN").strip().upper(),
     }
-    _CLOSE_EVENTS.append(ev)
+
+    # 1) giữ in-memory để match ngay (khỏi phải reload)
+    try:
+        _CLOSE_EVENTS.append(ev)
+    except Exception:
+        pass
+
+    # 2) ghi vào GG Sheet (bền qua restart)
+    append_close_event_to_sheet(ev)
+
+    # 3) (tuỳ chọn) vẫn ghi file local nếu bạn muốn
     try:
         with open(CLOSE_EVENT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-    except Exception as e:
-        logging.error("[CLOSE-TYPE] write error: %s", e)
+    except Exception:
+        pass
+
 
 
 # ===== CLOSE TYPE MATCHER (for positions-history -> BT_TRADES_CACHE) =====
@@ -1504,6 +1516,102 @@ def get_bt_cache_worksheet():
 
     return ws
 
+# ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
+
+def get_close_events_worksheet():
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    sa_info_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+    if not sa_info_json:
+        logging.error("[CLOSE-EVENTS] GOOGLE_SERVICE_ACCOUNT_JSON chưa cấu hình.")
+        return None
+
+    try:
+        creds = Credentials.from_service_account_info(json.loads(sa_info_json), scopes=scopes)
+        gc = gspread.authorize(creds)
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] Lỗi khởi tạo gspread: %s", e)
+        return None
+
+    sheet_id = os.getenv("BT_SHEET_ID")
+    if not sheet_id:
+        logging.error("[CLOSE-EVENTS] BT_SHEET_ID chưa cấu hình.")
+        return None
+
+    try:
+        sh = gc.open_by_key(sheet_id)
+        try:
+            ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=2000, cols=10)
+            ws.append_row(["ts", "instId", "posSide", "openPx", "sz", "closeType"])
+            logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
+        return ws
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] Lỗi open sheet: %s", e)
+        return None
+
+
+def append_close_event_to_sheet(ev: dict):
+    """
+    ev keys: ts, instId, posSide, openPx, sz, closeType
+    """
+    ws = get_close_events_worksheet()
+    if not ws:
+        return
+    try:
+        ws.append_row([
+            str(ev.get("ts", "")),
+            str(ev.get("instId", "")),
+            str(ev.get("posSide", "")),
+            str(ev.get("openPx", "")),
+            str(ev.get("sz", "")),
+            str(ev.get("closeType", "")),
+        ], value_input_option="USER_ENTERED")
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] append_row error: %s", e)
+
+
+def load_close_events_from_sheet(limit=12000):
+    """
+    Load CLOSE_EVENTS sheet -> _CLOSE_EVENTS (in-memory)
+    """
+    ws = get_close_events_worksheet()
+    if not ws:
+        return
+
+    global _CLOSE_EVENTS
+    _CLOSE_EVENTS = []
+    try:
+        values = ws.get_all_values()
+        if not values or len(values) < 2:
+            return
+        # header: ts instId posSide openPx sz closeType
+        rows = values[1:]
+        if len(rows) > limit:
+            rows = rows[-limit:]
+
+        for r in rows:
+            r = (r + [""] * 6)[:6]
+            try:
+                ev = {
+                    "ts": int(float(r[0] or 0)),
+                    "instId": str(r[1] or "").strip(),
+                    "posSide": str(r[2] or "").strip().lower(),
+                    "openPx": float(r[3] or 0),
+                    "sz": float(r[4] or 0),
+                    "closeType": str(r[5] or "UNKNOWN").strip().upper(),
+                }
+                if ev["instId"] and ev["posSide"]:
+                    _CLOSE_EVENTS.append(ev)
+            except Exception:
+                continue
+
+        logging.info("[CLOSE-EVENTS] Load events from sheet: %d", len(_CLOSE_EVENTS))
+    except Exception as e:
+        logging.error("[CLOSE-EVENTS] load error: %s", e)
 
 def load_bt_cache():
     """
@@ -2424,6 +2532,7 @@ def run_backtest_if_needed(okx: "OKXClient"):
         logging.info("[BACKTEST] Không nằm trong khung giờ backtest, bỏ qua.")
         return
     # 1) Lấy toàn bộ trades (cache cũ + history mới từ OKX)
+    load_close_events_from_sheet()
     trades = load_real_trades_for_backtest(okx)
 
     # 2) Tóm tắt theo ALL / TODAY / SESSION (SESSION dùng sau nếu cần)
@@ -4977,15 +5086,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
