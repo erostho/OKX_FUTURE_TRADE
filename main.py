@@ -1525,7 +1525,7 @@ def get_close_events_worksheet():
             ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
         except gspread.WorksheetNotFound:
             ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=2000, cols=10)
-            ws.append_row(["ts", "instId", "posSide", "openPx", "sz", "closeType"])
+            ws.append_row(["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"])
             logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
         return ws
     except Exception as e:
