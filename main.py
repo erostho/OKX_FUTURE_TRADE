@@ -634,27 +634,6 @@ def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTyp
 
 
 # ===== CLOSE TYPE MATCHER (for positions-history -> BT_TRADES_CACHE) =====
-_CLOSE_EVENTS = []
-
-def _load_close_events(limit=12000):
-    global _CLOSE_EVENTS
-    _CLOSE_EVENTS = []
-    try:
-        if not os.path.exists(CLOSE_EVENT_FILE):
-            return
-        with open(CLOSE_EVENT_FILE, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    _CLOSE_EVENTS.append(json.loads(line))
-                except Exception:
-                    continue
-        if len(_CLOSE_EVENTS) > limit:
-            _CLOSE_EVENTS = _CLOSE_EVENTS[-limit:]
-    except Exception as e:
-        logging.error("[CLOSE-TYPE] load events error: %s", e)
 
 def _rel_diff(a: float, b: float) -> float:
     if a <= 0 or b <= 0:
@@ -863,7 +842,7 @@ def is_backtest_time_vn():
     h = now_vn.hour
     m = now_vn.minute
 
-    if h in (9, 15, 20) and 4 <= m <= 59:
+    if h in (9, 16, 20) and 4 <= m <= 59:
         return True
     if h == 22 and 50 <= m <= 59:
         return True
@@ -1563,6 +1542,7 @@ def append_close_event_to_sheet(ev: dict):
         return
     try:
         ws.append_row([
+            str(ev.get("posId", "")), 
             str(ev.get("ts", "")),
             str(ev.get("instId", "")),
             str(ev.get("posSide", "")),
@@ -2261,10 +2241,26 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
     return True, f"market_ok(regime={regime}, bad_count={bad_count})"
 
 # ===== BACKTEST REAL: LẤY HISTORY TỪ OKX + CACHE =====
+def load_close_event_map_by_posid():
+    ws = get_close_events_worksheet()
+    if not ws:
+        return {}
+
+    rows = ws.get_all_records(
+        expected_headers=["posId","ts","instId","posSide","openPx","sz","closeType"]
+    )
+
+    m = {}
+    for r in rows:
+        pid = str(r.get("posId") or "").strip()
+        if pid:
+            m[pid] = str(r.get("closeType") or "UNKNOWN").strip().upper()
+    return m
+
 def load_real_trades_for_backtest(okx):
     # 1) Load cache cũ từ Google Sheets
     cached = load_bt_cache()        # list[dict]
-    _load_close_events()
+    close_event_map = load_close_event_map_by_posid()
     # KEY duy nhất = posId + cTime để 1 posId có nhiều lệnh vẫn giữ hết
     cached_keys = set()
     for t in cached:
@@ -2341,8 +2337,7 @@ def load_real_trades_for_backtest(okx):
             # đã lưu lệnh này vào BT_TRADES_CACHE rồi
             continue
         close_ms = int(float(ctime_str or 0))
-        close_type = match_close_type(inst_id, pos_side, open_px, sz, close_ms)
-
+        close_type = close_event_map.get(pid, "UNKNOWN")
         try:
             new_trades.append(
                 {
@@ -2512,16 +2507,6 @@ def summarize_real_backtest(trades: list[dict]) -> tuple[str, str, str]:
 
     msg_session = "\n".join(session_lines)
     return msg_all, msg_today, msg_session
-
-
-# (phần cũ load_history_from_drive / trade_cache vẫn giữ nguyên cho bot khác nếu cần)
-
-
-
-
-
-
-
 
 # ===== HÀM BACKTEST REAL TRIGGER THEO LỊCH =====
 
@@ -5079,22 +5064,21 @@ def main():
         api_secret=os.getenv("OKX_API_SECRET"),
         passphrase=os.getenv("OKX_API_PASSPHRASE")
     )
-    _load_close_events()
     # 🔥 NEW: quyết định cấu hình risk mỗi lần cron chạy
     apply_risk_config(okx)
     
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
