@@ -613,6 +613,7 @@ def log_close_type(instId: str, posSide: str, openPx: float, sz: float, closeTyp
         "sz": float(sz or 0),
         "closeType": str(closeType or "UNKNOWN"),
     }
+    _CLOSE_EVENTS.append(ev)
     try:
         with open(CLOSE_EVENT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
@@ -2159,7 +2160,7 @@ def check_market_lock_unlock(okx) -> tuple[bool, str]:
 def load_real_trades_for_backtest(okx):
     # 1) Load cache cũ từ Google Sheets
     cached = load_bt_cache()        # list[dict]
-
+    _load_close_events()
     # KEY duy nhất = posId + cTime để 1 posId có nhiều lệnh vẫn giữ hết
     cached_keys = set()
     for t in cached:
@@ -4980,15 +4981,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
     
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
