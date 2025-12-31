@@ -51,6 +51,9 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 CLOSE_EVENTS_SHEET_NAME = os.getenv("CLOSE_EVENTS_SHEET_NAME", "CLOSE_EVENTS")
 SERVER_CLOSE_STATE_FILE = os.getenv("SERVER_CLOSE_STATE_FILE", "server_close_state.json")
+# Global
+CLOSE_EVENT_BY_POSID = {}   # posId -> event dict (latest)
+CLOSE_EVENT_TYPE_BY_POSID = {}  # posId -> closeType (latest)
 
 # ======== DYNAMIC TP CONFIG ========
 TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 4.0%
@@ -288,6 +291,42 @@ def _get_gsheet():
     _GSHEET_CACHE[sheet_key] = ss
     return ss
 
+def _close_type_priority(ct: str) -> int:
+    ct = (ct or "").upper().strip()
+
+    # server-generic / placeholder (ưu tiên thấp)
+    if ct in ("", "UNKNOWN", "SERVER_CLOSE", "OCO_SL", "BE"):
+        return 10
+
+    # các loại đóng cụ thể (ưu tiên cao hơn)
+    if ct in ("OUTTIME",):
+        return 60
+    if ct in ("EARLY", "EMERGENCY"):
+        return 80
+    if ct.startswith("TRAIL"):
+        return 90
+    if ct in ("TP_DYN", "LADDER"):
+        return 95
+
+    # default
+    return 50
+
+
+def _should_override_close_type(old_ct: str, new_ct: str) -> bool:
+    old_ct = (old_ct or "").upper().strip()
+    new_ct = (new_ct or "").upper().strip()
+
+    if not new_ct:
+        return False
+    if old_ct == new_ct:
+        return False
+
+    # nếu old chưa có / generic -> override luôn
+    if old_ct in ("", "UNKNOWN", "SERVER_CLOSE", "OCO_SL", "BE"):
+        return True
+
+    # còn lại: override khi new có priority cao hơn old
+    return _close_type_priority(new_ct) > _close_type_priority(old_ct)
 
 def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     """
@@ -665,44 +704,56 @@ def is_symbol_locked(inst_id: str) -> bool:
         ALT_SWEEP_LOCKS.pop(inst_id, None)
         return False
     return True
-CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
+#CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENTS", "close_events.jsonl")
 
 def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: float, closeType: str):
     posId = str(posId or "").strip()
     if not posId:
         return
 
-    # ✅ CHỐNG GHI TRÙNG
-    if posId in CLOSED_POSID_SET:
+    new_ct = (closeType or "").upper().strip()
+    if not new_ct:
         return
 
-    CLOSED_POSID_SET.add(posId)
+    old_ct = (CLOSE_EVENT_TYPE_BY_POSID.get(posId) or "").upper().strip()
+
+    # Nếu đã có rồi, chỉ ghi đè khi hợp lệ
+    if old_ct:
+        if not _should_override_close_type(old_ct, new_ct):
+            return
 
     ev = {
         "posId": posId,
         "ts": int(time.time() * 1000),
         "instId": instId,
-        "posSide": posSide.lower(),
+        "posSide": (posSide or "").lower(),
         "openPx": float(openPx or 0),
         "sz": float(sz or 0),
-        "closeType": closeType.upper(),
+        "closeType": new_ct,
     }
 
-    # 1) giữ in-memory để match ngay (khỏi phải reload)
+    # update in-memory latest
+    CLOSE_EVENT_BY_POSID[posId] = ev
+    CLOSE_EVENT_TYPE_BY_POSID[posId] = new_ct
+
+    # ✅ QUAN TRỌNG:
+    # KHÔNG dùng CLOSED_POSID_SET để return nữa.
+    # CLOSED_POSID_SET nếu vẫn muốn giữ thì chỉ dùng để tránh spam y hệt closeType.
+    # (vì override là có chủ đích)
     try:
         _CLOSE_EVENTS.append(ev)
     except Exception:
         pass
 
-    # 2) ghi vào GG Sheet (bền qua restart)
     append_close_event_to_sheet(ev)
 
-    # 3) (tuỳ chọn) vẫn ghi file local nếu bạn muốn
     try:
         with open(CLOSE_EVENT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
 
 def load_closed_posids_from_sheet():
     try:
@@ -1577,21 +1628,17 @@ def get_close_events_worksheet():
     gc = get_gspread_client()
     if not gc:
         return None
-
     sheet_id = os.getenv("BT_SHEET_ID") or os.getenv("SHEET_ID") or os.getenv("GSHEET_ID")
     if not sheet_id:
         logging.error("[CLOSE-EVENTS] BT_SHEET_ID (hoặc SHEET_ID/GSHEET_ID) chưa cấu hình.")
         return None
-
     sh = gc.open_by_key(sheet_id)
-
     try:
         ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
     except Exception:
         ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=1000, cols=10)
         ws.append_row(["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"])
         logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
-
     return ws
 
 
@@ -1617,77 +1664,38 @@ def append_close_event_to_sheet(ev: dict):
         logging.error("[CLOSE-EVENTS] append row error: %s", e)
 
 def read_close_events_sheet(limit: int = 5000):
-    """
-    Đọc sheet CLOSE_EVENTS và trả về list[dict] theo header.
-    - Chỉ pull đúng range A1:G (7 cột chuẩn)
-    - Ép kiểu an toàn cho ts/openPx/sz
-    """
     try:
         sh = _get_gsheet()
         ws = sh.worksheet("CLOSE_EVENTS")
-
-        # chỉ lấy đúng 7 cột (A..G) để tránh lệch schema
-        end_row = 1 + int(limit)
-        values = ws.get(f"A1:G{end_row}")
-
+        values = ws.get_all_values()
         if not values or len(values) < 2:
             return []
 
-        header = [h.strip() for h in values[0]]
-        rows = values[1:]
+        header = values[0]
+        data_rows = values[1:1+limit]
 
-        idx = {k: i for i, k in enumerate(header)}
-        required = ["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"]
-        for k in required:
-            if k not in idx:
-                raise Exception(f"CLOSE_EVENTS missing column '{k}' (have={header})")
-
-        def _cell(r, k):
-            i = idx[k]
-            return r[i].strip() if i < len(r) and r[i] is not None else ""
-
+        # build rows
         out = []
-        for r in rows:
-            posId = _cell(r, "posId")
-            if not posId:
+        for r in data_rows:
+            row = {}
+            for i, k in enumerate(header):
+                row[k] = r[i] if i < len(r) else ""
+            out.append(row)
+
+        # ✅ DEDUPE: lấy row cuối theo posId
+        latest = {}
+        for row in out:
+            pid = str(row.get("posId") or "").strip()
+            if not pid:
                 continue
+            latest[pid] = row  # overwrite -> row cuối thắng
 
-            ts = _cell(r, "ts")
-            instId = _cell(r, "instId")
-            posSide = _cell(r, "posSide")
-            openPx = _cell(r, "openPx")
-            sz = _cell(r, "sz")
-            closeType = _cell(r, "closeType")
-
-            # ép kiểu an toàn
-            try:
-                ts_i = int(float(ts)) if ts else 0
-            except Exception:
-                ts_i = 0
-
-            def _to_float_or_none(x):
-                if not x or str(x).lower() == "none":
-                    return None
-                try:
-                    return float(x)
-                except Exception:
-                    return None
-
-            out.append({
-                "posId": str(posId),
-                "ts": ts_i,
-                "instId": str(instId),
-                "posSide": str(posSide),
-                "openPx": _to_float_or_none(openPx),
-                "sz": _to_float_or_none(sz),
-                "closeType": str(closeType),
-            })
-
-        return out
+        return list(latest.values())
 
     except Exception as e:
-        logging.exception("[GSHEET] read_close_events_sheet error: %s", e)
+        logging.error("[GSHEET] read_close_events_sheet error: %s", e)
         return []
+
 
 # ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
 
