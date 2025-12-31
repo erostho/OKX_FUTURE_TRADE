@@ -4974,20 +4974,32 @@ def run_dynamic_tp(okx: "OKXClient"):
         
             # 4) check trailing đang tồn tại
             exists, info = has_active_trailing_for_position(okx, inst_id, pos_side, return_info=True)
-        
-            mode_prev = TRAIL_MODE.get(pos_key, None)
+
+            # ===== Determine previous mode without relying on RAM (cron restarts reset dicts) =====
             need_update = False
-        
             if not exists:
                 need_update = True
             else:
                 old_cb = safe_float(info.get("callbackRatio") or 0.0)
+                # OKX có thể trả callbackRatio dạng ratio (0.013) thay vì % (1.3)
+                if 0 < old_cb <= 1.0:
+                    old_cb = old_cb * 100.0
+            
+                # suy mode_prev dựa vào callback đang đặt trên sàn
+                # (pump cb rộng hơn normal cb)
+                normal_cb = dynamic_trail_callback_pct(pnl_pct)
+                pump_cb = min(normal_cb * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
+            
+                if abs(old_cb - pump_cb) <= abs(old_cb - normal_cb):
+                    mode_prev = "pump"
+                else:
+                    mode_prev = "normal"
+            
                 # ONLY update khi CHUYỂN MODE hoặc callback thay đổi đủ lớn
                 if mode_prev != target_mode:
                     need_update = True
                 elif abs(old_cb - target_cb) >= CB_UPDATE_MIN_DIFF:
-                    need_update = True
-        
+                    need_update = True    
             if not need_update:
                 # đã có trailing đúng mode/cb -> giao cho sàn trail, cron khỏi làm gì thêm
                 continue
