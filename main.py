@@ -240,31 +240,25 @@ def _is_session_20_24():
 # ===== GSHEET HELPERS (FIX _get_gsheet NOT DEFINED) =====
 _GSHEET_OBJ = None
 
+_GSHEET_CACHE = {}
+
 def _get_gsheet():
-    """
-    Trả về spreadsheet object (gspread Spreadsheet).
-    Ưu tiên dùng hàm có sẵn nếu project đã có get_gsheet().
-    """
-    global _GSHEET_OBJ
+    global _GSHEET_CACHE
 
-    # Nếu project mày đã có get_gsheet() thì dùng luôn
-    if "get_gsheet" in globals() and callable(globals()["get_gsheet"]):
-        return globals()["get_gsheet"]()
-
-    if _GSHEET_OBJ is not None:
-        return _GSHEET_OBJ
-
-    # 1) Lấy spreadsheet key: ưu tiên biến env, fallback SESSION_SHEET_KEY
     sheet_key = (
-        os.getenv("GSHEET_KEY")
+        os.getenv("GOOGLE_SPREADSHEET_ID")
+        or os.getenv("BT_SHEET_ID")
+        or os.getenv("GSHEET_KEY")
         or os.getenv("SHEET_KEY")
         or os.getenv("SPREADSHEET_KEY")
         or SESSION_SHEET_KEY
     )
     if not sheet_key:
-        raise Exception("Missing spreadsheet key: set GSHEET_KEY (or SHEET_KEY/SPREADSHEET_KEY)")
+        raise Exception("Missing spreadsheet key: set GOOGLE_SPREADSHEET_ID / BT_SHEET_ID / GSHEET_KEY")
 
-    # 2) Lấy service account json: ưu tiên env JSON, fallback file path
+    if sheet_key in _GSHEET_CACHE:
+        return _GSHEET_CACHE[sheet_key]
+
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
 
@@ -279,7 +273,6 @@ def _get_gsheet():
     elif sa_file:
         creds = Credentials.from_service_account_file(sa_file, scopes=scopes)
     else:
-        # nếu mày đang dùng biến khác (ví dụ SERVICE_ACCOUNT_JSON / GOOGLE_CREDENTIALS)
         alt = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_CREDENTIALS")
         if alt:
             info = json.loads(alt)
@@ -288,8 +281,13 @@ def _get_gsheet():
             raise Exception("Missing Google service account: set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE")
 
     gc = gspread.authorize(creds)
-    _GSHEET_OBJ = gc.open_by_key(sheet_key)
-    return _GSHEET_OBJ
+    ss = gc.open_by_key(sheet_key)
+
+    logging.info("[GSHEET] open_by_key sheet_key=%s title=%s", sheet_key, getattr(ss, "title", "?"))
+
+    _GSHEET_CACHE[sheet_key] = ss
+    return ss
+
 
 def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     """
@@ -2452,17 +2450,24 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
     """
     state = _load_json_file(SERVER_CLOSE_STATE_FILE, {"last_ctime_ms": 0})
     last_ctime_ms = int(state.get("last_ctime_ms") or 0)
+
+    now_ms = int(time.time() * 1000)
+
     # ===== CUTOFF: chỉ quét từ hôm nay (giờ VN) =====
     now_utc = datetime.now(timezone.utc)
     now_vn = now_utc + timedelta(hours=7)
     start_today_vn = datetime(now_vn.year, now_vn.month, now_vn.day, 0, 0, 0)
-    # đổi về UTC timestamp ms (vì OKX cTime là ms epoch UTC)
     start_today_utc = start_today_vn - timedelta(hours=7)
-    cutoff_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    cutoff_today_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
-    # Nếu muốn "từ lần chạy trước" nhưng không vượt quá hôm nay:
-    # (đảm bảo restart vẫn không kéo quá sâu)
-    cutoff_ms = max(cutoff_ms, last_ctime_ms)
+    # ===== Guard: nếu last_ctime_ms "ở tương lai" thì reset (tránh chặn cả ngày) =====
+    if last_ctime_ms > now_ms + 5 * 60 * 1000:
+        logging.warning("[WATCH-OCO] last_ctime_ms=%s is in the future vs now=%s -> reset to 0", last_ctime_ms, now_ms)
+        last_ctime_ms = 0
+        state["last_ctime_ms"] = 0
+        _save_json_file(SERVER_CLOSE_STATE_FILE, state)
+
+    cutoff_ms = max(cutoff_today_ms, last_ctime_ms)
 
     existing_posids = _load_close_event_posid_set()
     newest_ctime_ms = last_ctime_ms
@@ -2476,89 +2481,91 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             logging.error("[WATCH-OCO] get_positions_history error: %s", e)
             break
 
-        if not data:
-            break
-
-        # OKX thường trả list theo thời gian giảm dần; lấy cursor cho trang sau:
-        # dùng cTime cuối trang làm after (ổn định nhất kiểu pagination thô)
-        try:
-            last_row = data[-1]
-            after = last_row.get("cTime") or last_row.get("uTime") or after
-        except Exception:
-            pass
-        # OKX wrapper có thể trả dict {"data":[...]} hoặc trả thẳng list [...]
+        # normalize rows FIRST
         if isinstance(data, dict):
             rows = data.get("data", []) or []
         elif isinstance(data, list):
             rows = data
         else:
             rows = []
+
         if not rows:
             break
 
-        # OKX thường trả newest -> oldest trong mỗi page.
-        # Nếu gặp item đầu tiên đã < cutoff => cả page này đều cũ -> break luôn.
-        first_ctime = int(float(rows[0].get("cTime") or 0))
+        # cursor for next page: use oldest item cTime/uTime
+        try:
+            last_row = rows[-1]
+            after = last_row.get("cTime") or last_row.get("uTime") or after
+        except Exception:
+            pass
+
+        # if newest item already older than cutoff -> stop all
+        try:
+            first_ctime = int(float(rows[0].get("cTime") or rows[0].get("uTime") or 0))
+        except Exception:
+            first_ctime = 0
+
         if first_ctime and first_ctime < cutoff_ms:
             break
 
+        stop_all = False
         for p in rows:
             if not isinstance(p, dict):
                 continue
 
-            # lấy thời gian đóng từ OKX
-            ctime_ms = int(float(
-                p.get("cTime")
-                or p.get("ctime")
-                or p.get("ts")
-                or 0
-            ))
-
-            # cũ hơn cutoff thì dừng (càng dưới càng cũ)
+            ctime_ms = int(float(p.get("cTime") or p.get("uTime") or p.get("ts") or 0))
             if ctime_ms and ctime_ms < cutoff_ms:
+                stop_all = True
                 break
 
-            # đã xử lý rồi thì bỏ
             if ctime_ms and ctime_ms <= last_ctime_ms:
                 continue
 
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
 
-            # ===== POS ID (QUAN TRỌNG) =====
             pos_id = str(p.get("posId") or "").strip()
             if not pos_id:
-                continue
+                # fallback để không mất event nếu API không trả posId
+                inst_id = p.get("instId")
+                pos_side = p.get("posSide")
+                open_px = p.get("openPx") or p.get("avgPx") or ""
+                pos_id = f"{inst_id}_{pos_side}_{open_px}_{ctime_ms}"
 
-            # nếu posId đã được ghi rồi thì bỏ
             if pos_id in existing_posids:
+                continue
+            if pos_id in CLOSED_POSID_SET:
                 continue
 
             inst_id = p.get("instId")
             pos_side = p.get("posSide")
             open_px = p.get("openPx")
             sz = p.get("sz")
-            if pos_id in CLOSED_POSID_SET:
-                continue
 
-            append_close_event_to_sheet({
-                "posId": pos_id,
-                "ts": ctime_ms,
-                "instId": inst_id,
-                "posSide": pos_side,
-                "openPx": open_px,
-                "sz": sz,
-                "closeType": "OCO_SL"
-            })
+            try:
+                append_close_event_to_sheet({
+                    "posId": pos_id,
+                    "ts": ctime_ms,
+                    "instId": inst_id,
+                    "posSide": pos_side,
+                    "openPx": open_px,
+                    "sz": sz,
+                    "closeType": "OCO_SL"
+                })
+                existing_posids.add(pos_id)
+                appended += 1
+            except Exception as e:
+                logging.exception("[WATCH-OCO] append_close_event_to_sheet failed posId=%s: %s", pos_id, e)
 
-            existing_posids.add(pos_id)
-            appended += 1
+        if stop_all:
+            break
 
     if newest_ctime_ms > last_ctime_ms:
         state["last_ctime_ms"] = newest_ctime_ms
         _save_json_file(SERVER_CLOSE_STATE_FILE, state)
 
-    if appended > 0:
-        logging.info("[WATCH-OCO] appended %s server-close events into %s", appended, CLOSE_EVENTS_SHEET_NAME)
+    logging.info("[WATCH-OCO] appended=%s cutoff_ms=%s last_ctime_ms=%s newest_ctime_ms=%s",
+                 appended, cutoff_ms, last_ctime_ms, newest_ctime_ms)
+
 
 def load_close_event_map_by_posid():
     ws = get_close_events_worksheet()
