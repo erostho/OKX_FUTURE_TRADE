@@ -923,7 +923,7 @@ def is_backtest_time_vn():
 
     if h in (9, 15, 20) and 4 <= m <= 59:
         return True
-    if h == 22 and 50 <= m <= 59:
+    if h == 22 and 5 <= m <= 59:
         return True
     return False
 
@@ -1728,22 +1728,35 @@ def get_close_events_worksheet():
 
 
 def append_close_event_to_sheet(ev: dict):
-    """
-    ev keys: ts, instId, posSide, openPx, sz, closeType
-    """
     ws = get_close_events_worksheet()
     if not ws:
         return
+
     try:
-        ws.append_row([
-            str(ev.get("posId", "")),
-            str(ev.get("ts", "")),
-            str(ev.get("instId", "")),
-            str(ev.get("posSide", "")),
-            str(ev.get("openPx", "")),
-            str(ev.get("sz", "")),
-            str(ev.get("closeType", "")),
-        ], value_input_option="USER_ENTERED")
+        header = ws.row_values(1)
+        header = [h.strip() for h in header if h is not None]
+
+        # normalize keys
+        ev2 = {str(k).strip(): v for k, v in (ev or {}).items()}
+
+        row = []
+        for k in header:
+            v = ev2.get(k, "")
+
+            # ép kiểu để tránh "datetime chui vào closePx" / tránh text loạn
+            if k == "ts":
+                try: v = int(float(v))
+                except: v = ""
+            elif k in ("openPx", "sz"):
+                try: v = float(v)
+                except: v = ""
+            elif k in ("posId", "instId", "posSide", "closeType"):
+                v = "" if v is None else str(v)
+
+            row.append(v)
+
+        ws.append_row(row, value_input_option="RAW")
+
     except Exception as e:
         logging.error("[CLOSE-EVENTS] append_row error: %s", e)
 
@@ -5366,15 +5379,15 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
 
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
-    else:
-        logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
+    #else:
+        #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
 if __name__ == "__main__":
     main()
