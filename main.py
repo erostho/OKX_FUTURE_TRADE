@@ -1619,28 +1619,74 @@ def append_close_event_to_sheet(ev: dict):
 def read_close_events_sheet(limit: int = 5000):
     """
     Đọc sheet CLOSE_EVENTS và trả về list[dict] theo header.
-    limit: số dòng tối đa kéo về (chống treo)
+    - Chỉ pull đúng range A1:G (7 cột chuẩn)
+    - Ép kiểu an toàn cho ts/openPx/sz
     """
     try:
-        sh = _get_gsheet()  # hoặc client.open_by_key(...), dùng đúng hàm mày đang có
+        sh = _get_gsheet()
         ws = sh.worksheet("CLOSE_EVENTS")
-        values = ws.get_all_values()
+
+        # chỉ lấy đúng 7 cột (A..G) để tránh lệch schema
+        end_row = 1 + int(limit)
+        values = ws.get(f"A1:G{end_row}")
 
         if not values or len(values) < 2:
             return []
 
-        header = values[0]
-        data_rows = values[1:1+limit]
+        header = [h.strip() for h in values[0]]
+        rows = values[1:]
+
+        idx = {k: i for i, k in enumerate(header)}
+        required = ["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"]
+        for k in required:
+            if k not in idx:
+                raise Exception(f"CLOSE_EVENTS missing column '{k}' (have={header})")
+
+        def _cell(r, k):
+            i = idx[k]
+            return r[i].strip() if i < len(r) and r[i] is not None else ""
 
         out = []
-        for r in data_rows:
-            row = {}
-            for i, k in enumerate(header):
-                row[k] = r[i] if i < len(r) else ""
-            out.append(row)
+        for r in rows:
+            posId = _cell(r, "posId")
+            if not posId:
+                continue
+
+            ts = _cell(r, "ts")
+            instId = _cell(r, "instId")
+            posSide = _cell(r, "posSide")
+            openPx = _cell(r, "openPx")
+            sz = _cell(r, "sz")
+            closeType = _cell(r, "closeType")
+
+            # ép kiểu an toàn
+            try:
+                ts_i = int(float(ts)) if ts else 0
+            except Exception:
+                ts_i = 0
+
+            def _to_float_or_none(x):
+                if not x or str(x).lower() == "none":
+                    return None
+                try:
+                    return float(x)
+                except Exception:
+                    return None
+
+            out.append({
+                "posId": str(posId),
+                "ts": ts_i,
+                "instId": str(instId),
+                "posSide": str(posSide),
+                "openPx": _to_float_or_none(openPx),
+                "sz": _to_float_or_none(sz),
+                "closeType": str(closeType),
+            })
+
         return out
+
     except Exception as e:
-        logging.error("[GSHEET] read_close_events_sheet error: %s", e)
+        logging.exception("[GSHEET] read_close_events_sheet error: %s", e)
         return []
 
 # ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
