@@ -67,6 +67,10 @@ TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
 
+# ===== trailing mode state (ALL server-side) =====
+TRAIL_MODE = {}            # pos_key -> "normal" | "pump"
+LAST_TRAIL_UPDATE_MS = {}  # pos_key -> last update ms
+
 # ========== PUMP/DUMP PRO CONFIG ==========
 SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
 SL_DYN_SOFT_PCT_BAD  = 2.0   # thị trường xấu → cắt sớm hơn
@@ -100,6 +104,8 @@ PUMP_CB_MAX_PCT      = 3.0    # cap callback khi pump
 
 HARD_STOP_PCT        = 4.0    # A) hard floor theo peak (%)
 TIME_UNDER_STOP_SEC  = 30     # B) giá dưới stop liên tục bao lâu mới thoát
+TRAIL_UPDATE_COOLDOWN_SEC = 60   # chống spam cancel+place
+CB_UPDATE_MIN_DIFF = 0.2         # chỉ update nếu callback lệch >= 0.2%
 
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
@@ -4928,218 +4934,101 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
 
         # ---------- 13) server-side trailing khi pnl >= 8% ----------
-        # ---------- 13.1) trailing (pump-mode: bot-managed + protections A/B) ----------
+        # ---------- 13) server-side trailing khi pnl >= 8% (ALL server-side) ----------
         now_ms = int(time.time() * 1000)
-
+        
         is_pump, pump_meta = detect_pump_dump_2of3(closes, highs, lows, vols)
         if is_pump:
             until = now_ms + int(PUMP_WINDOW_SEC * 1000)
             prev_until = PUMP_MODE_UNTIL_MS.get(pos_key, 0)
             PUMP_MODE_UNTIL_MS[pos_key] = max(prev_until, until)
-
+        
         pump_mode = now_ms < PUMP_MODE_UNTIL_MS.get(pos_key, 0)
-
-        if pump_mode and pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-            # 1) current price (giữ đúng logic bạn đang dùng)
-            mark_px = okx.get_mark_price(inst_id)
-            last_px = okx.get_last_price(inst_id) if mark_px is None else None
-            current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
-
-            # 2) callback pump (nới có kiểm soát + cap)
-            pump_cb = min(callback_pct * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
-
-            # 3) peak như cũ: có đỉnh mới là update
-            if posSide == "long":
-                peak_now = max(highs[-TP_TRAIL_LOOKBACK_BARS:]) if len(highs) >= TP_TRAIL_LOOKBACK_BARS else max(highs)
-                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
-                peak_px = max(prev_peak, peak_now, current_px)
-                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
-
-                stop_px = peak_px * (1.0 - pump_cb / 100.0)
-                hard_floor = peak_px * (1.0 - HARD_STOP_PCT / 100.0)
-
-                hard_breach = current_px <= hard_floor
-                under_stop = current_px <= stop_px
-                safe_again = current_px > stop_px
-
-            else:  # short
-                peak_now = min(lows[-TP_TRAIL_LOOKBACK_BARS:]) if len(lows) >= TP_TRAIL_LOOKBACK_BARS else min(lows)
-                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
-                peak_px = peak_now if prev_peak == 0.0 else min(prev_peak, peak_now, current_px)
-                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
-
-                stop_px = peak_px * (1.0 + pump_cb / 100.0)
-                hard_floor = peak_px * (1.0 + HARD_STOP_PCT / 100.0)
-
-                hard_breach = current_px >= hard_floor
-                under_stop = current_px >= stop_px
-                safe_again = current_px < stop_px
-
-            logging.info(
-                "[PUMP-TRAIL] %s pump_mode=YES score=%s chg=%.2f%% volR=%.2f rangeR=%.2f | cb=%.2f%% peak=%.6f stop=%.6f hard=%.6f px=%.6f",
-                instId,
-                pump_meta.get("score"),
-                pump_meta.get("chg_5m_pct", 0.0),
-                pump_meta.get("vol_ratio", 0.0),
-                pump_meta.get("range_ratio", 0.0),
-                pump_cb, peak_px, stop_px, hard_floor, current_px
-            )
-
-            # 4) Nếu trước đó đã đặt trailing server (hoặc còn algo), hủy để tránh sàn đóng sớm
-            try:
-                exists, info = has_active_trailing_for_position(okx, instId, posSide, return_info=True)
-                if exists and info:
-                    old_algo_id = info.get("algoId")
-                    try:
-                        okx.cancel_algo_order(instId, old_algo_id)
-                        logging.info("[PUMP-TRAIL] cancel trailing server cũ %s algoId=%s", instId, old_algo_id)
-                    except Exception as e:
-                        logging.error("[PUMP-TRAIL] cancel trailing server cũ lỗi %s algoId=%s: %s", instId, old_algo_id, e)
-            except Exception:
-                pass
-
-            # 5) (Tuỳ bạn) hủy OCO để khỏi bị chốt sớm trong pump
-            try:
-                cancel_oco_before_trailing(okx, instId, posSide)
-            except Exception as e:
-                logging.error("[PUMP-TRAIL] lỗi khi hủy OCO trước soft-trail %s (%s): %s", instId, posSide, e)
-
-            # ===== A) HARD FLOOR: breach là đóng ngay =====
-            if hard_breach:
-                logging.warning("[PUMP-TRAIL] HARD_FLOOR breach => CLOSE NOW %s %s (px=%.6f hard=%.6f)",
-                                instId, posSide, current_px, hard_floor)
-                try:
-                    mark_symbol_tp(instId)
-                    posId = str(p.get("posId") or "").strip()
-                    log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
-                    maker_close_position_with_timeout(
-                        okx=okx,
-                        posId=posId,
-                        inst_id=instId,
-                        pos_side=posSide,
-                        sz=sz,
-                        last_px=current_px,
-                        timeout_sec=3,
-                    )
-                except Exception as e:
-                    logging.error("[PUMP-TRAIL] close HARD_FLOOR error %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-
-            # ===== B) TIME-UNDER-STOP: dưới stop liên tục TIME_UNDER_STOP_SEC mới đóng =====
-            if under_stop:
-                since = UNDER_STOP_SINCE_MS.get(pos_key, 0)
-                if since <= 0:
-                    UNDER_STOP_SINCE_MS[pos_key] = now_ms
-                    logging.info("[PUMP-TRAIL] UNDER_STOP hit1 mark %s %s (px=%.6f stop=%.6f)",
-                                 instId, posSide, current_px, stop_px)
-                else:
-                    dt_sec = (now_ms - since) / 1000.0
-                    if dt_sec >= TIME_UNDER_STOP_SEC:
-                        logging.warning("[PUMP-TRAIL] UNDER_STOP %.1fs => CLOSE %s %s (px=%.6f stop=%.6f)",
-                                        dt_sec, instId, posSide, current_px, stop_px)
-                        try:
-                            mark_symbol_tp(instId)
-                            posId = str(p.get("posId") or "").strip()
-                            log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
-                            maker_close_position_with_timeout(
-                                okx=okx,
-                                posId=posId,
-                                inst_id=instId,
-                                pos_side=posSide,
-                                sz=sz,
-                                last_px=current_px,
-                                timeout_sec=3,
-                            )
-                        except Exception as e:
-                            logging.error("[PUMP-TRAIL] close UNDER_STOP error %s: %s", instId, e)
-                        _reset_state(pos_key)
-                        UNDER_STOP_SINCE_MS.pop(pos_key, None)
-                        continue
-            elif safe_again:
-                # hồi lên lại trên stop => reset mark
-                if UNDER_STOP_SINCE_MS.get(pos_key, 0) > 0:
-                    logging.info("[PUMP-TRAIL] UNDER_STOP reset %s %s (px=%.6f stop=%.6f)",
-                                 instId, posSide, current_px, stop_px)
-                UNDER_STOP_SINCE_MS.pop(pos_key, None)
-
-            # pump mode: không đặt trailing server, để soft-trail tiếp tục quản lý
-            continue
-
+        target_mode = "pump" if pump_mode else "normal"
+        
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             posId = str(p.get("posId") or "").strip()
+        
+            # 1) callback theo mode
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
-
-            # >>> lấy giá realtime để set activePx (ưu tiên mark, fallback last, cuối cùng mới fallback candle close)
+            pump_cb = min(callback_pct * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
+            target_cb = pump_cb if target_mode == "pump" else callback_pct
+        
+            # 2) giá realtime để set activePx (KHÔNG update theo activePx về sau)
             mark_px = okx.get_mark_price(inst_id)
             last_px = okx.get_last_price(inst_id) if mark_px is None else None
             current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
-
+        
             logging.info(
-                "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%% >= %.2f%%). callback=%.2f%%, activePx=%.6f (mark=%s, last=%s)",
-                inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
-                f"{mark_px:.6f}" if mark_px is not None else "None",
-                f"{last_px:.6f}" if last_px is not None else "None",
+                "[TP-TRAIL] %s mode=%s pnl=%.2f%% cb=%.2f%% activePx=%.6f (pump=%s score=%s)",
+                inst_id, target_mode, pnl_pct, target_cb, current_px,
+                "YES" if target_mode == "pump" else "NO",
+                pump_meta.get("score") if pump_meta else None
             )
-
-            # >>> nếu đã có trailing, kiểm tra có cần UPDATE không
+        
+            # 3) cooldown chống spam cancel+place
+            last_upd = LAST_TRAIL_UPDATE_MS.get(pos_key, 0)
+            if last_upd > 0 and (now_ms - last_upd) < TRAIL_UPDATE_COOLDOWN_SEC * 1000:
+                # quá sát lần trước -> skip
+                continue
+        
+            # 4) check trailing đang tồn tại
             exists, info = has_active_trailing_for_position(okx, inst_id, pos_side, return_info=True)
+        
+            mode_prev = TRAIL_MODE.get(pos_key, None)
+            need_update = False
+        
+            if not exists:
+                need_update = True
+            else:
+                old_cb = safe_float(info.get("callbackRatio") or 0.0)
+                # ONLY update khi CHUYỂN MODE hoặc callback thay đổi đủ lớn
+                if mode_prev != target_mode:
+                    need_update = True
+                elif abs(old_cb - target_cb) >= CB_UPDATE_MIN_DIFF:
+                    need_update = True
+        
+            if not need_update:
+                # đã có trailing đúng mode/cb -> giao cho sàn trail, cron khỏi làm gì thêm
+                continue
+        
+            # 5) cancel trailing cũ nếu có (chỉ khi cần update/switch)
             if exists and info:
                 old_algo_id = info.get("algoId")
-                old_active = safe_float(info.get("activePx") or 0.0)
-                old_cb = safe_float(info.get("callbackRatio") or 0.0)
-
-                # ngưỡng update: activePx lệch > 0.2% hoặc callback lệch > 0.05%
-                need_update = False
-                if old_active > 0 and abs(old_active - current_px) / current_px > 0.002:
-                    need_update = True
-                if abs(old_cb - callback_pct) > 0.05:
-                    need_update = True
-
-                if not need_update:
-                    logging.info(
-                        "[TP-TRAIL] Đã có trailing (%s) và vẫn hợp lệ -> không update (old_active=%.6f old_cb=%.2f%%).",
-                        inst_id, old_active, old_cb
-                    )
-                    continue
-
-                # >>> HỦY trailing cũ để đặt trailing mới (update thực sự)
                 try:
                     okx.cancel_algos(inst_id=inst_id, algo_ids=[old_algo_id])
-                    logging.info("[TP-TRAIL] Cancel trailing cũ algoId=%s để update (%s).", old_algo_id, inst_id)
+                    logging.info("[TP-TRAIL] Cancel trailing cũ algoId=%s để update/switch (%s).", old_algo_id, inst_id)
                 except Exception as e:
                     logging.error("[TP-TRAIL] Lỗi cancel trailing cũ %s algoId=%s: %s", inst_id, old_algo_id, e)
-                    # nếu không hủy được thì thôi tránh spam đặt mới
                     continue
-
-            # Hủy OCO trước khi đặt trailing mới
+        
+            # 6) (tuỳ bạn) hủy OCO trước khi đặt trailing mới
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
                 logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-
+        
+            # 7) place trailing mới
             side_close = "sell" if pos_side == "long" else "buy"
             try:
-                # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
-                posId = str(p.get("posId") or "").strip()
-                log_close_type(posId, inst_id, pos_side, avg_px, sz, "TRAILING")
+                log_close_type(posId, inst_id, pos_side, avg_px, sz, f"TRAIL_{target_mode.upper()}")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
                     side_close=side_close,
                     sz=sz,
-                    callback_ratio_pct=callback_pct,
+                    callback_ratio_pct=target_cb,
                     active_px=current_px,
                     td_mode="isolated",
                 )
-                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%, activePx=%.6f).",
-                             inst_id, pnl_pct, callback_pct, current_px)
+                TRAIL_MODE[pos_key] = target_mode
+                LAST_TRAIL_UPDATE_MS[pos_key] = now_ms
+        
+                logging.info("[TP-TRAIL] SET trailing %s mode=%s cb=%.2f%% activePx=%.6f", inst_id, target_mode, target_cb, current_px)
             except Exception as e:
                 logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
-
+        
             continue  # đã giao cho sàn
-
-
         # ---------- 14) 4 tín hiệu TP-DYN ----------
         if posSide == "long":
             flat_move = not (c_now > c_prev1 > c_prev2)
