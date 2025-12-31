@@ -283,7 +283,7 @@ def _get_gsheet():
     gc = gspread.authorize(creds)
     ss = gc.open_by_key(sheet_key)
 
-    logging.info("[GSHEET] open_by_key sheet_key=%s title=%s", sheet_key, getattr(ss, "title", "?"))
+    #logging.info("[GSHEET] open_by_key sheet_key=%s title=%s", sheet_key, getattr(ss, "title", "?"))
 
     _GSHEET_CACHE[sheet_key] = ss
     return ss
