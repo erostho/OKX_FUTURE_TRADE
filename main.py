@@ -1638,85 +1638,6 @@ def get_bt_cache_worksheet():
 
     return ws
 
-def get_close_events_worksheet():
-    gc = get_gsheet_client()
-    if not gc:
-        return None
-    sheet_id = os.getenv("BT_SHEET_ID") or os.getenv("SHEET_ID") or os.getenv("GSHEET_ID")
-    if not sheet_id:
-        logging.error("[CLOSE-EVENTS] BT_SHEET_ID (hoặc SHEET_ID/GSHEET_ID) chưa cấu hình.")
-        return None
-    sh = gc.open_by_key(sheet_id)
-    try:
-        ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
-    except Exception:
-        ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=1000, cols=10)
-        ws.append_row(["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"])
-        logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
-    return ws
-
-
-def read_close_events_sheet(limit: int = 5000):
-    try:
-        sh = _get_gsheet()
-        ws = sh.worksheet("CLOSE_EVENTS")
-        values = ws.get_all_values()
-        if not values or len(values) < 2:
-            return []
-
-        header = values[0]
-        data_rows = values[1:1+limit]
-
-        # build rows
-        out = []
-        for r in data_rows:
-            row = {}
-            for i, k in enumerate(header):
-                row[k] = r[i] if i < len(r) else ""
-            out.append(row)
-
-        # ✅ DEDUPE: lấy row cuối theo posId
-        latest = {}
-        for row in out:
-            pid = str(row.get("posId") or "").strip()
-            if not pid:
-                continue
-            latest[pid] = row  # overwrite -> row cuối thắng
-
-        return list(latest.values())
-
-    except Exception as e:
-        logging.error("[GSHEET] read_close_events_sheet error: %s", e)
-        return []
-
-
-# ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
-
-def append_close_event_to_sheet(ev: dict):
-    ws = get_close_events_worksheet()
-    if not ws:
-        logging.error("[CLOSE-EVENTS] ws is None (check SHEET_ID/BT_SHEET_ID + service account)")
-        return
-
-    try:
-        pos_id = str(ev.get("posId", "") or "").strip()
-        # ép TEXT để không mất số (Google Sheet giới hạn 15 digits cho number)
-        pos_id_cell = f"'{pos_id}" if pos_id else ""
-
-        row = [
-            pos_id_cell,
-            str(ev.get("ts", "")),
-            str(ev.get("instId", "")),
-            str(ev.get("posSide", "")),
-            str(ev.get("openPx", "")),
-            str(ev.get("sz", "")),
-            str(ev.get("closeType", "")),
-        ]
-        ws.append_row(row, value_input_option="RAW")
-    except Exception as e:
-        logging.exception("[CLOSE-EVENTS] append row error: %s", e)
-
-
 
 def load_close_events_from_sheet(limit=12000):
     """
@@ -2425,50 +2346,120 @@ def _save_json_file(path: str, obj):
     except Exception:
         pass
 
+# =========================
+# CLOSE_EVENTS DEDUPE PATCH
+# =========================
 
-def _load_close_event_posid_set(limit_rows: int = 3000) -> set:
-    """
-    Load posId đã có trong CLOSE_EVENTS để tránh ghi trùng.
-    """
-    ws = get_close_events_worksheet()
-    if not ws:
-        return set()
+CLOSE_EVENTS_SHEET_NAME = "CLOSE_EVENTS"
 
+def _norm_posid(x) -> str:
+    """
+    Normalize posId để dedupe ổn định giữa:
+    - OKX trả "3088..."
+    - Google Sheet lưu "'3088..." (ép text)
+    - đôi khi sheet/parse có khoảng trắng, hoặc ".0"
+    """
+    s = str(x or "").strip()
+
+    # Google Sheet ép text bằng dấu nháy đơn đầu dòng
+    if s.startswith("'"):
+        s = s[1:].strip()
+
+    # phòng trường hợp bị parse số thành "12345.0"
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+
+    return s
+
+
+def get_close_events_worksheet():
+    # Dùng đúng entrypoint sheet của bạn (đã có _get_gsheet())
+    sh = _get_gsheet()
+    return sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
+
+
+def read_close_events_sheet(limit: int = 5000):
+    """
+    Đọc CLOSE_EVENTS -> list[dict] theo header
+    """
     try:
+        ws = get_close_events_worksheet()
         values = ws.get_all_values()
         if not values or len(values) < 2:
-            return set()
+            return []
 
-        # header: posId, ts, instId, posSide, openPx, sz, closeType
-        posid_idx = 0
-        out = set()
-        data = values[1:]
-        if limit_rows and len(data) > limit_rows:
-            data = data[-limit_rows:]
+        header = values[0]
+        data_rows = values[1:1 + limit]
 
-        for row in data:
-            if len(row) > posid_idx:
-                pid = str(row[posid_idx]).strip()
-                if pid:
-                    out.add(pid)
+        out = []
+        for r in data_rows:
+            row = {}
+            for i, k in enumerate(header):
+                row[k] = r[i] if i < len(r) else ""
+            out.append(row)
         return out
-    except Exception as e:
-        logging.error("[CLOSE-EVENTS] load posId set error: %s", e)
-        return set()
 
+    except Exception as e:
+        logging.exception("[GSHEET] read_close_events_sheet error: %s", e)
+        return []
+
+
+def _load_close_event_posid_set(limit: int = 5000) -> set:
+    """
+    Build set posId đã có trong sheet (đã normalize) để chống ghi trùng.
+    """
+    s = set()
+    rows = read_close_events_sheet(limit=limit)
+    for r in rows:
+        pid = _norm_posid(r.get("posId"))
+        if pid:
+            s.add(pid)
+    return s
+
+
+def append_close_event_to_sheet(ev: dict):
+    """
+    Append CLOSE_EVENTS nhưng ép posId dạng TEXT để không bị mất số.
+    """
+    ws = get_close_events_worksheet()
+    pos_id = _norm_posid(ev.get("posId"))
+
+    row = [
+        f"'{pos_id}" if pos_id else "",      # posId (ép TEXT)
+        str(ev.get("ts", "")),
+        str(ev.get("instId", "")),
+        str(ev.get("posSide", "")),
+        str(ev.get("openPx", "")),
+        str(ev.get("sz", "")),
+        str(ev.get("closeType", "")),
+    ]
+
+    try:
+        ws.append_row(row, value_input_option="RAW")
+    except Exception as e:
+        logging.exception("[CLOSE-EVENTS] append row error: %s", e)
+
+
+# =========================
+# WATCHER FIX: normalize + dedupe only by sheet set
+# =========================
 
 def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, limit: int = 100):
     state = _load_json_file(SERVER_CLOSE_STATE_FILE, {"last_ctime_ms": 0})
     last_ctime_ms = int(state.get("last_ctime_ms") or 0)
+
     now_ms = int(time.time() * 1000)
 
-    # cutoff = max(từ đầu ngày VN, last_ctime_ms)
-    now_vn = datetime.utcnow() + timedelta(hours=7)
+    # cutoff = từ đầu ngày VN
+    now_utc = datetime.now(timezone.utc)
+    now_vn = now_utc + timedelta(hours=7)
     start_today_vn = datetime(now_vn.year, now_vn.month, now_vn.day, 0, 0, 0)
-    cutoff_today_ms = int((start_today_vn - timedelta(hours=7)).replace(tzinfo=timezone.utc).timestamp() * 1000)
+    start_today_utc = start_today_vn - timedelta(hours=7)
+    cutoff_today_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
+    # Guard: last_ctime_ms ở tương lai -> reset
     if last_ctime_ms > now_ms + 5 * 60 * 1000:
-        logging.warning("[WATCH-OCO] last_ctime_ms in future -> reset")
+        logging.warning("[WATCH-OCO] last_ctime_ms in future -> reset to 0")
         last_ctime_ms = 0
         state["last_ctime_ms"] = 0
         _save_json_file(SERVER_CLOSE_STATE_FILE, state)
@@ -2476,59 +2467,78 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
     cutoff_ms = max(cutoff_today_ms, last_ctime_ms)
 
     existing_posids = _load_close_event_posid_set()
+    logging.info("[WATCH-OCO] existing_posids=%s sample=%s",
+                 len(existing_posids), list(existing_posids)[:3])
+
     newest_ctime_ms = last_ctime_ms
     appended = 0
 
     after = None
-    for page in range(int(lookback_pages)):
-        rows = []
+    for _ in range(int(lookback_pages)):
         try:
-            rows = okx.get_positions_history(inst_type="SWAP", limit=limit, after=after) or []
+            data = okx.get_positions_history(limit=limit, after=after)
         except Exception as e:
             logging.exception("[WATCH-OCO] get_positions_history error: %s", e)
             break
 
+        # normalize rows
+        if isinstance(data, dict):
+            rows = data.get("data", []) or []
+        elif isinstance(data, list):
+            rows = data
+        else:
+            rows = []
+
+        logging.info("[WATCH-OCO] fetched rows=%s after=%s", len(rows), after)
+
         if not rows:
-            logging.info("[WATCH-OCO] page=%d no rows -> stop", page)
             break
 
-        # cursor
+        # cursor next page
         try:
             last_row = rows[-1]
             after = last_row.get("cTime") or last_row.get("uTime") or after
         except Exception:
             pass
 
-        # stop sớm nếu dữ liệu đã cũ hơn cutoff
+        # stop all if first item already older than cutoff
         try:
             first_ctime = int(float(rows[0].get("cTime") or rows[0].get("uTime") or 0))
         except Exception:
             first_ctime = 0
         if first_ctime and first_ctime < cutoff_ms:
-            logging.info("[WATCH-OCO] first_ctime=%s < cutoff_ms=%s -> stop", first_ctime, cutoff_ms)
             break
 
+        stop_all = False
         for p in rows:
+            if not isinstance(p, dict):
+                continue
+
             try:
                 ctime_ms = int(float(p.get("cTime") or p.get("uTime") or p.get("ts") or 0))
             except Exception:
                 continue
 
             if ctime_ms and ctime_ms < cutoff_ms:
-                continue
+                stop_all = True
+                break
+
             if ctime_ms and ctime_ms <= last_ctime_ms:
                 continue
 
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
 
-            pos_id = str(p.get("posId") or "").strip()
+            # ✅ normalize posId từ OKX
+            pos_id = _norm_posid(p.get("posId"))
+
             if not pos_id:
+                # fallback nếu OKX không trả posId
                 inst_id = p.get("instId")
                 pos_side = p.get("posSide")
                 open_px = p.get("openPx") or p.get("avgPx") or ""
-                pos_id = f"{inst_id}_{pos_side}_{open_px}_{ctime_ms}"
+                pos_id = _norm_posid(f"{inst_id}_{pos_side}_{open_px}_{ctime_ms}")
 
-            # ✅ chỉ dedupe theo sheet
+            # ✅ CHỐNG TRÙNG: chỉ theo sheet-set (đã normalize)
             if pos_id in existing_posids:
                 continue
 
@@ -2540,12 +2550,16 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
                     "posSide": p.get("posSide"),
                     "openPx": p.get("openPx"),
                     "sz": p.get("sz"),
-                    "closeType": "OCO_SL",
+                    "closeType": "OCO_SL"
                 })
                 existing_posids.add(pos_id)
                 appended += 1
-            except Exception:
-                logging.exception("[WATCH-OCO] append failed posId=%s", pos_id)
+                logging.info("[WATCH-OCO] appended posId=%s ctime=%s", pos_id, ctime_ms)
+            except Exception as e:
+                logging.exception("[WATCH-OCO] append failed posId=%s: %s", pos_id, e)
+
+        if stop_all:
+            break
 
     if newest_ctime_ms > last_ctime_ms:
         state["last_ctime_ms"] = newest_ctime_ms
@@ -2553,6 +2567,7 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
 
     logging.info("[WATCH-OCO] appended=%s cutoff_ms=%s last_ctime_ms=%s newest_ctime_ms=%s",
                  appended, cutoff_ms, last_ctime_ms, newest_ctime_ms)
+
 
 def load_close_event_map_by_posid():
     ws = get_close_events_worksheet()
