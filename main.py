@@ -1548,6 +1548,20 @@ def maker_close_position_with_timeout(
     okx.close_swap_position(inst_id, pos_side)
     return "market"
 
+def get_gsheet_client():
+    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    if not json_str:
+        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
+    info = json.loads(json_str)
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    credentials = service_account.Credentials.from_service_account_info(
+        info, scopes=scopes
+    )
+    return gspread.authorize(credentials)
+    
 def get_session_worksheet():
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -1625,7 +1639,7 @@ def get_bt_cache_worksheet():
     return ws
 
 def get_close_events_worksheet():
-    gc = get_gspread_client()
+    gc = get_gsheet_client()
     if not gc:
         return None
     sheet_id = os.getenv("BT_SHEET_ID") or os.getenv("SHEET_ID") or os.getenv("GSHEET_ID")
@@ -2829,19 +2843,6 @@ def run_backtest_if_needed(okx: "OKXClient"):
 
 # ================= GOOGLE SHEETS KHÁC, DRIVE, TELEGRAM, SCANNER, TP DYNAMIC, v.v.
 
-def get_gsheet_client():
-    json_str = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
-    if not json_str:
-        raise RuntimeError("GOOGLE_SERVICE_ACCOUNT_JSON not set")
-    info = json.loads(json_str)
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    credentials = service_account.Credentials.from_service_account_info(
-        info, scopes=scopes
-    )
-    return gspread.authorize(credentials)
 
 
 def prepare_worksheet():
