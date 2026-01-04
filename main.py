@@ -4838,7 +4838,7 @@ def run_dynamic_tp(okx: "OKXClient"):
             age_min = (time.time() * 1000 - open_ms) / 60000.0
             #if age_min >= 120 and pnl_pct < 5.0:
             if age_min >= 60 and peak_pnl < 2.0:
-                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
+                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 2%% => CLOSE",
                                 instId, posSide, age_min, pnl_pct)
                 try:
                     mark_symbol_sl(instId, "timeout_60m")
