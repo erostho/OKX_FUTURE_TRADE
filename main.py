@@ -4836,11 +4836,12 @@ def run_dynamic_tp(okx: "OKXClient"):
         open_ms = int(p.get("cTime", "0") or 0)
         if open_ms > 0:
             age_min = (time.time() * 1000 - open_ms) / 60000.0
-            if age_min >= 120 and pnl_pct < 5.0:
+            #if age_min >= 120 and pnl_pct < 5.0:
+            if age_min >= 60 and peak_pnl < 2.0:
                 logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
                                 instId, posSide, age_min, pnl_pct)
                 try:
-                    mark_symbol_sl(instId, "timeout_120m")
+                    mark_symbol_sl(instId, "timeout_60m")
                     posId = str(p.get("posId") or "").strip()
                     if posId:
                         log_close_type(
@@ -5387,13 +5388,13 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
 
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+    logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    run_full_bot(okx)
 
     # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
-    if minute in (5, 20, 35, 50):
-        logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-        run_full_bot(okx)
+    #if minute in (5, 20, 35, 50):
+        #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+        #run_full_bot(okx)
     #else:
         #logging.info("[SCHED] %02d' -> CHỈ CHẠY TP DYNAMIC", minute)
 
