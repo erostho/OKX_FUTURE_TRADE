@@ -4168,6 +4168,7 @@ def maker_first_open_position(
     lever: int,
     maker_offset_bps: float = 6.0,     # 6 bps = 0.06% (nhẹ, đủ maker)
     maker_timeout_sec: int = 3,        # chờ khớp maker 3s
+    bypass_session_guard: bool = False,
 ):
     """
     Ưu tiên mở bằng post-only LIMIT (maker).
@@ -4178,24 +4179,29 @@ def maker_first_open_position(
 
     sz = normalize_swap_sz(okx, inst_id, contracts)
     # ===== PATCH: session guard =====
-    if _is_session_20_24():
-        allow, reason = _allow_trade_session_20_24(
-            market_regime=locals().get("market_regime"),
-            confidence=locals().get("confidence"),
-            trend_score=locals().get("trend_score"),
-        )
-    elif _is_session_16_20():
-        allow, reason = _allow_trade_session_16_20(
-            market_regime=locals().get("market_regime"),
-            confidence=locals().get("confidence"),
-            trend_score=locals().get("trend_score"),
-        )
+    if not bypass_session_guard:
+        if _is_session_20_24():
+            allow, reason = _allow_trade_session_20_24(
+                market_regime=locals().get("market_regime"),
+                confidence=locals().get("confidence"),
+                trend_score=locals().get("trend_score"),
+            )
+        elif _is_session_16_20():
+            allow, reason = _allow_trade_session_16_20(
+                market_regime=locals().get("market_regime"),
+                confidence=locals().get("confidence"),
+                trend_score=locals().get("trend_score"),
+            )
+        else:
+            allow, reason = True, "ok:normal_session"
+    
+        if not allow:
+            logging.info("[GUARD][SESSION] Block %s %s: %s", inst_id, side_open, reason)
+            return False, None, "skip_session"
     else:
-        allow, reason = True, "ok:normal_session"
+        # SCALP bypass session guard
+        allow, reason = True, "bypass_session_guard"
 
-    if not allow:
-        logging.info("[GUARD][SESSION] Block %s %s: %s", inst_id, side_open, reason)
-        return False, None, "skip_session"
 
         # ===== PATCH #4: daily trade cap =====
     allow, reason = allow_trade_daily_limit()
@@ -4327,8 +4333,6 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-
-
 
         # Spot -> Perp SWAP (chuẩn hoá instId)
         if coin.endswith("-SWAP"):
