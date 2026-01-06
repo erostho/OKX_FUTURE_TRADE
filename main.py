@@ -4698,6 +4698,205 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
 
     return (False, None) if return_info else False
 
+def _get_top_swap_movers_24h(okx, topn=100):
+    """
+    Trả về 2 list instId:
+      - gainers: topN %change 24h tăng mạnh nhất
+      - losers : topN %change 24h giảm mạnh nhất
+    """
+    try:
+        data = okx.get_swap_tickers()
+        rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+        items = []
+        for r in rows:
+            inst = (r.get("instId") or "")
+            if not inst.endswith("-USDT-SWAP"):
+                continue
+            try:
+                last = float(r.get("last"))
+                open24h = float(r.get("open24h"))
+                if open24h <= 0:
+                    continue
+                chg = (last - open24h) / open24h * 100.0
+            except Exception:
+                continue
+            items.append((inst, chg))
+
+        gainers = sorted(items, key=lambda x: x[1], reverse=True)[:topn]
+        losers  = sorted(items, key=lambda x: x[1], reverse=False)[:topn]
+        return [x[0] for x in gainers], [x[0] for x in losers]
+    except Exception as e:
+        logging.error("[SCALP] get top movers error: %s", e)
+        return [], []
+
+
+def build_scalp_signal_5m(
+    okx,
+    topn=100,
+    within_sec=90,                 # nến 5m đã chạy > 90s => bỏ (tránh vào muộn)
+    min_5m_change_pct=0.10,        # FT 5m tối thiểu (đỡ nhiễu)
+    min_30m_change_pct=0.15,       # FT 30m (lọc trend nhanh)
+    entry_pullback_bps=10,         # đặt limit lùi 10 bps để tránh đuổi
+    chase_bps=25,                  # nếu đã vượt recent high/low > 25 bps => bỏ
+    body_ratio_min_5m=0.45,
+    body_ratio_min_30m=0.40,
+    max_pick=8                     # trả về tối đa N tín hiệu tốt nhất
+):
+    """
+    Trả về list tín hiệu scalp (dict), mỗi dict có:
+      instId, direction, entry, sl, tp1, trail_start_price, meta
+
+    Triết lý:
+      - Trade theo 5m, chỉ “đầu nến mới mở” (within_sec)
+      - Tránh vào quá sớm: KHÔNG vào candle #2 -> yêu cầu 2 nến 5m đóng cùng hướng (candle #3 trở đi)
+      - 30m cùng hướng để đỡ “đánh ngược sóng”
+      - 1m cùng hướng để xác nhận momentum đang tiếp diễn
+      - SL gọn theo cap pnl + swing gần nhất
+      - TP: có TP1 nhỏ để “ăn nhanh”, còn chủ lực là TRAIL (pnl >= 10%)
+    """
+    now_ms = int(time.time() * 1000)
+
+    gainers, losers = _get_top_swap_movers_24h(okx, topn=topn)
+    candidates = [(x, "LONG") for x in gainers] + [(x, "SHORT") for x in losers]
+
+    out = []
+
+    # cap SL theo cấu hình pnl (đúng style bot bạn đang dùng)
+    # price_move_max = (MAX_PLANNED_SL_PNL_PCT/100) / FUT_LEVERAGE
+    try:
+        price_move_max = (MAX_PLANNED_SL_PNL_PCT / 100.0) / float(FUT_LEVERAGE)
+    except Exception:
+        price_move_max = 0.01  # fallback ~1%
+
+    for inst, dir_need in candidates:
+        try:
+            c5  = okx.get_candles(inst, bar="5m",  limit=30) or []
+            c1  = okx.get_candles(inst, bar="1m",  limit=60) or []
+            c30 = okx.get_candles(inst, bar="30m", limit=60) or []
+            if len(c5) < 8 or len(c1) < 12 or len(c30) < 6:
+                continue
+
+            # OKX trả newest-first -> đảo lại chronological
+            c5  = list(reversed(c5))
+            c1  = list(reversed(c1))
+            c30 = list(reversed(c30))
+
+            # --- “tránh vào muộn”: chỉ trade ở đầu nến 5m mới mở ---
+            cur5 = c5[-1]  # thường là nến đang chạy (confirm=0)
+            ts_open_5m = int(cur5[0])
+            age_sec = (now_ms - ts_open_5m) / 1000.0
+            if age_sec > within_sec:
+                continue
+
+            # dùng 2 nến 5m ĐÃ ĐÓNG: [-3],[-2] (vì [-1] đang chạy)
+            c5_1 = c5[-3]
+            c5_2 = c5[-2]
+            ok_ft5, dir_ft5 = _ft_two_candles_same_dir(
+                c5_1, c5_2,
+                body_ratio_min=body_ratio_min_5m,
+                min_change_pct=min_5m_change_pct
+            )
+            # --- “tránh vào quá sớm”: không có FT 2 nến => coi như candle #2 => bỏ ---
+            if not ok_ft5:
+                continue
+
+            dir_5m = "LONG" if dir_ft5 > 0 else "SHORT"
+            if dir_5m != dir_need:
+                continue
+
+            # --- 30m cùng hướng (lọc nhanh) ---
+            c30_1 = c30[-3]
+            c30_2 = c30[-2]
+            ok_ft30, dir_ft30 = _ft_two_candles_same_dir(
+                c30_1, c30_2,
+                body_ratio_min=body_ratio_min_30m,
+                min_change_pct=min_30m_change_pct
+            )
+            if not ok_ft30:
+                continue
+            dir_30m = "LONG" if dir_ft30 > 0 else "SHORT"
+            if dir_30m != dir_5m:
+                continue
+
+            # --- 1m cùng hướng: momentum ngắn hạn ---
+            # check change 1m trong 6 phút gần nhất
+            c1_close_now = safe_float(c1[-2][4])   # nến đóng gần nhất
+            c1_close_ago = safe_float(c1[-8][4])   # ~6 phút trước
+            chg_1m_6 = _pct_change(c1_close_ago, c1_close_now)
+            if dir_5m == "LONG" and chg_1m_6 <= 0:
+                continue
+            if dir_5m == "SHORT" and chg_1m_6 >= 0:
+                continue
+
+            # --- tránh chase (đuổi): nếu giá đã vượt biên gần nhất quá xa ---
+            last_px = safe_float(cur5[4])  # giá hiện tại (close của nến đang chạy)
+            closed5 = c5[:-1]              # chỉ nến đã đóng
+            lookback = closed5[-8:] if len(closed5) >= 8 else closed5
+            highs = [safe_float(x[2]) for x in lookback]
+            lows  = [safe_float(x[3]) for x in lookback]
+            recent_high = max(highs) if highs else last_px
+            recent_low  = min(lows)  if lows else last_px
+
+            if dir_5m == "LONG" and last_px > recent_high * (1.0 + chase_bps/10000.0):
+                continue
+            if dir_5m == "SHORT" and last_px < recent_low  * (1.0 - chase_bps/10000.0):
+                continue
+
+            # --- ENTRY: limit pullback để đỡ rung (lướt) ---
+            if dir_5m == "LONG":
+                entry = last_px * (1.0 - entry_pullback_bps/10000.0)
+            else:
+                entry = last_px * (1.0 + entry_pullback_bps/10000.0)
+
+            # --- SL gọn: swing 2 nến 5m đóng gần nhất + cap theo pnl% ---
+            oA,hA,lA,cA,vA = _candle_to_ohlcv(c5_1)
+            oB,hB,lB,cB,vB = _candle_to_ohlcv(c5_2)
+
+            if dir_5m == "LONG":
+                swing_sl = min(lA, lB) * (1.0 - 0.0005)  # thêm 5 bps
+                cap_sl   = entry * (1.0 - price_move_max)
+                sl = max(swing_sl, cap_sl)  # không cho SL quá xa
+            else:
+                swing_sl = max(hA, hB) * (1.0 + 0.0005)
+                cap_sl   = entry * (1.0 + price_move_max)
+                sl = min(swing_sl, cap_sl)
+
+            # --- TP gợi ý (lướt): TP1 nhỏ để “ăn nhanh”, còn TRAIL để ăn dài ---
+            # pnl 3% tương ứng price move ~ 3/FUT_LEVERAGE %
+            tp1_move = (3.0 / float(FUT_LEVERAGE)) / 100.0
+            trail_start_move = (10.0 / float(FUT_LEVERAGE)) / 100.0
+
+            if dir_5m == "LONG":
+                tp1 = entry * (1.0 + tp1_move)
+                trail_start_price = entry * (1.0 + trail_start_move)
+            else:
+                tp1 = entry * (1.0 - tp1_move)
+                trail_start_price = entry * (1.0 - trail_start_move)
+
+            out.append({
+                "instId": inst,
+                "direction": dir_5m,
+                "entry": float(entry),
+                "sl": float(sl),
+                "tp1": float(tp1),
+                "trail_start_price": float(trail_start_price),
+                "meta": {
+                    "age_sec_5m": round(age_sec, 1),
+                    "chg_1m_6": round(chg_1m_6, 3),
+                    "recent_high": float(recent_high),
+                    "recent_low": float(recent_low),
+                    "note": "SCALP_5M: enter early (<=within_sec), avoid candle#2, 1m+30m aligned, use TP1 small + TRAIL for long run"
+                }
+            })
+
+        except Exception as e:
+            # không làm bot dừng vì 1 coin lỗi
+            logging.debug("[SCALP] %s error: %s", inst, e)
+            continue
+
+    # ưu tiên coin “đang có momentum mạnh” bằng |chg_1m_6| (đơn giản, không nặng logic)
+    out.sort(key=lambda x: abs(x["meta"]["chg_1m_6"]), reverse=True)
+    return out[:max_pick]
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -5273,6 +5472,52 @@ def detect_market_regime(okx: "OKXClient"):
 
     return "BAD"
 
+def run_scalp_5m(okx):
+    """
+    Chạy nhánh SCALP 5m:
+    - Lấy top movers SWAP (gainers/losers)
+    - build_scalp_signal_5m -> planned_trades
+    - Tự mở lệnh + telegram bằng execute_futures_trades() như bot hiện tại
+    """
+    logging.info("===== SCALP 5M START =====")
+
+    # (khuyến nghị) tôn trọng các lock giống full bot để tránh mở bừa
+    if not check_session_circuit_breaker(okx):
+        logging.info("[SCALP] Circuit breaker ON -> skip")
+        return
+
+    ok_day, day_reason = check_day_hard_stop(okx)
+    if not ok_day:
+        logging.warning(f"[SCALP][LOCK] DAY HARD STOP -> {day_reason}. Skip scalp.")
+        return
+
+    ok_mkt, mkt_reason = check_market_lock_unlock(okx)
+    if not ok_mkt:
+        logging.warning(f"[SCALP][LOCK] MARKET/DEADZONE -> {mkt_reason}. Skip scalp.")
+        return
+
+    # build signals
+    signals = build_scalp_signal_5m(okx, topn=100)
+    if not signals:
+        logging.info("[SCALP] No scalp signals.")
+        return
+
+    # lướt: chỉ lấy 1 lệnh/run để tránh spam (rất quan trọng)
+    sig = signals[0]
+
+    planned_trades = [{
+        "coin": sig["instId"],
+        "signal": sig["direction"],     # LONG/SHORT
+        "entry": sig["entry"],
+        "tp": sig["tp1"],               # TP1 nhỏ cho lướt
+        "sl": sig["sl"],
+        "time": f"[SCALP_5M] {now_str_vn()}",
+    }]
+
+    logging.info(f"[SCALP] Pick: {sig['instId']} {sig['direction']} entry={sig['entry']} sl={sig['sl']} tp1={sig['tp1']}")
+    execute_futures_trades(okx, planned_trades)
+
+
 def run_full_bot(okx):
     setup_logging()
     logging.info("===== OKX FUTURES BOT CRON START =====")
@@ -5391,7 +5636,12 @@ def main():
     #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
     #run_full_bot(okx)
 
-    # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
+    # 2) chạy SCALP mỗi 5 phút (nhưng né phút full bot để không double-open)
+    if (minute % 5 == 0) and (minute not in (5, 20, 35, 50)):
+        logging.info("[SCHED] %02d' -> CHẠY SCALP 5M", minute)
+        run_scalp_5m(okx)
+        
+    # 3) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     if minute in (5, 20, 35, 50):
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
         run_full_bot(okx)
