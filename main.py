@@ -5078,9 +5078,21 @@ def build_scalp_signal_5m(
             })
             # =========================
 
-            # --- “tránh vào muộn”: chỉ trade ở đầu nến 5m mới mở ---
+
             cur5 = c5[-1]  # thường là nến đang chạy (confirm=0)
+            # --- anti-late: đã chạy quá xa trong 10-15 phút thì bỏ (tránh đu theo) ---
+            def pct(a, b):
+                return abs(a - b) / max(1e-12, b) * 100.0
             
+            late10 = pct(c5[-1][4], c5[-3][4])   # close_now vs close 10m trước (2 nến)
+            late15 = pct(c5[-1][4], c5[-4][4])   # close_now vs close 15m trước (3 nến)
+            
+            LATE10_PCT = 1.5
+            LATE15_PCT = 2.0
+            if late10 > LATE10_PCT or late15 > LATE15_PCT:
+                # logging.info(f"[SCALP][SKIP] late_move 10m={late10:.2f}% 15m={late15:.2f}% {instId}")
+                continue
+            # --- “tránh vào muộn”: chỉ trade ở đầu nến 5m mới mở ---
             ts_open_5m = int(cur5[0])
             age_sec = (now_ms - ts_open_5m) / 1000.0
             if age_sec > within_sec:
