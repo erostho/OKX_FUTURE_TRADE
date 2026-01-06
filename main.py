@@ -470,7 +470,53 @@ def _load_symbol_cooldown_state() -> dict:
             return json.load(f) or {}
     except Exception:
         return {}
+_SCALP_COOLDOWN_FILE = "scalp_cooldown.json"
 
+def _load_scalp_cd():
+    try:
+        if not os.path.exists(_SCALP_COOLDOWN_FILE):
+            return {}
+        with open(_SCALP_COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _save_scalp_cd(d):
+    try:
+        with open(_SCALP_COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
+def is_scalp_symbol_cooldown(instId, cooldown_min=45):
+    d = _load_scalp_cd()
+    ts = d.get(instId)
+    if not ts:
+        return False
+    return (time.time() - float(ts)) < cooldown_min * 60
+
+def mark_scalp_symbol_loss(instId):
+    d = _load_scalp_cd()
+    d[instId] = time.time()
+    _save_scalp_cd(d)
+
+_SCALP_LAST_FIRE_TS = 0  # epoch seconds
+
+def is_scalp_quota_blocked(now_str=None, min_gap_sec=300):
+    """
+    Mỗi 5 phút chỉ bắn tối đa 1 lệnh scalp.
+    Cron chạy mỗi phút => cần chặn spam.
+    """
+    global _SCALP_LAST_FIRE_TS
+    now = int(time.time())
+    if _SCALP_LAST_FIRE_TS and (now - _SCALP_LAST_FIRE_TS) < min_gap_sec:
+        return True
+    return False
+
+def mark_scalp_fired():
+    global _SCALP_LAST_FIRE_TS
+    _SCALP_LAST_FIRE_TS = int(time.time())
+    
 def _save_symbol_cooldown_state(state: dict):
     try:
         with open(SYMBOL_COOLDOWN_FILE, "w", encoding="utf-8") as f:
@@ -5481,21 +5527,27 @@ def run_scalp_5m(okx):
     """
     logging.info("===== SCALP 5M START =====")
 
-    # (khuyến nghị) tôn trọng các lock giống full bot để tránh mở bừa
-    if not check_session_circuit_breaker(okx):
-        logging.info("[SCALP] Circuit breaker ON -> skip")
-        return
+    ## (khuyến nghị) tôn trọng các lock giống full bot để tránh mở bừa
+    #if not check_session_circuit_breaker(okx):
+        #logging.info("[SCALP] Circuit breaker ON -> skip")
+        #return
 
-    ok_day, day_reason = check_day_hard_stop(okx)
-    if not ok_day:
-        logging.warning(f"[SCALP][LOCK] DAY HARD STOP -> {day_reason}. Skip scalp.")
-        return
+    #ok_day, day_reason = check_day_hard_stop(okx)
+    #if not ok_day:
+        #logging.warning(f"[SCALP][LOCK] DAY HARD STOP -> {day_reason}. Skip scalp.")
+        #return
 
-    ok_mkt, mkt_reason = check_market_lock_unlock(okx)
-    if not ok_mkt:
-        logging.warning(f"[SCALP][LOCK] MARKET/DEADZONE -> {mkt_reason}. Skip scalp.")
+    #ok_mkt, mkt_reason = check_market_lock_unlock(okx)
+    #if not ok_mkt:
+        #logging.warning(f"[SCALP][LOCK] MARKET/DEADZONE -> {mkt_reason}. Skip scalp.")
+        #return
+    # --- SCALP locks (nhẹ, độc lập với FULL BOT) ---
+    # 1) Quota: mỗi 5 phút chỉ cho tối đa 1 lệnh scalp
+    if is_scalp_quota_blocked(now_str_vn()):
+        logging.info("[SCALP][LOCK] Quota blocked -> skip")
         return
-
+    
+    # 2) Cooldown theo symbol sẽ check ở dưới khi pick signal
     # build signals
     signals = build_scalp_signal_5m(okx, topn=100)
     if not signals:
@@ -5503,7 +5555,21 @@ def run_scalp_5m(okx):
         return
 
     # lướt: chỉ lấy 1 lệnh/run để tránh spam (rất quan trọng)
-    sig = signals[0]
+    # pick 1 signal đầu tiên nhưng né coin vừa thua gần đây (cooldown)
+    picked = None
+    for sig in signals[:5]:  # thử top 5 thôi cho nhanh
+        inst = sig["instId"]
+        if is_scalp_symbol_cooldown(inst, cooldown_min=45):
+            continue
+        picked = sig
+        break
+    
+    if not picked:
+        logging.info("[SCALP] All top signals are in cooldown.")
+        return
+    
+    sig = picked
+
 
     planned_trades = [{
         "coin": sig["instId"],
@@ -5516,6 +5582,8 @@ def run_scalp_5m(okx):
 
     logging.info(f"[SCALP] Pick: {sig['instId']} {sig['direction']} entry={sig['entry']} sl={sig['sl']} tp1={sig['tp1']}")
     execute_futures_trades(okx, planned_trades)
+    mark_scalp_fired()
+
 
 
 def run_full_bot(okx):
