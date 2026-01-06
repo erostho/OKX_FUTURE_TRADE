@@ -4879,8 +4879,208 @@ def build_scalp_signal_5m(
             c1  = list(reversed(c1))
             c30 = list(reversed(c30))
 
+            # =========================
+            # SCALP 5M: ANTI-LATE + RETEST ENTRY
+            # =========================
+            SCALP_ATR_LEN = 14
+            SCALP_RSI_LEN = 14
+            
+            # "đu theo" filter
+            SCALP_LATE_MOVE_15M_PCT = 2.0        # quá X% trong 15m => bỏ (meme có thể 2.5~3.5)
+            SCALP_LATE_MOVE_10M_PCT = 1.5        # quá X% trong 10m => bỏ
+            SCALP_IMPULSE_ATR_MULT = 1.8         # nến xung lực > 1.8*ATR => bỏ vào ngay sau cú dump/pump
+            
+            # retest logic
+            SCALP_RETEST_TOL_ATR = 0.35          # pullback chạm EMA (± 0.35*ATR) coi là retest
+            SCALP_MIN_SWING_BARS = 10            # dùng để lấy swing high/low làm SL
+            SCALP_MIN_RSI_FOR_LONG = 38          # long: tránh RSI quá yếu
+            SCALP_MAX_RSI_FOR_SHORT = 62         # short: tránh RSI quá cao
+            
+            def _ema(series, length):
+                if len(series) < length:
+                    return [None] * len(series)
+                k = 2 / (length + 1)
+                out = [None] * (length - 1)
+                e = sum(series[:length]) / length
+                out.append(e)
+                for x in series[length:]:
+                    e = x * k + e * (1 - k)
+                    out.append(e)
+                return out
+            
+            def _atr(highs, lows, closes, length=14):
+                if len(closes) < length + 1:
+                    return [None] * len(closes)
+                trs = []
+                for i in range(1, len(closes)):
+                    tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                    trs.append(tr)
+                # RMA/Wilder
+                out = [None] * (length)
+                atr = sum(trs[:length]) / length
+                out.append(atr)
+                for tr in trs[length:]:
+                    atr = (atr * (length - 1) + tr) / length
+                    out.append(atr)
+                # align length: trs is len-1, out is len+? -> fix to len(closes)
+                if len(out) > len(closes):
+                    out = out[:len(closes)]
+                if len(out) < len(closes):
+                    out += [out[-1]] * (len(closes) - len(out))
+                return out
+            
+            def _rsi(closes, length=14):
+                if len(closes) < length + 1:
+                    return [None] * len(closes)
+                gains, losses = [], []
+                for i in range(1, len(closes)):
+                    ch = closes[i] - closes[i-1]
+                    gains.append(max(ch, 0))
+                    losses.append(max(-ch, 0))
+                # Wilder smoothing
+                avg_g = sum(gains[:length]) / length
+                avg_l = sum(losses[:length]) / length
+                out = [None] * (length)
+                rs = (avg_g / avg_l) if avg_l != 0 else 999
+                out.append(100 - (100 / (1 + rs)))
+                for i in range(length, len(gains)):
+                    avg_g = (avg_g * (length - 1) + gains[i]) / length
+                    avg_l = (avg_l * (length - 1) + losses[i]) / length
+                    rs = (avg_g / avg_l) if avg_l != 0 else 999
+                    out.append(100 - (100 / (1 + rs)))
+                # align to len(closes)
+                if len(out) > len(closes):
+                    out = out[:len(closes)]
+                if len(out) < len(closes):
+                    out += [out[-1]] * (len(closes) - len(out))
+                return out
+            
+            # --- yêu cầu tối thiểu dữ liệu
+            if len(closes) < 60:
+                continue
+            
+            ema20 = _ema(closes, 20)
+            ema50 = _ema(closes, 50)
+            atr14 = _atr(highs, lows, closes, SCALP_ATR_LEN)
+            rsi14 = _rsi(closes, SCALP_RSI_LEN)
+            
+            # lấy giá trị current
+            c0, o0, h0, l0 = closes[-1], opens[-1], highs[-1], lows[-1]
+            c1, o1, h1, l1 = closes[-2], opens[-2], highs[-2], lows[-2]   # nến vừa đóng
+            atr = atr14[-2] or 0.0
+            e20 = ema20[-2]
+            e50 = ema50[-2]
+            rsi = rsi14[-2]
+            
+            if not e20 or not e50 or atr <= 0 or rsi is None:
+                continue
+            
+            # =========================
+            # 1) ANTI-LATE ENTRY FILTERS
+            # =========================
+            move_10m = abs(closes[-1] - closes[-3]) / max(1e-12, closes[-3]) * 100.0   # 2 nến = 10m
+            move_15m = abs(closes[-1] - closes[-4]) / max(1e-12, closes[-4]) * 100.0   # 3 nến = 15m
+            
+            # nếu đã chạy quá xa trong 10-15m => bỏ (tránh đu theo)
+            if move_10m > SCALP_LATE_MOVE_10M_PCT or move_15m > SCALP_LATE_MOVE_15M_PCT:
+                # bạn có thể logging debug tại đây nếu muốn
+                # logging.info(f"[SCALP][SKIP] late move 10m={move_10m:.2f}% 15m={move_15m:.2f}% {instId}")
+                continue
+            
+            # tránh vào ngay sau nến xung lực quá lớn (dump/pump)
+            body1 = abs(c1 - o1)
+            if body1 > SCALP_IMPULSE_ATR_MULT * atr:
+                # logging.info(f"[SCALP][SKIP] impulse body={body1:.6g} > {SCALP_IMPULSE_ATR_MULT}*ATR {instId}")
+                continue
+            
+            # =========================
+            # 2) RETEST ENTRY LOGIC (ưu tiên breakout->retest)
+            # =========================
+            # xác định bias theo movers: gainers -> LONG, losers -> SHORT
+            # (bạn thay "mover_side" theo biến hiện có của bạn)
+            # mover_side = "LONG" hoặc "SHORT"
+            # ---- nếu chưa có mover_side, dùng tạm:
+            # mover_side = "LONG" if instId in gainers_set else "SHORT"
+            # (ở đây giả sử bạn đã có mover_side)
+            direction = mover_side  # "LONG"/"SHORT"
+            
+            # điều kiện retest: giá đã break EMA50 theo hướng, rồi pullback chạm EMA20 và bị từ chối
+            retest_ok = False
+            early_move_ok = False
+            
+            # helper swing để đặt SL
+            lookback = min(SCALP_MIN_SWING_BARS, len(highs) - 5)
+            swing_high = max(highs[-(lookback+1):-1])
+            swing_low  = min(lows[-(lookback+1):-1])
+            
+            # EARLY MOVE: vừa mới cross/đi qua EMA20/EMA50 nhưng chưa chạy xa (đã lọc late-move ở trên)
+            if direction == "LONG":
+                # trend nền: EMA20 >= EMA50 hoặc giá trên EMA50
+                trend_ok = (e20 >= e50) or (c1 > e50)
+                if trend_ok and c1 > e20 and c1 > e50:
+                    early_move_ok = True
+            
+                # RETEST: trước đó break lên, nến hiện tại pullback về gần EMA20 rồi đóng xanh lại
+                # (dùng nến đang chạy c0/o0 để vào sớm hơn, hoặc dùng c1/o1 nếu bạn chỉ vào sau đóng nến)
+                touch = abs(c0 - ema20[-1]) <= (SCALP_RETEST_TOL_ATR * (atr14[-1] or atr))
+                reject = (c0 > o0) and (l0 <= ema20[-1] + (SCALP_RETEST_TOL_ATR * (atr14[-1] or atr)))
+                if (closes[-3] > ema50[-3]) and touch and reject:
+                    retest_ok = True
+            
+                # RSI filter tránh long khi quá yếu
+                if rsi < SCALP_MIN_RSI_FOR_LONG:
+                    continue
+            
+            else:  # SHORT
+                trend_ok = (e20 <= e50) or (c1 < e50)
+                if trend_ok and c1 < e20 and c1 < e50:
+                    early_move_ok = True
+            
+                touch = abs(c0 - ema20[-1]) <= (SCALP_RETEST_TOL_ATR * (atr14[-1] or atr))
+                reject = (c0 < o0) and (h0 >= ema20[-1] - (SCALP_RETEST_TOL_ATR * (atr14[-1] or atr)))
+                if (closes[-3] < ema50[-3]) and touch and reject:
+                    retest_ok = True
+            
+                # RSI filter tránh short khi quá cao
+                if rsi > SCALP_MAX_RSI_FOR_SHORT:
+                    continue
+            
+            # nếu không phải early move cũng không phải retest => bỏ (đây là điểm chặn “đu theo” cực mạnh)
+            if not (early_move_ok or retest_ok):
+                continue
+            
+            # =========================
+            # 3) ENTRY/SL/TP gọn cho scalp (TP nhỏ + để TRAIL ăn dài)
+            # =========================
+            entry = c0  # vào theo giá hiện tại (market/maker-first)
+            if direction == "LONG":
+                # SL dưới swing low hoặc dưới entry - 1.2*ATR (chọn cái "gần hơn nhưng hợp lý")
+                sl = min(swing_low, entry - 1.2 * atr)
+                tp1 = entry + 0.9 * atr      # TP nhỏ để có thể kích hoạt ladder/trailing sớm
+            else:
+                sl = max(swing_high, entry + 1.2 * atr)
+                tp1 = entry - 0.9 * atr
+            
+            # optional: tăng điểm cho retest (ưu tiên)
+            score_bonus = 0.4 if retest_ok else 0.0
+            sig_score = float(base_score) + score_bonus  # base_score là score bạn đang tính sẵn cho movers
+            
+            # >>> từ đây bạn append signal theo format hiện có của bạn <<<
+            # ví dụ:
+            signals.append({
+                "instId": instId,              # phải là dạng XXX-USDT-SWAP
+                "direction": direction,        # LONG/SHORT
+                "entry": float(entry),
+                "sl": float(sl),
+                "tp1": float(tp1),
+                "score": sig_score,
+                "tag": "RETEST" if retest_ok else "EARLY",
+            })
+            # =========================
+
             # --- “tránh vào muộn”: chỉ trade ở đầu nến 5m mới mở ---
             cur5 = c5[-1]  # thường là nến đang chạy (confirm=0)
+            
             ts_open_5m = int(cur5[0])
             age_sec = (now_ms - ts_open_5m) / 1000.0
             if age_sec > within_sec:
@@ -5599,7 +5799,7 @@ def run_scalp_5m(okx):
         if is_scalp_symbol_cooldown(inst, cooldown_min=45):
             continue    
         picked.append(sig)
-        if len(picked) == 3:
+        if len(picked) == 2:
             break
     
     if not picked:
