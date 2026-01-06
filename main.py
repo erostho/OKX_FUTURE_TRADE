@@ -4268,7 +4268,6 @@ def maker_first_open_position(
         logging.info("[MAKER] Canceled maker order: inst=%s ordId=%s -> fallback MARKET", inst_id, ord_id)
     except Exception as e:
         logging.warning("[MAKER] Cancel failed (still fallback MARKET): %s", e)
-
     m = okx.place_futures_market_order(
         inst_id=inst_id,
         side=side_open,
@@ -4327,6 +4326,8 @@ def execute_futures_trades(okx: OKXClient, trades):
         entry = t["entry"]
         tp = t["tp"]
         sl = t["sl"]
+        is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
+
 
 
         # Spot -> Perp SWAP (chuẩn hoá instId)
@@ -4416,6 +4417,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             pos_side=pos_side,
             contracts=contracts,
             desired_entry=entry,
+            bypass_session_guard=is_scalp,
             lever=this_lever,
             maker_offset_bps=5.0,      # 0.05%
             maker_timeout_sec=3,       # 3 giây không khớp -> market
