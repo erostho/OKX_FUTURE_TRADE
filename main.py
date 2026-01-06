@@ -4328,8 +4328,14 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
 
-        # Spot -> Perp SWAP
-        swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+
+        # Spot -> Perp SWAP (chuẩn hoá instId)
+        if coin.endswith("-SWAP"):
+            swap_inst = coin
+        else:
+            # coin dạng BTC-USDT -> BTC-USDT-SWAP
+            swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+
         # ===== PRO #4: cooldown theo symbol =====
         if is_symbol_in_cooldown(swap_inst):
             logging.info("[COOLDOWN] Skip %s (still in cooldown).", swap_inst)
