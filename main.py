@@ -5565,20 +5565,6 @@ def run_scalp_5m(okx):
     """
     logging.info("===== SCALP 5M START =====")
 
-    ## (khuyến nghị) tôn trọng các lock giống full bot để tránh mở bừa
-    #if not check_session_circuit_breaker(okx):
-        #logging.info("[SCALP] Circuit breaker ON -> skip")
-        #return
-
-    #ok_day, day_reason = check_day_hard_stop(okx)
-    #if not ok_day:
-        #logging.warning(f"[SCALP][LOCK] DAY HARD STOP -> {day_reason}. Skip scalp.")
-        #return
-
-    #ok_mkt, mkt_reason = check_market_lock_unlock(okx)
-    #if not ok_mkt:
-        #logging.warning(f"[SCALP][LOCK] MARKET/DEADZONE -> {mkt_reason}. Skip scalp.")
-        #return
     # --- SCALP locks (nhẹ, độc lập với FULL BOT) ---
     # 1) Quota: mỗi 5 phút chỉ cho tối đa 1 lệnh scalp
     if is_scalp_quota_blocked(now_str_vn()):
@@ -5592,37 +5578,37 @@ def run_scalp_5m(okx):
         logging.info("[SCALP] No scalp signals.")
         return
 
-    # lướt: chỉ lấy 1 lệnh/run để tránh spam (rất quan trọng)
-    # pick 1 signal đầu tiên nhưng né coin vừa thua gần đây (cooldown)
-    picked = None
-    for sig in signals[:5]:  # thử top 5 thôi cho nhanh
-        inst = sig["instId"]
+    # pick TOP 2 signal (điểm cao nhất), né cooldown
+    picked = []    
+    for sig in signals:
+        inst = sig["instId"]   
         if is_scalp_symbol_cooldown(inst, cooldown_min=45):
-            continue
-        picked = sig
-        break
+            continue    
+        picked.append(sig)
+        if len(picked) == 3:
+            break
     
     if not picked:
-        logging.info("[SCALP] All top signals are in cooldown.")
-        return
+        logging.info("[SCALP] No eligible scalp signals.")
+        return    
+    planned_trades = []
+    for sig in picked:
+        planned_trades.append({
+            "coin": sig["instId"],
+            "signal": sig["direction"],   # LONG / SHORT
+            "entry": sig["entry"],
+            "tp": sig["tp1"],             # TP nhỏ cho lướt
+            "sl": sig["sl"],
+            "time": f"[SCALP_5M] {now_str_vn()}",
+        })
     
-    sig = picked
-
-
-    planned_trades = [{
-        "coin": sig["instId"],
-        "signal": sig["direction"],     # LONG/SHORT
-        "entry": sig["entry"],
-        "tp": sig["tp1"],               # TP1 nhỏ cho lướt
-        "sl": sig["sl"],
-        "time": f"[SCALP_5M] {now_str_vn()}",
-    }]
-
-    logging.info(f"[SCALP] Pick: {sig['instId']} {sig['direction']} entry={sig['entry']} sl={sig['sl']} tp1={sig['tp1']}")
-    execute_futures_trades(okx, planned_trades)
+    logging.info(
+        "[SCALP] Pick %d coins: %s",
+        len(planned_trades),
+        ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
+    )    
+    execute_futures_trades(okx, planned_trades)    
     mark_scalp_fired()
-
-
 
 def run_full_bot(okx):
     setup_logging()
