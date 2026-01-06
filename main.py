@@ -4743,21 +4743,57 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
             continue
 
     return (False, None) if return_info else False
+_SWAP_UNIVERSE_CACHE = {"ts": 0, "set": set()}
+
+def get_swap_universe_usdt(okx, cache_sec=3600):
+    """
+    Lấy danh sách instId dạng *-USDT-SWAP từ OKX instruments, cache 1h.
+    """
+    now = int(time.time())
+    if _SWAP_UNIVERSE_CACHE["set"] and (now - _SWAP_UNIVERSE_CACHE["ts"] < cache_sec):
+        return _SWAP_UNIVERSE_CACHE["set"]
+
+    inst_set = set()
+    try:
+        # Bạn cần OKXClient có method này.
+        # Nếu chưa có, xem mục (3) bên dưới để mình đưa mẫu request REST.
+        resp = okx.get_instruments(instType="SWAP")
+        rows = resp.get("data", []) if isinstance(resp, dict) else (resp or [])
+        for r in rows:
+            instId = (r.get("instId") or "")
+            if instId.endswith("-USDT-SWAP"):
+                inst_set.add(instId)
+    except Exception as e:
+        logging.error("[SCALP] get_swap_universe_usdt error: %s", e)
+
+    _SWAP_UNIVERSE_CACHE["ts"] = now
+    _SWAP_UNIVERSE_CACHE["set"] = inst_set
+    return inst_set
 
 def _get_top_swap_movers_24h(okx, topn=100):
     """
-    Trả về 2 list instId:
-      - gainers: topN %change 24h tăng mạnh nhất
-      - losers : topN %change 24h giảm mạnh nhất
+    Trả về instId SWAP (USDT-SWAP) top movers 24h: gainers/losers.
+    Không dính SPOT.
     """
+    swap_set = get_swap_universe_usdt(okx)
+
     try:
-        data = okx.get_swap_tickers()
-        rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+        # Ưu tiên: gọi tickers SWAP nếu client có
+        rows = []
+        if hasattr(okx, "get_swap_tickers"):
+            data = okx.get_swap_tickers()
+            rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+        else:
+            # fallback: nếu chỉ có get_tickers chung (trộn), vẫn lọc bằng swap_set
+            data = okx.get_tickers()
+            rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+
         items = []
         for r in rows:
             inst = (r.get("instId") or "")
-            if not inst.endswith("-USDT-SWAP"):
+            if inst not in swap_set:
                 continue
+
             try:
                 last = float(r.get("last"))
                 open24h = float(r.get("open24h"))
@@ -4766,13 +4802,15 @@ def _get_top_swap_movers_24h(okx, topn=100):
                 chg = (last - open24h) / open24h * 100.0
             except Exception:
                 continue
+
             items.append((inst, chg))
 
         gainers = sorted(items, key=lambda x: x[1], reverse=True)[:topn]
-        losers  = sorted(items, key=lambda x: x[1], reverse=False)[:topn]
+        losers  = sorted(items, key=lambda x: x[1])[:topn]
         return [x[0] for x in gainers], [x[0] for x in losers]
+
     except Exception as e:
-        logging.error("[SCALP] get top movers error: %s", e)
+        logging.error("[SCALP] get top swap movers error: %s", e)
         return [], []
 
 
