@@ -5101,6 +5101,78 @@ def build_scalp_signal_5m(
             # dùng 2 nến 5m ĐÃ ĐÓNG: [-3],[-2] (vì [-1] đang chạy)
             c5_1 = c5[-3]
             c5_2 = c5[-2]
+            # ===============================
+            # SCALP RETEST LOGIC (5M)
+            # ===============================
+            
+            # dùng nến đã đóng
+            c_impulse = c5[-3]   # nến impulse
+            c_pullback = c5[-2]  # nến hồi
+            c_live = c5[-1]      # nến đang chạy (chỉ để timing)
+            
+            # -------- dữ liệu --------
+            o1, h1, l1, cl1 = c_impulse[1:5]
+            o2, h2, l2, cl2 = c_pullback[1:5]
+            
+            atr5 = atr_5m[-2]
+            ema20 = ema20_5m[-2]
+            ema50 = ema50_5m[-2]
+            rsi5 = rsi_5m[-2]
+            
+            impulse_range = abs(cl1 - o1)
+            pullback_range = abs(cl2 - o2)
+            
+            # -------- xác định hướng impulse --------
+            if cl1 > o1:
+                impulse_dir = "LONG"
+            else:
+                impulse_dir = "SHORT"
+            
+            # -------- điều kiện impulse đủ mạnh --------
+            if impulse_range < 0.6 * atr5:
+                pass  # impulse yếu
+            else:
+                # -------- điều kiện pullback đẹp --------
+                pullback_ok = (
+                    pullback_range < impulse_range * 0.6 and
+                    (
+                        (impulse_dir == "LONG" and l2 >= l1) or
+                        (impulse_dir == "SHORT" and h2 <= h1)
+                    )
+                )
+            
+                # -------- giá hồi về EMA --------
+                ema_retest_ok = (
+                    (impulse_dir == "LONG" and l2 <= ema20 * 1.002) or
+                    (impulse_dir == "SHORT" and h2 >= ema20 * 0.998)
+                )
+            
+                # -------- RSI nguội lại --------
+                rsi_ok = (
+                    (impulse_dir == "LONG" and 40 <= rsi5 <= 60) or
+                    (impulse_dir == "SHORT" and 40 <= rsi5 <= 60)
+                )
+            
+                # -------- timing: chỉ vào đầu nến --------
+                ts_open = int(c_live[0])
+                age_sec = (now_ms - ts_open) / 1000.0
+                timing_ok = age_sec <= within_sec
+            
+                if pullback_ok and ema_retest_ok and rsi_ok and timing_ok:
+                    signal = impulse_dir
+                    entry = cl2  # vào ngay sau pullback
+                    sl = l2 if signal == "LONG" else h2
+                    tp = entry + (entry - sl) * 1.2 if signal == "LONG" else entry - (sl - entry) * 1.2
+            
+                    signals.append({
+                        "coin": coin,
+                        "signal": signal,
+                        "entry": entry,
+                        "sl": sl,
+                        "tp": tp,
+                        "type": "SCALP_RETEST"
+                    })
+
             ok_ft5, dir_ft5 = _ft_two_candles_same_dir(
                 c5_1, c5_2,
                 body_ratio_min=body_ratio_min_5m,
