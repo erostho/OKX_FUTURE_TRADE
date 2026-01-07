@@ -4827,260 +4827,310 @@ def _get_top_swap_movers_24h(okx, topn=100):
         logging.error("[SCALP] get top swap movers error: %s", e)
         return [], []
 
-def build_scalp_signal_5m(okx, topn=100, within_sec=120):
+def build_scalp_signal_5m(okx, topn=100):
     """
-    SCALP 5m:
-    - Lọc top movers SWAP 24h (gainers/losers)
-    - Dùng nến 5m để lướt
-    - Soi 1m & 30m cùng hướng
-    - Tránh vào quá sớm/ quá muộn
-    - Fix mover_side + cho phép "late-move nhưng có retest" (không đu theo)
+    SCALP 5M:
+    - lấy top movers SWAP (gainers/losers)
+    - dùng 5m để vào nhanh
+    - xác nhận 1m & 30m cùng hướng
+    - tránh đu theo: late-move chỉ vào nếu có retest (EMA20/50/100)
+    Return: list signals sorted by score desc
+      signal item: {
+        "instId": "...",
+        "direction": "LONG"/"SHORT",
+        "entry": float,
+        "tp1": float,
+        "sl": float,
+        "score": float,
+        "reason": str,
+      }
     """
+    import time, math
+
     now_ms = int(time.time() * 1000)
 
-    # --- lấy top movers (SWAP only) ---
-    gainers, losers = _get_top_swap_movers_24h(okx, topn=topn)
+    # ========= TUNE NHẸ CHO LƯỚT =========
+    WITHIN_SEC = 150          # chạy trong 3 phút đầu nến 5m (tăng -> nhiều lệnh hơn nhưng dễ muộn hơn)
+    MIN_AGE_SEC = 12          # tránh 5-10s đầu bị nhiễu spread
+    BODY_RATIO_MIN_5M = 0.40  # nến đóng có thân đủ to (đừng quá gắt)
+    ATR_MULT_SL = 1.15        # SL theo ATR 5m
+    RR_TP = 1.10              # TP1 = SL * RR (còn trail để ăn dài)
 
-    # FIX NO-SIGNAL BUG: set mover_side chuẩn
-    gainers_set = set(gainers)  # instId
-    losers_set = set(losers)    # instId
+    # Chase filter: nếu đã chạy xa -> chỉ vào khi retest
+    SCALP_MAX_MOVE_10M_PCT = 2.5   # đu theo nếu > ngưỡng này (NHƯNG sẽ cho retest)
+    SCALP_MAX_MOVE_15M_PCT = 3.5
+
+    # Late-move threshold: đánh dấu “đã chạy xa”
+    SCALP_LATE_MOVE_10M_PCT = 2.0
+    SCALP_LATE_MOVE_15M_PCT = 3.0
+
+    # retest zone (chạm EMA được phép sai số theo ATR)
+    RETEST_ATR_BAND = 0.50     # càng lớn càng dễ có lệnh (0.35-0.60)
+    RETEST_NEED_BOUNCE = True  # retest phải có “bật lại” đúng hướng
+
+    # ========= helpers =========
+    def _f(x, d=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return d
+
+    def _pct(a, b):
+        if b == 0:
+            return 0.0
+        return (a - b) / b * 100.0
+
+    def _ema(vals, period):
+        # EMA classic, vals chronological
+        if len(vals) < period + 2:
+            return None
+        k = 2 / (period + 1)
+        ema = sum(vals[:period]) / period
+        for v in vals[period:]:
+            ema = v * k + ema * (1 - k)
+        return ema
+
+    def _rsi(closes, period=14):
+        if len(closes) < period + 2:
+            return None
+        gains = 0.0
+        losses = 0.0
+        for i in range(-period, 0):
+            diff = closes[i] - closes[i - 1]
+            if diff >= 0:
+                gains += diff
+            else:
+                losses += -diff
+        if losses == 0:
+            return 100.0
+        rs = (gains / period) / (losses / period)
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _atr(ohlc, period=14):
+        # ohlc list chronological candles: (o,h,l,c)
+        if len(ohlc) < period + 2:
+            return None
+        trs = []
+        for i in range(-period, 0):
+            o, h, l, c = ohlc[i]
+            _, _, _, pc = ohlc[i - 1]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        return sum(trs) / len(trs) if trs else None
+
+    def _candle_dir(o, c):
+        return "UP" if c >= o else "DOWN"
+
+    def _body_ratio(o, h, l, c):
+        rng = max(h - l, 1e-12)
+        body = abs(c - o)
+        return body / rng
+
+    def _is_retest(dir_need, last_c, ema20, ema50, ema100, atr):
+        """
+        Retest = giá chạm vùng EMA (20/50/100) trong band ATR rồi bật lại.
+        Dùng candle đóng gần nhất (5m[-2]) để xác nhận “bật”.
+        """
+        if atr is None or atr <= 0:
+            return (False, None)
+
+        o, h, l, c = last_c
+        band = atr * RETEST_ATR_BAND
+
+        emas = []
+        if ema20:  emas.append(("EMA20", ema20))
+        if ema50:  emas.append(("EMA50", ema50))
+        if ema100: emas.append(("EMA100", ema100))
+
+        # check touch
+        touched = None
+        for name, ev in emas:
+            if (l <= ev + band) and (h >= ev - band):
+                touched = (name, ev)
+                break
+        if not touched:
+            return (False, None)
+
+        # need bounce confirmation
+        if not RETEST_NEED_BOUNCE:
+            return (True, touched[0])
+
+        if dir_need == "LONG":
+            # bounce: close > open AND close above touched ema a bit
+            if c > o and c >= touched[1]:
+                return (True, touched[0])
+        else:
+            if c < o and c <= touched[1]:
+                return (True, touched[0])
+
+        return (False, None)
+
+    def _trend_1m_ok(dir_need, c1):
+        # cực nhẹ: 1m close so với EMA20 1m
+        closes1 = [_f(x[4]) for x in c1]
+        ema20_1 = _ema(closes1, 20)
+        if ema20_1 is None:
+            return False
+        last = closes1[-2]  # nến 1m đã đóng
+        return (last >= ema20_1) if dir_need == "LONG" else (last <= ema20_1)
+
+    def _trend_30m_ok(dir_need, c30):
+        # cực nhẹ: 30m close so với EMA20 30m
+        closes30 = [_f(x[4]) for x in c30]
+        ema20_30 = _ema(closes30, 20)
+        if ema20_30 is None:
+            return False
+        last = closes30[-2]
+        return (last >= ema20_30) if dir_need == "LONG" else (last <= ema20_30)
+
+    # ========= movers =========
+    gainers, losers = _get_top_swap_movers_24h(okx, topn=topn)
+    candidates = [(x, "LONG") for x in gainers] + [(x, "SHORT") for x in losers]
 
     out = []
 
-    # --- các ngưỡng retest (fallback nếu chưa define global) ---
-    # retest "near MA" theo ATR
-    RETEST_NEAR_ATR = float(globals().get("SCALP_RETEST_NEAR_ATR", 0.60))  # 0.6 ATR
-    # nới MA một chút (pct) khi check wick chạm MA
-    RETEST_MA_FUZZ_PCT = float(globals().get("SCALP_RETEST_MA_FUZZ_PCT", 0.20))  # 0.2%
-    # yêu cầu nến xác nhận tối thiểu (khi bypass 2-nến)
-    ONE_CANDLE_BODY_MIN = float(globals().get("SCALP_ONE_CANDLE_BODY_MIN", 0.25))  # body/atr
-    ONE_CANDLE_CHANGE_MIN_PCT = float(globals().get("SCALP_ONE_CANDLE_CHANGE_MIN_PCT", 0.05))  # 0.05%
-
-    # --- candidate list: vẫn bắt gainers/losers ---
-    # NOTE: direction sẽ set lại bằng mover_side (fix bug)
-    candidates = [(x, "LONG") for x in gainers] + [(x, "SHORT") for x in losers]
-
-    for inst in candidates:
-        inst_id = inst[0]
-
-        # ========= FIX mover_side =========
-        if inst_id in gainers_set:
-            mover_side = "LONG"
-        elif inst_id in losers_set:
-            mover_side = "SHORT"
-        else:
-            # fallback (rare)
-            mover_side = inst[1]
-
-        direction = mover_side  # dùng thống nhất
-
-        # --- nến 5m/1m/30m ---
+    for inst, dir_need in candidates:
         try:
-            c5 = okx.get_candles(inst_id, bar="5m", limit=120)
-            c1 = okx.get_candles(inst_id, bar="1m", limit=200)
-            c30 = okx.get_candles(inst_id, bar="30m", limit=120)
-        except Exception:
-            continue
-        if (not c5) or (not c1) or (not c30):
-            continue
-        if len(c5) < 30 or len(c1) < 60 or len(c30) < 30:
-            continue
+            c5  = okx.get_candles(inst, bar="5m",  limit=30) or []
+            c1  = okx.get_candles(inst, bar="1m",  limit=60) or []
+            c30 = okx.get_candles(inst, bar="30m", limit=60) or []
+            if len(c5) < 10 or len(c1) < 25 or len(c30) < 25:
+                continue
 
-        # OKX trả newest-first -> đảo lại chronological
-        c5 = list(reversed(c5))
-        c1 = list(reversed(c1))
-        c30 = list(reversed(c30))
+            # OKX trả newest-first -> đảo lại chronological
+            c5  = list(reversed(c5))
+            c1  = list(reversed(c1))
+            c30 = list(reversed(c30))
 
-        # --- tránh vào muộn: chỉ trade đầu nến 5m mới mở ---
-        cur5 = c5[-1]  # nến đang chạy (confirm=0)
-        ts_open_5m = int(cur5[0])
-        age_sec = (now_ms - ts_open_5m) / 1000.0
-        if age_sec > within_sec:
-            continue
+            # ---- thời gian nến 5m đang chạy ----
+            cur5 = c5[-1]
+            ts_open_5m = int(cur5[0])
+            age_sec = (now_ms - ts_open_5m) / 1000.0
+            if age_sec < MIN_AGE_SEC:
+                continue
+            if age_sec > WITHIN_SEC:
+                # quá muộn so với “đầu nến 5m”
+                continue
 
-        # --- dùng 2 nến 5m ĐÃ ĐÓNG: [-3], [-2] (vì [-1] đang chạy) ---
-        c5_1 = c5[-3]
-        c5_2 = c5[-2]
+            # ---- dùng 2 nến 5m ĐÃ ĐÓNG: [-3], [-2] ----
+            x1 = c5[-3]
+            x2 = c5[-2]
+            o1, h1, l1, c1_ = _f(x1[1]), _f(x1[2]), _f(x1[3]), _f(x1[4])
+            o2, h2, l2, c2_ = _f(x2[1]), _f(x2[2]), _f(x2[3]), _f(x2[4])
 
-        # parse OHLC (string -> float)
-        try:
-            o1, h1, l1, cl1 = map(float, c5_2[1:5])  # nến vừa đóng
-            o0, h0, l0, cl0 = map(float, c5_1[1:5])  # nến trước đó
-        except Exception:
-            continue
+            # ---- indicators 5m ----
+            closes5 = [_f(x[4]) for x in c5]
+            ema20 = _ema(closes5, 20)
+            ema50 = _ema(closes5, 50)
+            ema100 = _ema(closes5, 100)
+            rsi14 = _rsi(closes5, 14)
 
-        closes = [float(x[4]) for x in c5]
-        highs  = [float(x[2]) for x in c5]
-        lows   = [float(x[3]) for x in c5]
+            ohlc5 = [(_f(x[1]), _f(x[2]), _f(x[3]), _f(x[4])) for x in c5]
+            atr14 = _atr(ohlc5, 14)
+            if atr14 is None or atr14 <= 0:
+                continue
 
-        # --- indicators (đúng data hiện tại của mày: close/open/high/low) ---
-        try:
-            atr = calc_atr(highs, lows, closes, period=14)
-            rsi5 = calc_rsi(closes, period=14)
+            # ---- filter trend 1m & 30m cùng hướng ----
+            if not _trend_1m_ok(dir_need, c1):
+                continue
+            if not _trend_30m_ok(dir_need, c30):
+                continue
 
-            # EMA trên 5m
-            e20 = calc_ema(closes, period=20)
-            e50 = calc_ema(closes, period=50)
-            e100 = calc_ema(closes, period=100)
+            # ---- move 10m/15m để đánh dấu late-move ----
+            # dùng close của nến đã đóng để đo (an toàn)
+            c_0 = closes5[-2]
+            c_10m = closes5[-4] if len(closes5) >= 4 else closes5[-2]
+            c_15m = closes5[-5] if len(closes5) >= 5 else closes5[-2]
+            move_10m = abs(_pct(c_0, c_10m))
+            move_15m = abs(_pct(c_0, c_15m))
 
-            # momentum / move
-            move_10m = abs((cl1 / closes[-3] - 1.0) * 100.0)   # ~2 nến đóng gần nhất
-            move_15m = abs((cl1 / closes[-4] - 1.0) * 100.0)   # ~3 nến
-        except Exception:
-            continue
+            late_move = (move_10m >= SCALP_LATE_MOVE_10M_PCT) or (move_15m >= SCALP_LATE_MOVE_15M_PCT)
+            too_far  = (move_10m >= SCALP_MAX_MOVE_10M_PCT) or (move_15m >= SCALP_MAX_MOVE_15M_PCT)
 
-        if atr is None or atr <= 0:
-            continue
-        if rsi5 is None:
-            continue
+            # ---- setup A: EARLY MOVE (2 nến 5m cùng chiều + thân đủ to) ----
+            dir_x1 = _candle_dir(o1, c1_)
+            dir_x2 = _candle_dir(o2, c2_)
+            br2 = _body_ratio(o2, h2, l2, c2_)
 
-        # ========= ANTI-LATE: nếu chạy quá xa -> CHỈ cho phép nếu có RETEST =========
-        too_late = (move_10m >= SCALP_MAX_MOVE_10M_PCT) or (move_15m >= SCALP_MAX_MOVE_15M_PCT)
-
-        # retest check (dùng nến vừa đóng c5_2)
-        # "near MA" theo ATR
-        dist_e20 = abs(cl1 - e20)
-        dist_e50 = abs(cl1 - e50)
-        near_ma = min(dist_e20, dist_e50) <= (RETEST_NEAR_ATR * atr)
-
-        # wick touch MA với chút fuzz
-        fuzz_up = 1.0 + (RETEST_MA_FUZZ_PCT / 100.0)
-        fuzz_dn = 1.0 - (RETEST_MA_FUZZ_PCT / 100.0)
-
-        retest_ok = False
-        bypass_two_candles = False
-
-        if direction == "LONG":
-            # retest: giá hồi về EMA20/50 rồi GIỮ (close >= MA), wick có thể chạm MA
-            touched = (l1 <= e20 * fuzz_up) or (l1 <= e50 * fuzz_up)
-            held = (cl1 >= min(e20, e50) * fuzz_dn)
-
-            # tránh mua khi RSI quá overbought (đu đỉnh)
-            not_too_ob = (rsi5 <= 78)
-
-            retest_ok = (not_too_ob and (near_ma or touched) and held)
-            if retest_ok:
-                bypass_two_candles = True
-
-        else:  # SHORT
-            # retest: giá hồi lên EMA20/50 rồi BỊ TỪ CHỐI (close <= MA), wick có thể chạm MA
-            touched = (h1 >= e20 * fuzz_dn) or (h1 >= e50 * fuzz_dn)
-            held = (cl1 <= max(e20, e50) * fuzz_up)
-
-            # tránh sell khi RSI quá oversold (đu đáy)
-            not_too_os = (rsi5 >= 22)
-
-            retest_ok = (not_too_os and (near_ma or touched) and held)
-            if retest_ok:
-                bypass_two_candles = True
-
-        if too_late and (not retest_ok):
-            # chạy xa mà KHÔNG retest => bỏ, tránh đu theo
-            continue
-
-        # ========= FILTER: 30m + 1m cùng hướng =========
-        # 30m trend: close vs EMA20(30m) (nhẹ)
-        try:
-            c30_closes = [float(x[4]) for x in c30]
-            ema30_20 = calc_ema(c30_closes, period=20)
-            c30_last = c30_closes[-1]
-        except Exception:
-            continue
-
-        ok_30m = True
-        if direction == "LONG":
-            ok_30m = (c30_last >= ema30_20)
-        else:
-            ok_30m = (c30_last <= ema30_20)
-        if not ok_30m:
-            continue
-
-        # 1m micro trend: EMA20 vs EMA50
-        try:
-            c1_closes = [float(x[4]) for x in c1]
-            ema1_20 = calc_ema(c1_closes, period=20)
-            ema1_50 = calc_ema(c1_closes, period=50)
-        except Exception:
-            continue
-
-        ok_1m = True
-        if direction == "LONG":
-            ok_1m = (ema1_20 >= ema1_50)
-        else:
-            ok_1m = (ema1_20 <= ema1_50)
-        if not ok_1m:
-            continue
-
-        # ========= CONFIRM ENTRY: 2 nến cùng chiều (cũ) hoặc 1 nến xác nhận nếu RETEST =========
-        ok_ft5, dir_ft5 = ft_two_candles_same_dir(
-            c5_1, c5_2,
-            body_ratio_min=body_ratio_min_5m,
-        )
-
-        dir_need = direction  # "LONG"/"SHORT"
-
-        if not ok_ft5:
-            if bypass_two_candles:
-                # cho phép 1 nến xác nhận (nến vừa đóng c5_2)
-                body = abs(cl1 - o1)
-                body_ok = body >= (ONE_CANDLE_BODY_MIN * atr)
-                chg_pct = abs((cl1 / o1 - 1.0) * 100.0)
-                chg_ok = chg_pct >= ONE_CANDLE_CHANGE_MIN_PCT
-
-                one_dir_ok = (cl1 > o1) if dir_need == "LONG" else (cl1 < o1)
-
-                if not (body_ok and chg_ok and one_dir_ok):
-                    continue
+            early_ok = False
+            if dir_need == "LONG":
+                early_ok = (dir_x1 == "UP" and dir_x2 == "UP" and br2 >= BODY_RATIO_MIN_5M)
             else:
+                early_ok = (dir_x1 == "DOWN" and dir_x2 == "DOWN" and br2 >= BODY_RATIO_MIN_5M)
+
+            # ---- setup B: RETEST (late/too_far vẫn được vào nếu retest) ----
+            retest_ok, retest_ema = _is_retest(
+                dir_need,
+                last_c=(o2, h2, l2, c2_),
+                ema20=ema20, ema50=ema50, ema100=ema100,
+                atr=atr14
+            )
+
+            # ---- CHỐT LOGIC “KHÔNG ĐU THEO” ----
+            # nếu đã chạy xa mà KHÔNG có retest => skip
+            if (late_move or too_far) and (not retest_ok):
                 continue
-        else:
-            # nếu vẫn dùng 2 nến, phải đúng hướng
-            if dir_ft5 != dir_need:
+
+            # nếu không early_ok và cũng không retest_ok => skip
+            if (not early_ok) and (not retest_ok):
                 continue
 
-        # ========= ENTRY / SL / TP (nhanh gọn + khuyến nghị trail) =========
-        entry = cl1  # vào theo close nến vừa đóng (an toàn hơn)
-        if dir_need == "LONG":
-            sl = entry - (SCALP_SL_ATR * atr)
-            tp1 = entry + (SCALP_TP_ATR * atr)
-        else:
-            sl = entry + (SCALP_SL_ATR * atr)
-            tp1 = entry - (SCALP_TP_ATR * atr)
+            # ---- RSI sanity (nhẹ thôi, tránh cực đoan) ----
+            if rsi14 is not None:
+                if dir_need == "LONG" and rsi14 > 78:
+                    # quá nóng, chỉ vào nếu retest (thường đã pullback)
+                    if not retest_ok:
+                        continue
+                if dir_need == "SHORT" and rsi14 < 22:
+                    if not retest_ok:
+                        continue
 
-        # score (ưu tiên retest + đúng trend)
-        score = 0.0
-        score += 1.2 if retest_ok else 0.0
-        score += 0.6 if ok_30m else 0.0
-        score += 0.4 if ok_1m else 0.0
-        # nếu không quá late -> bonus nhẹ
-        score += 0.3 if (not too_late) else 0.0
-        # RSI hợp lý -> bonus
-        if dir_need == "LONG":
-            score += 0.2 if (35 <= rsi5 <= 72) else 0.0
-        else:
-            score += 0.2 if (28 <= rsi5 <= 65) else 0.0
+            # ---- entry/sl/tp ----
+            # entry lấy theo close nến 5m đã đóng (đỡ “đu” nến đang chạy)
+            entry = c2_
 
-        out.append({
-            "instId": inst_id,
-            "direction": dir_need,
-            "entry": float(entry),
-            "sl": float(sl),
-            "tp1": float(tp1),
-            "score": float(score),
-            "meta": {
-                "too_late": bool(too_late),
-                "retest_ok": bool(retest_ok),
-                "bypass_two_candles": bool(bypass_two_candles),
-                "move_10m": float(move_10m),
-                "move_15m": float(move_15m),
-                "rsi5": float(rsi5),
-                "atr": float(atr),
-            }
-        })
+            # SL theo ATR + theo swing gần nhất (siêu nhẹ)
+            if dir_need == "LONG":
+                sl = min(l2, l1) - atr14 * 0.15
+                sl = min(sl, entry - atr14 * ATR_MULT_SL)
+                risk = max(entry - sl, atr14 * 0.6)
+                tp1 = entry + risk * RR_TP
+            else:
+                sl = max(h2, h1) + atr14 * 0.15
+                sl = max(sl, entry + atr14 * ATR_MULT_SL)
+                risk = max(sl - entry, atr14 * 0.6)
+                tp1 = entry - risk * RR_TP
 
-    # sort theo score cao trước
+            # ---- score: ưu tiên retest (ăn “đoạn ngon”), sau đó early_ok ----
+            score = 0.0
+            reason = []
+            if retest_ok:
+                score += 3.0
+                reason.append(f"RETEST_{retest_ema}")
+            if early_ok:
+                score += 2.0
+                reason.append("2CANDLE")
+            # movers boost nhẹ
+            score += 1.0
+            # ít chase hơn -> score cao hơn
+            score += max(0.0, 2.0 - (move_10m / 2.0))  # move_10m càng lớn càng trừ
+
+            out.append({
+                "instId": inst,
+                "direction": dir_need,
+                "entry": float(entry),
+                "tp1": float(tp1),
+                "sl": float(sl),
+                "score": float(score),
+                "reason": "|".join(reason) if reason else "OK",
+            })
+
+        except Exception:
+            continue
+
     out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
     return out
+
 
 
 def run_dynamic_tp(okx: "OKXClient"):
