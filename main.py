@@ -4784,7 +4784,7 @@ def get_swap_universe_usdt(okx, cache_sec=3600):
     return inst_set
 
 
-def _get_top_swap_movers_24h(okx, topn=50):
+def _get_top_swap_movers_24h(okx, topn=100):
     """
     Trả về instId SWAP (USDT-SWAP) top movers 24h: gainers/losers.
     Không dính SPOT.
@@ -4830,7 +4830,7 @@ def _get_top_swap_movers_24h(okx, topn=50):
 
 def build_scalp_signal_5m(
     okx,
-    topn=50,
+    topn=100,
     within_sec=90,                 # nến 5m đã chạy > 90s => bỏ (tránh vào muộn)
     min_5m_change_pct=0.10,        # FT 5m tối thiểu (đỡ nhiễu)
     min_30m_change_pct=0.15,       # FT 30m (lọc trend nhanh)
@@ -5871,7 +5871,7 @@ def run_scalp_5m(okx):
     
     # 2) Cooldown theo symbol sẽ check ở dưới khi pick signal
     # build signals
-    signals = build_scalp_signal_5m(okx, topn=50)
+    signals = build_scalp_signal_5m(okx, topn=100)
     if not signals:
         logging.info("[SCALP] No scalp signals.")
         return
