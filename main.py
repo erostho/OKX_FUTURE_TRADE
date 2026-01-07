@@ -501,7 +501,6 @@ def mark_scalp_symbol_loss(instId):
     _save_scalp_cd(d)
 
 _SCALP_LAST_FIRE_TS = 0  # epoch seconds
-
 def is_scalp_quota_blocked(now_str=None, min_gap_sec=300):
     """
     Mỗi 5 phút chỉ bắn tối đa 1 lệnh scalp.
@@ -596,6 +595,54 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     t = (pnl_pct - 40.0) / (100.0 - 40.0)
     return cb_high + t * (cb_low - cb_high)
 
+import os, json, time
+from datetime import datetime, timedelta
+
+SCALP_QUOTA_FILE = "scalp_quota_15m.json"
+SCALP_MAX_PER_15M = 2
+SCALP_WINDOW_MIN = 15
+
+def _load_json(path, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+def _save_json(path, obj):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=SCALP_MAX_PER_15M) -> int:
+    """
+    Đếm số lần scalp đã bắn trong rolling window (15 phút) và trả về số slot còn lại.
+    Lưu timestamps (ms) để chạy được trên Render/cron.
+    """
+    data = _load_json(SCALP_QUOTA_FILE, {"fires": []})
+    fires = [x for x in data.get("fires", []) if isinstance(x, int)]
+
+    cutoff = now_ms - int(window_min * 60 * 1000)
+    fires = [x for x in fires if x >= cutoff]  # giữ lại các lần bắn trong 15p gần nhất
+    used = len(fires)
+    remain = max(0, max_trades - used)
+
+    # persist đã dọn
+    data["fires"] = fires
+    _save_json(SCALP_QUOTA_FILE, data)
+    return remain
+
+def mark_scalp_fired_n(n: int, now_ms: int):
+    data = _load_json(SCALP_QUOTA_FILE, {"fires": []})
+    fires = [x for x in data.get("fires", []) if isinstance(x, int)]
+    for _ in range(max(1, int(n))):
+        fires.append(now_ms)
+    data["fires"] = fires[-50:]  # giới hạn size
+    _save_json(SCALP_QUOTA_FILE, data)
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -5721,22 +5768,25 @@ def run_scalp_5m(okx):
     if is_scalp_quota_blocked(now_str_vn()):
         logging.info("[SCALP][LOCK] Quota blocked -> skip")
         return
-    
+    now_ms = int(time.time() * 1000)
+    remain = scalp_quota_remaining(now_ms)
+    if remain <= 0:
+        logging.info(f"[SCALP][LOCK] 15m quota reached (max={SCALP_MAX_PER_15M}) -> skip")
+        return
     # 2) Cooldown theo symbol sẽ check ở dưới khi pick signal
     # build signals
     signals = build_scalp_signal_5m(okx, topn=100)
     if not signals:
         logging.info("[SCALP] No scalp signals.")
         return
-
     # pick TOP 2 signal (điểm cao nhất), né cooldown
-    picked = []    
-    for sig in signals:
-        inst = sig["instId"]   
+    picked = []
+    for sig in signals[:10]:  # thử top 10 cho dễ kiếm đủ 2
+        inst = sig["instId"]
         if is_scalp_symbol_cooldown(inst, cooldown_min=45):
-            continue    
+            continue
         picked.append(sig)
-        if len(picked) == 2:
+        if len(picked) >= remain:   # <= chặn đúng quota 15p
             break
     
     if not picked:
@@ -5758,8 +5808,8 @@ def run_scalp_5m(okx):
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
     )    
-    execute_futures_trades(okx, planned_trades)    
-    mark_scalp_fired()
+    execute_futures_trades(okx, planned_trades)
+    mark_scalp_fired_n(len(planned_trades), now_ms)
 
 def run_full_bot(okx):
     setup_logging()
