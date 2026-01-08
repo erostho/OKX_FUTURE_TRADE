@@ -1313,43 +1313,33 @@ class OKXClient:
         return self._request("POST", path, body_dict=body)
 
     def place_futures_limit_order(
-        self,
-        inst_id: str,
-        side: str,
-        pos_side: str,
-        sz: str,
-        px: float,
-        td_mode: str = "isolated",
-        lever: int = 6,
-        post_only: bool = True,
-        clOrdId: str | None = None,
-
+        self, inst_id, side, pos_side, sz, px,
+        td_mode="isolated", lever=6, post_only=True,
+        clOrdId=None
     ):
-        """
-        Limit order (ưu tiên MAKER nếu post_only=True).
-        OKX: tif='post_only' để đảm bảo maker (nếu có thể khớp ngay -> bị reject).
-        """
         path = "/api/v5/trade/order"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
-            "side": side,
-            "posSide": pos_side,
+            "side": side,          # "buy"/"sell"
+            "posSide": pos_side,   # "long"/"short"
+            "ordType": "limit",    # ✅ FIX: luôn là limit
             "sz": str(sz),
             "px": f"{float(px):.12f}",
             "lever": str(lever),
         }
-        
+    
         if post_only:
-            # ✅ OKX maker-only chuẩn
-            body["ordType"] = "post_only"
-        else:
-            body["ordType"] = "limit"
+            body["tif"] = "post_only"   # ✅ FIX: post-only nằm ở tif
+    
+        if clOrdId:
+            body["clOrdId"] = str(clOrdId)[:32]  # <=32 ký tự cho chắc
+    
         logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
         logging.info("Body: %s", body)
-        if clOrdId:
-            body["clOrdId"] = clOrdId
+    
         return self._request("POST", path, body_dict=body)
+
 
     def cancel_order(self, inst_id: str, ord_id: str):
         path = "/api/v5/trade/cancel-order"
