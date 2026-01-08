@@ -1312,7 +1312,7 @@ class OKXClient:
             # ✅ OKX maker-only chuẩn
             body["ordType"] = "post_only"
         else:
-            body["o]()
+            body["ordType"] = "limit"
         logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
         logging.info("Body: %s", body)
         if clOrdId:
