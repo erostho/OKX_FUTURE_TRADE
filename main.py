@@ -471,6 +471,8 @@ def _load_symbol_cooldown_state() -> dict:
     except Exception:
         return {}
 _SCALP_COOLDOWN_FILE = "scalp_cooldown.json"
+SCALP_CLID_PREFIX = "SC_"   # prefix cho clOrdId scalp
+SCALP_MAX_ACTIVE = 2        # tối đa 2 scalp đang chạy
 
 def _load_scalp_cd():
     try:
@@ -515,18 +517,18 @@ def scalp_should_block(okx, now_ms):
     if open_n >= SCALP_MAX_OPEN_PER_15M:
         return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
 
-    return False, f"ok fired_ts={fired_n}, open={open_n}"
-import time
-import re
+return False, f"ok fired_ts={fired_n}, open={open_n}"
+import time, re
 
-def _mk_scalp_clordid(inst_id: str, pos_side: str) -> str:
+def mk_scalp_clOrdId(inst_id: str, pos_side: str) -> str:
     sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
     side = "L" if pos_side.lower() == "long" else "S"
-    ts = int(time.time())  # GIÂY, 10 digits
+    ts = int(time.time())  # giây (10 digits)
 
-    clid = f"S{ts}{sym}{side}"  # ví dụ: S1767879652HUSDL
-    clid = re.sub(r"[^A-Za-z0-9_-]", "", clid)  # safety
+    clid = f"{SCALP_CLID_PREFIX}{ts}{sym}{side}"
+    clid = re.sub(r"[^A-Za-z0-9_-]", "", clid)
     return clid[:32]
+
 
 
 _SCALP_LAST_FIRE_TS = 0  # epoch seconds
@@ -623,10 +625,38 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     # t từ 0 -> 1 khi pnl từ 40 -> 100
     t = (pnl_pct - 40.0) / (100.0 - 40.0)
     return cb_high + t * (cb_low - cb_high)
+def count_scalp_active(okx) -> int:
+    """
+    Active scalp = số order/algo pending có clOrdId prefix SC_
+    """
+    n = 0
+
+    # 1) normal pending orders
+    try:
+        resp = okx.get_orders_pending(inst_type="SWAP")
+        rows = resp.get("data") or []
+        for r in rows:
+            clid = (r.get("clOrdId") or "")
+            if clid.startswith(SCALP_CLID_PREFIX):
+                n += 1
+    except Exception as e:
+        logging.warning("[SCALP] count pending orders failed: %s", e)
+
+    # 2) algo pending orders (TP/SL/trailing/OCO)
+    try:
+        resp = okx.get_algo_pending()
+        rows = resp.get("data") or []
+        for r in rows:
+            clid = (r.get("clOrdId") or "")
+            if clid.startswith(SCALP_CLID_PREFIX):
+                n += 1
+    except Exception as e:
+        logging.warning("[SCALP] count algo pending failed: %s", e)
+
+    return n
 
 import os, json, time
 from datetime import datetime, timedelta
-
 SCALP_QUOTA_FILE = "scalp_quota_15m.json"
 SCALP_MAX_PER_15M = 2
 SCALP_WINDOW_MIN = 15
@@ -1133,6 +1163,10 @@ def get_current_session_vn():
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
+    def get_orders_pending(self, inst_type="SWAP"):
+        path = "/api/v5/trade/orders-pending"
+        params = {"instType": inst_type}
+        return self._request("GET", path, params=params)
 
     def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
@@ -5804,6 +5838,11 @@ def run_scalp_5m(okx):
     - Tự mở lệnh + telegram bằng execute_futures_trades() như bot hiện tại
     """
     logging.info("===== SCALP 5M START =====")
+    active = count_scalp_active(okx)
+    if active >= SCALP_MAX_ACTIVE:
+        logging.info("[SCALP][LOCK] active=%s >= %s -> SKIP SCALP", active, SCALP_MAX_ACTIVE)
+        return
+    logging.info("[SCALP][UNLOCK] active=%s < %s -> CONTINUE", active, SCALP_MAX_ACTIVE)
 
     # --- SCALP locks (nhẹ, độc lập với FULL BOT) ---
     # 1) Quota: mỗi 5 phút chỉ cho tối đa 1 lệnh scalp
