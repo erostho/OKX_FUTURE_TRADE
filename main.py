@@ -5803,13 +5803,24 @@ def run_scalp_5m(okx):
             "time": f"[SCALP_5M] {now_str_vn()}",
         })
     
-    logging.info(
+        logging.info(
         "[SCALP] Pick %d coins: %s",
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
-    )    
-    execute_futures_trades(okx, planned_trades)
+    )
+
+    # ✅ Trừ quota NGAY khi đã quyết định bắn (chống execute lỗi -> spam cron)
+    # (Nếu muốn “chỉ trừ khi order thành công”, thì cần execute_futures_trades trả về số lệnh OK,
+    #  còn hiện tại cách an toàn nhất là trừ theo planned để chống spam.)
     mark_scalp_fired_n(len(planned_trades), now_ms)
+
+    try:
+        execute_futures_trades(okx, planned_trades)
+    except Exception as e:
+        logging.exception("[SCALP] execute_futures_trades failed: %s", e)
+        # quota đã trừ rồi -> không spam tiếp
+        return
+
 
 def run_full_bot(okx):
     setup_logging()
