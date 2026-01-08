@@ -1319,10 +1319,34 @@ class OKXClient:
         )
 
 
+    #def cancel_order(self, inst_id: str, ord_id: str):
+        #path = "/api/v5/trade/cancel-order"
+        #body = {"instId": inst_id, "ordId": ord_id}
+        #return self._request("POST", path, body_dict=body)
     def cancel_order(self, inst_id: str, ord_id: str):
+        """
+        Cancel order (SOFT):
+        - OKX hay trả sCode=51400: order đã filled/canceled/không tồn tại -> coi như OK
+        - Tránh raise Exception làm gãy flow maker_first_open_position
+        """
         path = "/api/v5/trade/cancel-order"
         body = {"instId": inst_id, "ordId": ord_id}
-        return self._request("POST", path, body_dict=body)
+    
+        try:
+            resp = self._request("POST", path, body_dict=body)
+            return resp
+    
+        except Exception as e:
+            # _request đang raise khi code != 0, ta parse message để xử lý 51400
+            msg = str(e)
+    
+            # ✅ trường hợp "cancel fail vì filled/canceled/not exist" -> coi như OK
+            if ("51400" in msg) or ("Order cancellation failed" in msg):
+                logging.warning("[OKX][CANCEL] sCode=51400 -> treat as success | inst=%s ordId=%s", inst_id, ord_id)
+                return {"code": "0", "data": [{"instId": inst_id, "ordId": ord_id, "sCode": "51400"}], "msg": "treated_as_ok"}
+    
+            # lỗi khác thì giữ nguyên
+            raise
 
     def get_order(self, inst_id: str, ord_id: str):
         path = "/api/v5/trade/order"
@@ -6069,12 +6093,16 @@ def run_scalp_5m(okx):
             "mode": "SCALP_5M",
             "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side),
         })
-
     logging.info(
         "[SCALP] Pick %d coins: %s",
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
     )
+    # ✅ PRE-MARK fired_ts để chống “crash/return sớm => fired_ts=0”
+    try:
+        mark_scalp_fired_n(len(planned_trades), now_ms)
+    except Exception as e:
+        logging.warning("[SCALP] pre-mark fired_ts failed: %s", e)
 
     ok_opened = False
     try:
