@@ -4454,6 +4454,8 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
+        inst_id = trade.get("instId") or trade.get("inst_id")
+        pos_side = trade.get("posSide") or trade.get("pos_side")
         clOrdId = _mk_scalp_clordid(inst_id, pos_side)
 
         # Spot -> Perp SWAP (chuẩn hoá instId)
