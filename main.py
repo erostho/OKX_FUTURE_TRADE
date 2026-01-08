@@ -5765,51 +5765,63 @@ def _now_ms():
     return int(time.time() * 1000)
 import os, json, time, logging
 
-def _load_json_file(path, default):
+import os, json, tempfile, logging
+
+def _ensure_parent_dir(path: str):
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+def _save_json_file(path: str, data):
+    """
+    Save JSON an toàn:
+    - mkdir parent
+    - write ra file tạm rồi os.replace (atomic) tránh file bị rỗng / dang dở khi process chết giữa chừng
+    """
     try:
+        _ensure_parent_dir(path)
+        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=os.path.dirname(os.path.abspath(path)))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+    except Exception as e:
+        logging.warning("[SCALP][STATE] save failed: %s | path=%s", e, path)
+
+def _load_json_file(path: str, default):
+    """
+    Load JSON 'harden':
+    - nếu file chưa tồn tại -> tạo luôn bằng default và return default (không warning spam)
+    - nếu file hỏng/empty -> overwrite bằng default và return default
+    """
+    try:
+        _ensure_parent_dir(path)
+
         if not os.path.exists(path):
-            logging.warning("[SCALP][STATE] file not found: %s | cwd=%s", path, os.getcwd())
+            _save_json_file(path, default)
             return default
 
+        # file có thể bị rỗng do crash khi write trước đó
         if os.path.getsize(path) == 0:
-            logging.warning("[SCALP][STATE] file empty: %s", path)
+            _save_json_file(path, default)
             return default
 
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except json.JSONDecodeError as e:
-        # JSON hỏng: rename để giữ bằng chứng
-        try:
-            bad = f"{path}.bad.{int(time.time())}"
-            os.replace(path, bad)
-            logging.error("[SCALP][STATE] JSON decode failed -> moved to %s | err=%s", bad, e)
-        except Exception as ee:
-            logging.error("[SCALP][STATE] JSON decode failed & cannot move bad file | err=%s", ee)
-        return default
+            return json.load(f) or default
 
     except Exception as e:
-        logging.error("[SCALP][STATE] load failed: %s | err=%s", path, e)
+        logging.warning("[SCALP][STATE] load failed -> reset default | %s | path=%s", e, path)
+        _save_json_file(path, default)
         return default
 
-
-def _save_json_file(path, data):
-    try:
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-
-        # tmp theo PID để tránh 2 process đè nhau
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-
-        os.replace(tmp, path)
-
-    except Exception as e:
-        logging.error("[SCALP][STATE] save failed: %s | err=%s", path, e)
 
 
 def load_scalp_state():
