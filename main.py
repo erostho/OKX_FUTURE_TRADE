@@ -499,6 +499,27 @@ def mark_scalp_symbol_loss(instId):
     d = _load_scalp_cd()
     d[instId] = time.time()
     _save_scalp_cd(d)
+def scalp_should_block(okx, now_ms):
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+
+    # refresh open SCALP từ OKX (chỉ để remove scalp open đã đóng)
+    st = scalp_refresh_open_from_okx(okx, st)
+    save_scalp_state(st)
+
+    fired_n = len(st.get("fired_ts", []))
+    open_n  = scalp_open_count_in_window(st, now_ms)
+
+    if fired_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"fired_ts={fired_n}/{SCALP_MAX_OPEN_PER_15M} in {SCALP_WINDOW_MIN}m"
+    if open_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
+
+    return False, f"ok fired_ts={fired_n}, open={open_n}"
+def _mk_scalp_clordid(inst_id: str, pos_side: str, now_ms: int) -> str:
+    # OKX giới hạn length -> giữ ngắn
+    base = f"SCALP_{now_ms}_{inst_id.replace('-','')}_{pos_side.upper()}"
+    return base[:32]
 
 _SCALP_LAST_FIRE_TS = 0  # epoch seconds
 def is_scalp_quota_blocked(now_str=None, min_gap_sec=300):
@@ -1261,6 +1282,8 @@ class OKXClient:
         td_mode: str = "isolated",
         lever: int = 6,
         post_only: bool = True,
+        clOrdId: str | None = None,
+
     ):
         """
         Limit order (ưu tiên MAKER nếu post_only=True).
@@ -1282,6 +1305,9 @@ class OKXClient:
 
         logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
         logging.info("Body: %s", body)
+        if clOrdId:
+            body["clOrdId"] = clOrdId
+
         return self._request("POST", path, body_dict=body)
 
     def cancel_order(self, inst_id: str, ord_id: str):
@@ -1455,7 +1481,8 @@ class OKXClient:
         return data
 
     def place_futures_market_order(
-        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE
+        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE,
+
     ):
         path = "/api/v5/trade/order"
         body = {
@@ -1466,11 +1493,15 @@ class OKXClient:
             "ordType": "market",
             "sz": str(sz),
             "lever": str(lever),
+            "clOrdId": str | None = None,
+
         }
         logging.info("---- PLACE FUTURES MARKET ORDER ----")
         logging.info("Body: %s", body)
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX ORDER RESP] %s", data)
+        if clOrdId:
+            body["clOrdId"] = clOrdId
         return data
 
     def get_algo_pending(self, inst_id=None, ord_type=None):
@@ -4216,6 +4247,7 @@ def maker_first_open_position(
     maker_offset_bps: float = 6.0,     # 6 bps = 0.06% (nhẹ, đủ maker)
     maker_timeout_sec: int = 3,        # chờ khớp maker 3s
     bypass_session_guard: bool = False,
+    clOrdId: str | None = None,
 ):
     """
     Ưu tiên mở bằng post-only LIMIT (maker).
@@ -4278,6 +4310,7 @@ def maker_first_open_position(
         td_mode="isolated",
         lever=lever,
         post_only=True,
+        clOrdId=clOrdId
     )
 
     # OKX trả ordId trong data[0].ordId (thường vậy)
@@ -4299,6 +4332,7 @@ def maker_first_open_position(
             sz=contracts,
             td_mode="isolated",
             lever=lever,
+            clOrdId=clOrdId
         )
         code = m.get("code")
         return (code == "0"), None, "market"
@@ -4380,7 +4414,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-
+        clOrdId = t.get("clOrdId") if is_scalp else None
         # Spot -> Perp SWAP (chuẩn hoá instId)
         if coin.endswith("-SWAP"):
             swap_inst = coin
@@ -4472,6 +4506,7 @@ def execute_futures_trades(okx: OKXClient, trades):
             lever=this_lever,
             maker_offset_bps=5.0,      # 0.05%
             maker_timeout_sec=3,       # 3 giây không khớp -> market
+            clOrdId=clOrdId,
         )
 
         if not ok_open:
@@ -5794,6 +5829,7 @@ def run_scalp_5m(okx):
         return    
     planned_trades = []
     for sig in picked:
+        pos_side = "long" if sig["direction"] == "LONG" else "short"
         planned_trades.append({
             "coin": sig["instId"],
             "signal": sig["direction"],   # LONG / SHORT
@@ -5801,6 +5837,7 @@ def run_scalp_5m(okx):
             "tp": sig["tp1"],             # TP nhỏ cho lướt
             "sl": sig["sl"],
             "time": f"[SCALP_5M] {now_str_vn()}",
+            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side, now_ms),
         })
     
     logging.info(
