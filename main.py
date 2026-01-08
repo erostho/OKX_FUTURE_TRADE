@@ -4319,7 +4319,7 @@ def maker_first_open_position(
 
     # 2) Gửi post-only maker
     sz = normalize_swap_sz(okx, inst_id, sz)
-    clOrdId = make_scalp_clOrdId(inst_id)
+    clOrdId = _mk_scalp_clordid(inst_id, pos_side)
     resp = okx.place_futures_limit_order(
         inst_id=inst_id,
         side=side_open,
