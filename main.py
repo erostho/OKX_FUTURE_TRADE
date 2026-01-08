@@ -5755,31 +5755,31 @@ def detect_market_regime(okx: "OKXClient"):
     return "BAD"
 # ===================== SCALP STATE (persist) =====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", os.path.join(BASE_DIR, "scalp_state.json"))
-
+STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, ".state"))
+os.makedirs(STATE_DIR, exist_ok=True)
+SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", os.path.join(STATE_DIR, "scalp_state.json"))
 SCALP_MAX_OPEN_PER_15M = int(os.getenv("SCALP_MAX_OPEN_PER_15M", "2"))
 SCALP_WINDOW_MIN = int(os.getenv("SCALP_WINDOW_MIN", "15"))
 
 def _now_ms():
     return int(time.time() * 1000)
-
-import os, json, logging, time
+import os, json, time, logging
 
 def _load_json_file(path, default):
     try:
         if not os.path.exists(path):
+            logging.warning("[SCALP][STATE] file not found: %s | cwd=%s", path, os.getcwd())
             return default
 
-        # nếu file rỗng -> coi như default
         if os.path.getsize(path) == 0:
-            logging.warning("[SCALP][STATE] %s is empty -> reset default", path)
+            logging.warning("[SCALP][STATE] file empty: %s", path)
             return default
 
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
     except json.JSONDecodeError as e:
-        # JSON hỏng: rename để giữ bằng chứng + reset
+        # JSON hỏng: rename để giữ bằng chứng
         try:
             bad = f"{path}.bad.{int(time.time())}"
             os.replace(path, bad)
@@ -5789,28 +5789,27 @@ def _load_json_file(path, default):
         return default
 
     except Exception as e:
-        logging.error("[SCALP][STATE] load failed path=%s err=%s", path, e)
+        logging.error("[SCALP][STATE] load failed: %s | err=%s", path, e)
         return default
 
 
 def _save_json_file(path, data):
     try:
-        # đảm bảo folder tồn tại (nếu bạn set SCALP_STATE_FILE sang path có folder)
         d = os.path.dirname(path)
         if d:
             os.makedirs(d, exist_ok=True)
 
-        # ✅ tmp theo PID để tránh 2 process đè nhau
+        # tmp theo PID để tránh 2 process đè nhau
         tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
             f.flush()
-            os.fsync(f.fileno())  # giảm rủi ro file 0 bytes
+            os.fsync(f.fileno())
 
         os.replace(tmp, path)
 
     except Exception as e:
-        logging.warning("[SCALP][STATE] save failed: %s", e)
+        logging.error("[SCALP][STATE] save failed: %s | err=%s", path, e)
 
 
 def load_scalp_state():
@@ -5877,16 +5876,22 @@ def scalp_open_count_in_window(st, now_ms):
         except Exception:
             pass
     return n
-
 def scalp_should_block(okx, now_ms):
-    """
-    Block nếu:
-      - trong 15' đã mở >= 2 lệnh (fired_ts),
-      HOẶC
-      - trong 15' đang có >= 2 scalp positions chưa đóng (open list, đã refresh theo OKX)
-    """
     st = load_scalp_state()
     st = scalp_prune_state(st, now_ms)
+
+    # Fallback: nếu state trống mà OKX đang có >=2 vị thế mở -> block luôn
+    try:
+        pos_map = build_open_position_map(okx)
+        total_open = 0
+        for inst, sides in (pos_map or {}).items():
+            if isinstance(sides, dict):
+                total_open += int(bool(sides.get("long"))) + int(bool(sides.get("short")))
+        if total_open >= SCALP_MAX_OPEN_PER_15M:
+            return True, f"fallback_okx_open={total_open}/{SCALP_MAX_OPEN_PER_15M}"
+    except Exception as e:
+        logging.warning("[SCALP][STATE] fallback open count failed: %s", e)
+
     st = scalp_refresh_open_from_okx(okx, st)
     save_scalp_state(st)
 
@@ -5898,6 +5903,7 @@ def scalp_should_block(okx, now_ms):
     if open_n >= SCALP_MAX_OPEN_PER_15M:
         return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
     return False, f"ok fired_ts={fired_n}, open={open_n}"
+
 
 def mark_scalp_fired_n(n: int, now_ms: int):
     st = load_scalp_state()
