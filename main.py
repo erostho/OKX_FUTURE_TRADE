@@ -1,4 +1,4 @@
-
+import os
 import json
 import time
 import math
@@ -15,7 +15,7 @@ from google.oauth2 import service_account
 from urllib.parse import urlencode
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
-import io, os
+import io
 import csv
 import tempfile
 from typing import Optional
@@ -156,8 +156,9 @@ ANTI_SWEEP_MOVE_PCT = 1.0
 ANTI_SWEEP_LOCK_MINUTES = 10
 # ===== LOCK/UNLOCK CONFIG =====
 DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
+
 DAY_HARD_STOP_ENABLED = True
-DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "10.0"))  # lỗ ngày <= -5.0 USDT thì khóa mở lệnh mới
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "4.0"))  # lỗ ngày <= -4.0 USDT thì khóa mở lệnh mới
 
 MARKET_SOFT_LOCK_ENABLED = True
 MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "5"))  # BAD liên tiếp N lần thì lock
@@ -601,7 +602,7 @@ SCALP_QUOTA_FILE = "scalp_quota_15m.json"
 SCALP_MAX_PER_15M = 2
 SCALP_WINDOW_MIN = 15
 
-def _load_json(path, default):
+def _load_state_json(path, default):
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -610,7 +611,7 @@ def _load_json(path, default):
         pass
     return default
 
-def _save_json(path, obj):
+def _save_state_json(path, obj):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(obj, f, ensure_ascii=False)
@@ -622,7 +623,7 @@ def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=S
     Đếm số lần scalp đã bắn trong rolling window (15 phút) và trả về số slot còn lại.
     Lưu timestamps (ms) để chạy được trên Render/cron.
     """
-    data = _load_json(SCALP_QUOTA_FILE, {"fires": []})
+    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
     fires = [x for x in data.get("fires", []) if isinstance(x, int)]
 
     cutoff = now_ms - int(window_min * 60 * 1000)
@@ -632,16 +633,16 @@ def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=S
 
     # persist đã dọn
     data["fires"] = fires
-    _save_json(SCALP_QUOTA_FILE, data)
+    _save_state_json(SCALP_QUOTA_FILE, data)
     return remain
 
 def mark_scalp_fired_n(n: int, now_ms: int):
-    data = _load_json(SCALP_QUOTA_FILE, {"fires": []})
+    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
     fires = [x for x in data.get("fires", []) if isinstance(x, int)]
     for _ in range(max(1, int(n))):
         fires.append(now_ms)
     data["fires"] = fires[-50:]  # giới hạn size
-    _save_json(SCALP_QUOTA_FILE, data)
+    _save_state_json(SCALP_QUOTA_FILE, data)
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -1153,94 +1154,64 @@ class OKXClient:
         #logging.info("================================")
         return headers
 
-    def _request(self, method, path, params=None, body_dict=None, body=None):
+    def _request(self, method, path, params=None, body_dict=None):
         """
         Wrapper gọi OKX API, KÝ ĐÚNG CHUỖI cho cả GET (có query) & POST.
-    
+
         - GET  : prehash = ts + method + path + '?' + query_str
         - POST : prehash = ts + method + path + body_str
-    
-        Backward-compatible:
-          ai còn gọi body=... thì map sang body_dict
         """
-        # backward-compatible
-        if body_dict is None and body is not None:
-            body_dict = body
-    
+        # Base URL thô chưa query
         base_url = OKX_BASE_URL + path
-    
+
+        # Chuẩn bị query / body + chuỗi dùng để ký
         if method.upper() == "GET":
+            # build query string (nếu có params)
             query_str = urlencode(params or {})
             if query_str:
                 url = f"{base_url}?{query_str}"
-                sign_path = f"{path}?{query_str}"
+                sign_path = f"{path}?{query_str}"   # cái này đem đi ký
             else:
                 url = base_url
                 sign_path = path
-            body_str = ""
+            body_str = ""                            # GET không có body
         else:
+            # POST: không ký query, chỉ ký body
             url = base_url
             sign_path = path
-    
-            # --- STRICT JSON serialize (tránh double-encode + NaN) ---
-            if body_dict is None:
-                body_str = ""
-            elif isinstance(body_dict, (dict, list)):
-                body_str = json.dumps(
-                    body_dict,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,   # nếu có NaN/inf -> nổ tại đây để bạn thấy
-                )
-            elif isinstance(body_dict, str):
-                # body đã là JSON string => dùng luôn, KHÔNG dumps lại
-                body_str = body_dict
-            else:
-                # fallback: ép về string để khỏi crash âm thầm
-                body_str = json.dumps(
-                    body_dict,
-                    default=str,
-                    separators=(",", ":"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                )
-    
+            body_str = json.dumps(body_dict) if body_dict is not None else ""
+
+        # Headers với chuỗi sign_path & body_str đã chuẩn
         headers = self._headers(method.upper(), sign_path, body_str)
-    
+
         try:
             if method.upper() == "GET":
+                # query đã gắn vào url, nên params=None
                 r = requests.get(url, headers=headers, timeout=15)
             else:
-                # gửi đúng raw json string
-                r = requests.post(url, headers=headers, data=body_str.encode("utf-8"), timeout=15)
-    
+                r = requests.post(url, headers=headers, data=body_str, timeout=15)
+
             if r.status_code != 200:
                 logging.error("✗ OKX REQUEST FAILED")
                 logging.error("URL: %s", r.url)
                 logging.error("Status Code: %s", r.status_code)
                 logging.error("Response: %s", r.text)
-                # thêm log body để debug 50002
-                if method.upper() != "GET":
-                    logging.error("Request body_str: %s", body_str)
                 r.raise_for_status()
-    
+
             data = r.json()
             code = data.get("code")
             msg = data.get("msg", "")
-    
+
             if code != "0":
                 logging.error("❌ OKX RESPONSE ERROR code=%s msg=%s", code, msg)
                 logging.error("Full response: %s", data)
-                if method.upper() != "GET":
-                    logging.error("Request body_str: %s", body_str)
                 raise Exception(f"OKX API error code={code} msg={msg} resp={data}")
-    
             return data
-    
+
+
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
             raise
-
 
     def has_active_trailing(self, inst_id: str, pos_side: str) -> bool:
         """
@@ -1282,71 +1253,41 @@ class OKXClient:
 
     def place_futures_limit_order(
         self,
-        inst_id,
-        side,
-        pos_side,
-        sz,
-        px,
-        td_mode="isolated",
-        lever=6,
-        post_only=True,
-        clOrdId: str | None = None,
+        inst_id: str,
+        side: str,
+        pos_side: str,
+        sz: str,
+        px: float,
+        td_mode: str = "isolated",
+        lever: int = 6,
+        post_only: bool = True,
     ):
+        """
+        Limit order (ưu tiên MAKER nếu post_only=True).
+        OKX: tif='post_only' để đảm bảo maker (nếu có thể khớp ngay -> bị reject).
+        """
+        path = "/api/v5/trade/order"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
             "side": side,
             "posSide": pos_side,
+            "ordType": "limit",
             "sz": str(sz),
             "px": f"{float(px):.12f}",
             "lever": str(lever),
         }
-        
-        # ✅ OKX: maker-only ổn định nhất là ordType=post_only
         if post_only:
-            body["ordType"] = "post_only"
-        else:
-            body["ordType"] = "limit"
-        if lever:
-            body["lever"] = str(lever)
-        # ✅ THÊM clOrdId CHO LỆNH SCALP
-        if clOrdId:
-            body["clOrdId"] = clOrdId
-        return self._request(
-            "POST",
-            "/api/v5/trade/order",
-            body=body,
-        )
+            body["tif"] = "post_only"   # maker-only
 
+        logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
+        logging.info("Body: %s", body)
+        return self._request("POST", path, body_dict=body)
 
-    #def cancel_order(self, inst_id: str, ord_id: str):
-        #path = "/api/v5/trade/cancel-order"
-        #body = {"instId": inst_id, "ordId": ord_id}
-        #return self._request("POST", path, body_dict=body)
     def cancel_order(self, inst_id: str, ord_id: str):
-        """
-        Cancel order (SOFT):
-        - OKX hay trả sCode=51400: order đã filled/canceled/không tồn tại -> coi như OK
-        - Tránh raise Exception làm gãy flow maker_first_open_position
-        """
         path = "/api/v5/trade/cancel-order"
         body = {"instId": inst_id, "ordId": ord_id}
-    
-        try:
-            resp = self._request("POST", path, body_dict=body)
-            return resp
-    
-        except Exception as e:
-            # _request đang raise khi code != 0, ta parse message để xử lý 51400
-            msg = str(e)
-    
-            # ✅ trường hợp "cancel fail vì filled/canceled/not exist" -> coi như OK
-            if ("51400" in msg) or ("Order cancellation failed" in msg):
-                logging.warning("[OKX][CANCEL] sCode=51400 -> treat as success | inst=%s ordId=%s", inst_id, ord_id)
-                return {"code": "0", "data": [{"instId": inst_id, "ordId": ord_id, "sCode": "51400"}], "msg": "treated_as_ok"}
-    
-            # lỗi khác thì giữ nguyên
-            raise
+        return self._request("POST", path, body_dict=body)
 
     def get_order(self, inst_id: str, ord_id: str):
         path = "/api/v5/trade/order"
@@ -1514,15 +1455,9 @@ class OKXClient:
         return data
 
     def place_futures_market_order(
-        self,
-        inst_id,
-        side,
-        pos_side,
-        sz,
-        td_mode="isolated",
-        lever=FUT_LEVERAGE,
-        clOrdId: str | None = None,
+        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE
     ):
+        path = "/api/v5/trade/order"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
@@ -1530,24 +1465,17 @@ class OKXClient:
             "posSide": pos_side,
             "ordType": "market",
             "sz": str(sz),
+            "lever": str(lever),
         }
-    
-        if lever:
-            body["lever"] = str(lever)
-    
-        # ✅ THÊM clOrdId CHO LỆNH SCALP
-        if clOrdId:
-            body["clOrdId"] = clOrdId
-        return self._request(
-            "POST",
-            "/api/v5/trade/order",
-            body=body,
-        )
-
+        logging.info("---- PLACE FUTURES MARKET ORDER ----")
+        logging.info("Body: %s", body)
+        data = self._request("POST", path, body_dict=body)
+        logging.info("[OKX ORDER RESP] %s", data)
+        return data
 
     def get_algo_pending(self, inst_id=None, ord_type=None):
         """
-        Lấy danh sách lệnh algo đang pending (OCO / trailing /)
+        Lấy danh sách lệnh algo đang pending (OCO / trailing / …)
         """
         path = "/api/v5/trade/orders-algo-pending"
         params = {}
@@ -4288,8 +4216,6 @@ def maker_first_open_position(
     maker_offset_bps: float = 6.0,     # 6 bps = 0.06% (nhẹ, đủ maker)
     maker_timeout_sec: int = 3,        # chờ khớp maker 3s
     bypass_session_guard: bool = False,
-    clOrdId: str | None = None,
-
 ):
     """
     Ưu tiên mở bằng post-only LIMIT (maker).
@@ -4343,19 +4269,16 @@ def maker_first_open_position(
 
     # 2) Gửi post-only maker
     sz = normalize_swap_sz(okx, inst_id, sz)
-    clOrdId = _mk_scalp_clordid(inst_id, pos_side)
     resp = okx.place_futures_limit_order(
         inst_id=inst_id,
         side=side_open,
         pos_side=pos_side,
-        sz=str(contracts),
+        sz=sz,
         px=px,
         td_mode="isolated",
         lever=lever,
         post_only=True,
-        clOrdId=clOrdId,   # ✅ DÙNG clOrdId ĐÃ FIX
     )
-
 
     # OKX trả ordId trong data[0].ordId (thường vậy)
     ord_id = None
@@ -4376,7 +4299,6 @@ def maker_first_open_position(
             sz=contracts,
             td_mode="isolated",
             lever=lever,
-            clOrdId=clOrdId
         )
         code = m.get("code")
         return (code == "0"), None, "market"
@@ -4414,6 +4336,7 @@ def execute_futures_trades(okx: OKXClient, trades):
     if not trades:
         logging.info("[INFO] Không có lệnh futures nào để vào.")
         return
+
     # ===== CHỌN LEVERAGE + SIZE THEO GIỜ & THỊ TRƯỜNG =====
     regime = detect_market_regime(okx)  # "GOOD" / "BAD"
 
@@ -4457,7 +4380,6 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-        clOrdId = t.get("clOrdId") if is_scalp else None
 
         # Spot -> Perp SWAP (chuẩn hoá instId)
         if coin.endswith("-SWAP"):
@@ -4550,7 +4472,6 @@ def execute_futures_trades(okx: OKXClient, trades):
             lever=this_lever,
             maker_offset_bps=5.0,      # 0.05%
             maker_timeout_sec=3,       # 3 giây không khớp -> market
-            clOrdId=clOrdId,
         )
 
         if not ok_open:
@@ -5832,292 +5753,63 @@ def detect_market_regime(okx: "OKXClient"):
         return "GOOD"
 
     return "BAD"
-# ===================== SCALP STATE (persist) =====================
-DEFAULT_SCALP_STATE = {"fired_ts": [], "open": 0}
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, ".state"))
-os.makedirs(STATE_DIR, exist_ok=True)
-SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", os.path.join(STATE_DIR, "scalp_state.json"))
-SCALP_MAX_OPEN_PER_15M = int(os.getenv("SCALP_MAX_OPEN_PER_15M", "2"))
-SCALP_WINDOW_MIN = int(os.getenv("SCALP_WINDOW_MIN", "15"))
 
-def _now_ms():
-    return int(time.time() * 1000)
-import os, json, time, logging
-
-import os, json, tempfile, logging
-
-def _ensure_parent_dir(path: str):
-    parent = os.path.dirname(os.path.abspath(path))
-    if parent:
-        os.makedirs(parent, exist_ok=True)
-
-def _save_json_file_state(path: str, data):
-    """
-    Save JSON an toàn:
-    - mkdir parent
-    - write ra file tạm rồi os.replace (atomic) tránh file bị rỗng / dang dở khi process chết giữa chừng
-    """
-    try:
-        _ensure_parent_dir(path)
-        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_", suffix=".json", dir=os.path.dirname(os.path.abspath(path)))
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, path)
-        finally:
-            try:
-                if os.path.exists(tmp_path):
-                    os.remove(tmp_path)
-            except Exception:
-                pass
-    except Exception as e:
-        logging.warning("[SCALP][STATE] save failed: %s | path=%s", e, path)
-
-def _load_json_file_state(path: str, default):
-    try:
-        # đảm bảo có folder .state
-        d = os.path.dirname(path)
-        if d:
-            os.makedirs(d, exist_ok=True)
-
-        if not os.path.exists(path):
-            # tạo file state lần đầu
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(default, f, ensure_ascii=False)
-            return default
-
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    except Exception as e:
-        logging.warning("[STATE] json load failed: %s | path=%s -> reset default", e, path)
-        # nếu file hỏng => reset lại để bot không bị “mù”
-        try:
-            d = os.path.dirname(path)
-            if d:
-                os.makedirs(d, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(default, f, ensure_ascii=False)
-        except Exception:
-            pass
-        return default
-
-def load_scalp_state():
-    st = _load_json_file_state(SCALP_STATE_FILE, default={})
-    st.setdefault("fired_ts", [])
-    st.setdefault("open", [])
-
-    # ✅ auto create file lần đầu để khỏi warning "file not found" mãi
-    try:
-        if not os.path.exists(SCALP_STATE_FILE):
-            _save_json_file_state(SCALP_STATE_FILE, st)
-    except Exception:
-        pass
-
-    return st
-
-
-def save_scalp_state(st):
-    _save_json_file_state(SCALP_STATE_FILE, st)
-
-def scalp_prune_state(st, now_ms):
-    window_ms = SCALP_WINDOW_MIN * 60 * 1000
-    st["fired_ts"] = [t for t in st.get("fired_ts", []) if (now_ms - int(t)) <= window_ms]
-    # open giữ lại, prune theo window khi check (để vẫn lưu open dài hơn 15’ nếu muốn)
-    st["open"] = [x for x in st.get("open", []) if isinstance(x, dict)]
-    return st
-
-def scalp_refresh_open_from_okx(okx, st):
-    """
-    Đồng bộ scalp 'open' với positions thật trên OKX.
-    Vì OKX position không có tag SCALP, ta chỉ tin những position mà ta đã ghi state khi mở.
-    Nếu position đó không còn trong open_pos_map => coi như đã đóng => loại khỏi state.
-    """
-    try:
-        open_pos_map = build_open_position_map(okx)  # bạn đã có hàm này trong main
-    except Exception as e:
-        logging.warning("[SCALP][STATE] build_open_position_map failed: %s", e)
-        return st
-
-    new_open = []
-    for x in st.get("open", []):
-        inst = x.get("instId")
-        ps = x.get("posSide")
-        if not inst or not ps:
-            continue
-        # build_open_position_map thường map kiểu {"BTC-USDT-SWAP": "long"} hoặc dict posSide
-        cur = open_pos_map.get(inst)
-        still_open = False
-        if isinstance(cur, str):
-            still_open = (cur == ps)
-        elif isinstance(cur, dict):
-            # nếu map phức tạp hơn
-            still_open = (cur.get("posSide") == ps) or (cur.get(ps) is True)
-        else:
-            still_open = False
-
-        if still_open:
-            new_open.append(x)
-
-    st["open"] = new_open
-    return st
-
-def scalp_open_count_in_window(st, now_ms):
-    window_ms = SCALP_WINDOW_MIN * 60 * 1000
-    n = 0
-    for x in st.get("open", []):
-        try:
-            ot = int(x.get("open_ts", 0))
-            if (now_ms - ot) <= window_ms:
-                n += 1
-        except Exception:
-            pass
-    return n
-def scalp_should_block(okx, now_ms):
-    st = load_scalp_state()
-    st = scalp_prune_state(st, now_ms)
-
-    st = scalp_refresh_open_from_okx(okx, st)
-    save_scalp_state(st)
-
-    fired_n = len(st.get("fired_ts", []))
-    open_n = scalp_open_count_in_window(st, now_ms)
-
-    if fired_n >= SCALP_MAX_OPEN_PER_15M:
-        return True, f"fired_ts={fired_n}/{SCALP_MAX_OPEN_PER_15M} in {SCALP_WINDOW_MIN}m"
-    if open_n >= SCALP_MAX_OPEN_PER_15M:
-        return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
-    return False, f"ok fired_ts={fired_n}, open={open_n}"
-
-
-def mark_scalp_fired_n(n: int, now_ms: int):
-    st = load_scalp_state()
-    st = scalp_prune_state(st, now_ms)
-    for _ in range(max(0, int(n))):
-        st["fired_ts"].append(int(now_ms))
-        st["fired_ts"] = st["fired_ts"][-200:]
-
-    save_scalp_state(st)
-
-def mark_scalp_open_positions(planned_trades, now_ms: int):
-    """
-    Ghi nhận 'scalp open' theo planned_trades sau khi execute.
-    (Sync thực tế sẽ được scalp_refresh_open_from_okx prune nếu không thật sự mở được.)
-    """
-    st = load_scalp_state()
-    st = scalp_prune_state(st, now_ms)
-
-    for t in planned_trades or []:
-        try:
-            # chỉ tag SCALP_5M
-            if "[SCALP_5M]" not in str(t.get("time", "")):
-                continue
-            inst = t.get("coin")
-            sig = str(t.get("signal", "")).upper()
-            pos_side = "long" if sig == "LONG" else "short"
-            if not inst:
-                continue
-            st["open"].append({
-                "instId": inst,
-                "posSide": pos_side,
-                "open_ts": int(now_ms),
-            })
-        except Exception:
-            continue
-
-    save_scalp_state(st)
-def _mk_scalp_clordid(inst_id: str, pos_side: str) -> str:
-    """
-    clOrdId chuẩn OKX:
-    - <= 32 ký tự
-    - chỉ A-Z a-z 0-9 _ -
-    - NGẮN, KHÔNG dùng milliseconds
-    """
-    # MAGIC-USDT-SWAP -> MAGIC
-    sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
-    side = "L" if pos_side.lower() == "long" else "S"
-
-    # timestamp GIÂY (10 chữ số)
-    ts = int(time.time())
-
-    # ví dụ: S1767865236MAGICL
-    clid = f"S{ts}{sym}{side}"
-
-    return clid[:32]
-
-
-# ===================== /SCALP STATE =====================
 def run_scalp_5m(okx):
+    """
+    Chạy nhánh SCALP 5m:
+    - Lấy top movers SWAP (gainers/losers)
+    - build_scalp_signal_5m -> planned_trades
+    - Tự mở lệnh + telegram bằng execute_futures_trades() như bot hiện tại
+    """
     logging.info("===== SCALP 5M START =====")
-    now_ms = _now_ms()
 
-    # ✅ NEW: khóa 2 lệnh / 15 phút (theo fired + theo open scalp chưa đóng)
-    blocked, reason = scalp_should_block(okx, now_ms)
-    if blocked:
-        logging.info("[SCALP][LOCK] %s -> skip", reason)
+    # --- SCALP locks (nhẹ, độc lập với FULL BOT) ---
+    # 1) Quota: mỗi 5 phút chỉ cho tối đa 1 lệnh scalp
+    if is_scalp_quota_blocked(now_str_vn()):
+        logging.info("[SCALP][LOCK] Quota blocked -> skip")
         return
-    logging.info("[SCALP][UNLOCK] %s", reason)
-
-    # (phần còn lại giữ nguyên logic build signal/pick coin của bạn)
+    now_ms = int(time.time() * 1000)
+    remain = scalp_quota_remaining(now_ms)
+    if remain <= 0:
+        logging.info(f"[SCALP][LOCK] 15m quota reached (max={SCALP_MAX_PER_15M}) -> skip")
+        return
+    # 2) Cooldown theo symbol sẽ check ở dưới khi pick signal
+    # build signals
     signals = build_scalp_signal_5m(okx, topn=100)
     if not signals:
         logging.info("[SCALP] No scalp signals.")
         return
-
+    # pick TOP 2 signal (điểm cao nhất), né cooldown
     picked = []
-    for sig in signals:
+    for sig in signals[:10]:  # thử top 10 cho dễ kiếm đủ 2
         inst = sig["instId"]
         if is_scalp_symbol_cooldown(inst, cooldown_min=45):
             continue
         picked.append(sig)
-        if len(picked) == 2:
+        if len(picked) >= remain:   # <= chặn đúng quota 15p
             break
-
+    
     if not picked:
         logging.info("[SCALP] No eligible scalp signals.")
-        return
-
+        return    
     planned_trades = []
     for sig in picked:
-        pos_side = "long" if sig["direction"] == "LONG" else "short"
         planned_trades.append({
             "coin": sig["instId"],
-            "signal": sig["direction"],
+            "signal": sig["direction"],   # LONG / SHORT
             "entry": sig["entry"],
-            "tp": sig["tp1"],
+            "tp": sig["tp1"],             # TP nhỏ cho lướt
             "sl": sig["sl"],
             "time": f"[SCALP_5M] {now_str_vn()}",
-            "mode": "SCALP_5M",
-            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side),
         })
+    
     logging.info(
         "[SCALP] Pick %d coins: %s",
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
-    )
-    # ✅ PRE-MARK fired_ts để chống “crash/return sớm => fired_ts=0”
-    try:
-        mark_scalp_fired_n(len(planned_trades), now_ms)
-    except Exception as e:
-        logging.warning("[SCALP] pre-mark fired_ts failed: %s", e)
-
-    ok_opened = False
-    try:
-        execute_futures_trades(okx, planned_trades)
-        ok_opened = True
-    except Exception as e:
-        logging.error("[SCALP] execute_futures_trades failed: %s", e)
-    
-    # ✅ chỉ ghi state khi execute không crash
-    if ok_opened:
-        mark_scalp_open_positions(planned_trades, now_ms)
-        mark_scalp_fired_n(len(planned_trades), now_ms)
-    
-
-
+    )    
+    execute_futures_trades(okx, planned_trades)
+    mark_scalp_fired_n(len(planned_trades), now_ms)
 
 def run_full_bot(okx):
     setup_logging()
