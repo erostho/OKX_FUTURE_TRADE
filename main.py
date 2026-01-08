@@ -1496,7 +1496,7 @@ class OKXClient:
 
     def get_algo_pending(self, inst_id=None, ord_type=None):
         """
-        Lấy danh sách lệnh algo đang pending (OCO / trailing / …)
+        Lấy danh sách lệnh algo đang pending (OCO / trailing /)
         """
         path = "/api/v5/trade/orders-algo-pending"
         params = {}
