@@ -1481,8 +1481,7 @@ class OKXClient:
         return data
 
     def place_futures_market_order(
-        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE,
-
+        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE, clOrdId=None
     ):
         path = "/api/v5/trade/order"
         body = {
@@ -1493,8 +1492,6 @@ class OKXClient:
             "ordType": "market",
             "sz": str(sz),
             "lever": str(lever),
-            "clOrdId": str | None = None,
-
         }
         logging.info("---- PLACE FUTURES MARKET ORDER ----")
         logging.info("Body: %s", body)
