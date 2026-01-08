@@ -4319,17 +4319,19 @@ def maker_first_open_position(
 
     # 2) Gửi post-only maker
     sz = normalize_swap_sz(okx, inst_id, sz)
+    clOrdId = make_scalp_clOrdId(inst_id)
     resp = okx.place_futures_limit_order(
         inst_id=inst_id,
         side=side_open,
         pos_side=pos_side,
-        sz=sz,
+        sz=str(contracts),
         px=px,
         td_mode="isolated",
         lever=lever,
         post_only=True,
-        clOrdId=clOrdId
+        clOrdId=clOrdId,   # ✅ DÙNG clOrdId ĐÃ FIX
     )
+
 
     # OKX trả ordId trong data[0].ordId (thường vậy)
     ord_id = None
@@ -6003,10 +6005,25 @@ def mark_scalp_open_positions(planned_trades, now_ms: int):
             continue
 
     save_scalp_state(st)
-def _mk_scalp_clordid(inst_id: str, pos_side: str, now_ms: int) -> str:
-    # OKX giới hạn length -> giữ ngắn
-    base = f"SCALP_{now_ms}_{inst_id.replace('-','')}_{pos_side.upper()}"
-    return base[:32]
+def _mk_scalp_clordid(inst_id: str, pos_side: str) -> str:
+    """
+    clOrdId chuẩn OKX:
+    - <= 32 ký tự
+    - chỉ A-Z a-z 0-9 _ -
+    - NGẮN, KHÔNG dùng milliseconds
+    """
+    # MAGIC-USDT-SWAP -> MAGIC
+    sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
+    side = "L" if pos_side.lower() == "long" else "S"
+
+    # timestamp GIÂY (10 chữ số)
+    ts = int(time.time())
+
+    # ví dụ: S1767865236MAGICL
+    clid = f"S{ts}{sym}{side}"
+
+    return clid[:32]
+
 
 # ===================== /SCALP STATE =====================
 def run_scalp_5m(okx):
