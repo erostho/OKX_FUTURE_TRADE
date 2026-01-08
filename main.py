@@ -5754,30 +5754,64 @@ def detect_market_regime(okx: "OKXClient"):
 
     return "BAD"
 # ===================== SCALP STATE (persist) =====================
-SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", "scalp_state.json")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", os.path.join(BASE_DIR, "scalp_state.json"))
+
 SCALP_MAX_OPEN_PER_15M = int(os.getenv("SCALP_MAX_OPEN_PER_15M", "2"))
 SCALP_WINDOW_MIN = int(os.getenv("SCALP_WINDOW_MIN", "15"))
 
 def _now_ms():
     return int(time.time() * 1000)
 
+import os, json, logging, time
+
 def _load_json_file(path, default):
     try:
         if not os.path.exists(path):
             return default
+
+        # nếu file rỗng -> coi như default
+        if os.path.getsize(path) == 0:
+            logging.warning("[SCALP][STATE] %s is empty -> reset default", path)
+            return default
+
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except Exception:
+
+    except json.JSONDecodeError as e:
+        # JSON hỏng: rename để giữ bằng chứng + reset
+        try:
+            bad = f"{path}.bad.{int(time.time())}"
+            os.replace(path, bad)
+            logging.error("[SCALP][STATE] JSON decode failed -> moved to %s | err=%s", bad, e)
+        except Exception as ee:
+            logging.error("[SCALP][STATE] JSON decode failed & cannot move bad file | err=%s", ee)
         return default
+
+    except Exception as e:
+        logging.error("[SCALP][STATE] load failed path=%s err=%s", path, e)
+        return default
+
 
 def _save_json_file(path, data):
     try:
-        tmp = path + ".tmp"
+        # đảm bảo folder tồn tại (nếu bạn set SCALP_STATE_FILE sang path có folder)
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
+
+        # ✅ tmp theo PID để tránh 2 process đè nhau
+        tmp = f"{path}.{os.getpid()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())  # giảm rủi ro file 0 bytes
+
         os.replace(tmp, path)
+
     except Exception as e:
         logging.warning("[SCALP][STATE] save failed: %s", e)
+
 
 def load_scalp_state():
     st = _load_json_file(SCALP_STATE_FILE, default={})
@@ -5870,6 +5904,8 @@ def mark_scalp_fired_n(n: int, now_ms: int):
     st = scalp_prune_state(st, now_ms)
     for _ in range(max(0, int(n))):
         st["fired_ts"].append(int(now_ms))
+        st["fired_ts"] = st["fired_ts"][-200:]
+
     save_scalp_state(st)
 
 def mark_scalp_open_positions(planned_trades, now_ms: int):
