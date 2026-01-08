@@ -5844,7 +5844,7 @@ def run_scalp_5m(okx):
             "tp": sig["tp1"],             # TP nhỏ cho lướt
             "sl": sig["sl"],
             "time": f"[SCALP_5M] {now_str_vn()}",
-            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side, now_ms),
+            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side),
         })
     
     logging.info(
