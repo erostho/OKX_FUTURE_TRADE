@@ -158,7 +158,7 @@ ANTI_SWEEP_LOCK_MINUTES = 10
 DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
 
 DAY_HARD_STOP_ENABLED = True
-DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "5.0"))  # lỗ ngày <= -5.0 USDT thì khóa mở lệnh mới
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "10.0"))  # lỗ ngày <= -5.0 USDT thì khóa mở lệnh mới
 
 MARKET_SOFT_LOCK_ENABLED = True
 MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "5"))  # BAD liên tiếp N lần thì lock
@@ -4467,22 +4467,28 @@ def execute_futures_trades(okx: OKXClient, trades):
     telegram_lines = []
 
     for t in allowed_trades:
-        coin = t["coin"]         # ví dụ 'BTC-USDT'
-        signal = t["signal"]     # LONG / SHORT
+        coin = t["coin"]
+        signal = t["signal"]
         entry = t["entry"]
         tp = t["tp"]
         sl = t["sl"]
+    
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-        inst_id = trades.get("instId") or trades.get("inst_id")
-        pos_side = trades.get("posSide") or trades.get("pos_side")
-        clOrdId = mk_scalp_clOrdId(inst_id, pos_side)
-
+    
+        # ✅ đúng biến: t (dict)
+        inst_id  = t.get("instId") or t.get("inst_id") or t.get("coin")
+        pos_side = t.get("posSide") or t.get("pos_side") or ("long" if signal.upper()=="LONG" else "short")
+    
+        clOrdId = None
+        if is_scalp:
+            clOrdId = mk_scalp_clOrdId(inst_id, pos_side)
+    
         # Spot -> Perp SWAP (chuẩn hoá instId)
         if coin.endswith("-SWAP"):
             swap_inst = coin
         else:
-            # coin dạng BTC-USDT -> BTC-USDT-SWAP
-            swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+            swap_inst = coin + "-SWAP"  # tuỳ code bạn đang chuẩn hoá thế nào
+
 
         # ===== PRO #4: cooldown theo symbol =====
         if is_symbol_in_cooldown(swap_inst):
