@@ -516,10 +516,18 @@ def scalp_should_block(okx, now_ms):
         return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
 
     return False, f"ok fired_ts={fired_n}, open={open_n}"
-def _mk_scalp_clordid(inst_id: str, pos_side: str, now_ms: int) -> str:
-    # OKX giới hạn length -> giữ ngắn
-    base = f"SCALP_{now_ms}_{inst_id.replace('-','')}_{pos_side.upper()}"
-    return base[:32]
+import time
+import re
+
+def _mk_scalp_clordid(inst_id: str, pos_side: str) -> str:
+    sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
+    side = "L" if pos_side.lower() == "long" else "S"
+    ts = int(time.time())  # GIÂY, 10 digits
+
+    clid = f"S{ts}{sym}{side}"  # ví dụ: S1767879652HUSDL
+    clid = re.sub(r"[^A-Za-z0-9_-]", "", clid)  # safety
+    return clid[:32]
+
 
 _SCALP_LAST_FIRE_TS = 0  # epoch seconds
 def is_scalp_quota_blocked(now_str=None, min_gap_sec=300):
@@ -1295,19 +1303,20 @@ class OKXClient:
             "tdMode": td_mode,
             "side": side,
             "posSide": pos_side,
-            "ordType": "limit",
             "sz": str(sz),
             "px": f"{float(px):.12f}",
             "lever": str(lever),
         }
+        
         if post_only:
-            body["tif"] = "post_only"   # maker-only
-
+            # ✅ OKX maker-only chuẩn
+            body["ordType"] = "post_only"
+        else:
+            body["o]()
         logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
         logging.info("Body: %s", body)
         if clOrdId:
             body["clOrdId"] = clOrdId
-
         return self._request("POST", path, body_dict=body)
 
     def cancel_order(self, inst_id: str, ord_id: str):
@@ -4411,7 +4420,8 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-        clOrdId = t.get("clOrdId") if is_scalp else None
+        clOrdId = _mk_scalp_clordid(inst_id, pos_side)
+
         # Spot -> Perp SWAP (chuẩn hoá instId)
         if coin.endswith("-SWAP"):
             swap_inst = coin
