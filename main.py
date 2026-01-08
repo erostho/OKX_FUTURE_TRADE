@@ -5826,7 +5826,7 @@ def _ensure_parent_dir(path: str):
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-def _save_json_file(path: str, data):
+def _save_json_file_state(path: str, data):
     """
     Save JSON an toàn:
     - mkdir parent
@@ -5850,7 +5850,7 @@ def _save_json_file(path: str, data):
     except Exception as e:
         logging.warning("[SCALP][STATE] save failed: %s | path=%s", e, path)
 
-def _load_json_file(path: str, default):
+def _load_json_file_state(path: str, default):
     try:
         # đảm bảo có folder .state
         d = os.path.dirname(path)
@@ -5880,14 +5880,14 @@ def _load_json_file(path: str, default):
         return default
 
 def load_scalp_state():
-    st = _load_json_file(SCALP_STATE_FILE, default={})
+    st = _load_json_file_state(SCALP_STATE_FILE, default={})
     st.setdefault("fired_ts", [])
     st.setdefault("open", [])
 
     # ✅ auto create file lần đầu để khỏi warning "file not found" mãi
     try:
         if not os.path.exists(SCALP_STATE_FILE):
-            _save_json_file(SCALP_STATE_FILE, st)
+            _save_json_file_state(SCALP_STATE_FILE, st)
     except Exception:
         pass
 
@@ -5895,7 +5895,7 @@ def load_scalp_state():
 
 
 def save_scalp_state(st):
-    _save_json_file(SCALP_STATE_FILE, st)
+    _save_json_file_state(SCALP_STATE_FILE, st)
 
 def scalp_prune_state(st, now_ms):
     window_ms = SCALP_WINDOW_MIN * 60 * 1000
