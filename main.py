@@ -517,7 +517,6 @@ def scalp_should_block(okx, now_ms):
     if open_n >= SCALP_MAX_OPEN_PER_15M:
         return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
 
-return False, f"ok fired_ts={fired_n}, open={open_n}"
 import time, re
 
 def mk_scalp_clOrdId(inst_id: str, pos_side: str) -> str:
