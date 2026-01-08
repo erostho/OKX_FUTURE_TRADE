@@ -5753,73 +5753,206 @@ def detect_market_regime(okx: "OKXClient"):
         return "GOOD"
 
     return "BAD"
+# ===================== SCALP STATE (persist) =====================
+SCALP_STATE_FILE = os.getenv("SCALP_STATE_FILE", "scalp_state.json")
+SCALP_MAX_OPEN_PER_15M = int(os.getenv("SCALP_MAX_OPEN_PER_15M", "2"))
+SCALP_WINDOW_MIN = int(os.getenv("SCALP_WINDOW_MIN", "15"))
 
+def _now_ms():
+    return int(time.time() * 1000)
+
+def _load_json_file(path, default):
+    try:
+        if not os.path.exists(path):
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return default
+
+def _save_json_file(path, data):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        logging.warning("[SCALP][STATE] save failed: %s", e)
+
+def load_scalp_state():
+    st = _load_json_file(SCALP_STATE_FILE, default={})
+    # fired_ts: list các timestamp (ms) đã mở scalp (để chống spam)
+    # open: list các scalp position đang mở (instId, posSide, open_ts)
+    st.setdefault("fired_ts", [])
+    st.setdefault("open", [])
+    return st
+
+def save_scalp_state(st):
+    _save_json_file(SCALP_STATE_FILE, st)
+
+def scalp_prune_state(st, now_ms):
+    window_ms = SCALP_WINDOW_MIN * 60 * 1000
+    st["fired_ts"] = [t for t in st.get("fired_ts", []) if (now_ms - int(t)) <= window_ms]
+    # open giữ lại, prune theo window khi check (để vẫn lưu open dài hơn 15’ nếu muốn)
+    st["open"] = [x for x in st.get("open", []) if isinstance(x, dict)]
+    return st
+
+def scalp_refresh_open_from_okx(okx, st):
+    """
+    Đồng bộ scalp 'open' với positions thật trên OKX.
+    Vì OKX position không có tag SCALP, ta chỉ tin những position mà ta đã ghi state khi mở.
+    Nếu position đó không còn trong open_pos_map => coi như đã đóng => loại khỏi state.
+    """
+    try:
+        open_pos_map = build_open_position_map(okx)  # bạn đã có hàm này trong main
+    except Exception as e:
+        logging.warning("[SCALP][STATE] build_open_position_map failed: %s", e)
+        return st
+
+    new_open = []
+    for x in st.get("open", []):
+        inst = x.get("instId")
+        ps = x.get("posSide")
+        if not inst or not ps:
+            continue
+        # build_open_position_map thường map kiểu {"BTC-USDT-SWAP": "long"} hoặc dict posSide
+        cur = open_pos_map.get(inst)
+        still_open = False
+        if isinstance(cur, str):
+            still_open = (cur == ps)
+        elif isinstance(cur, dict):
+            # nếu map phức tạp hơn
+            still_open = (cur.get("posSide") == ps) or (cur.get(ps) is True)
+        else:
+            still_open = False
+
+        if still_open:
+            new_open.append(x)
+
+    st["open"] = new_open
+    return st
+
+def scalp_open_count_in_window(st, now_ms):
+    window_ms = SCALP_WINDOW_MIN * 60 * 1000
+    n = 0
+    for x in st.get("open", []):
+        try:
+            ot = int(x.get("open_ts", 0))
+            if (now_ms - ot) <= window_ms:
+                n += 1
+        except Exception:
+            pass
+    return n
+
+def scalp_should_block(okx, now_ms):
+    """
+    Block nếu:
+      - trong 15' đã mở >= 2 lệnh (fired_ts),
+      HOẶC
+      - trong 15' đang có >= 2 scalp positions chưa đóng (open list, đã refresh theo OKX)
+    """
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+    st = scalp_refresh_open_from_okx(okx, st)
+    save_scalp_state(st)
+
+    fired_n = len(st.get("fired_ts", []))
+    open_n = scalp_open_count_in_window(st, now_ms)
+
+    if fired_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"fired_ts={fired_n}/{SCALP_MAX_OPEN_PER_15M} in {SCALP_WINDOW_MIN}m"
+    if open_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
+    return False, f"ok fired_ts={fired_n}, open={open_n}"
+
+def mark_scalp_fired_n(n: int, now_ms: int):
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+    for _ in range(max(0, int(n))):
+        st["fired_ts"].append(int(now_ms))
+    save_scalp_state(st)
+
+def mark_scalp_open_positions(planned_trades, now_ms: int):
+    """
+    Ghi nhận 'scalp open' theo planned_trades sau khi execute.
+    (Sync thực tế sẽ được scalp_refresh_open_from_okx prune nếu không thật sự mở được.)
+    """
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+
+    for t in planned_trades or []:
+        try:
+            # chỉ tag SCALP_5M
+            if "[SCALP_5M]" not in str(t.get("time", "")):
+                continue
+            inst = t.get("coin")
+            sig = str(t.get("signal", "")).upper()
+            pos_side = "long" if sig == "LONG" else "short"
+            if not inst:
+                continue
+            st["open"].append({
+                "instId": inst,
+                "posSide": pos_side,
+                "open_ts": int(now_ms),
+            })
+        except Exception:
+            continue
+
+    save_scalp_state(st)
+# ===================== /SCALP STATE =====================
 def run_scalp_5m(okx):
-    """
-    Chạy nhánh SCALP 5m:
-    - Lấy top movers SWAP (gainers/losers)
-    - build_scalp_signal_5m -> planned_trades
-    - Tự mở lệnh + telegram bằng execute_futures_trades() như bot hiện tại
-    """
     logging.info("===== SCALP 5M START =====")
+    now_ms = _now_ms()
 
-    # --- SCALP locks (nhẹ, độc lập với FULL BOT) ---
-    # 1) Quota: mỗi 5 phút chỉ cho tối đa 1 lệnh scalp
-    if is_scalp_quota_blocked(now_str_vn()):
-        logging.info("[SCALP][LOCK] Quota blocked -> skip")
+    # ✅ NEW: khóa 2 lệnh / 15 phút (theo fired + theo open scalp chưa đóng)
+    blocked, reason = scalp_should_block(okx, now_ms)
+    if blocked:
+        logging.info("[SCALP][LOCK] %s -> skip", reason)
         return
-    now_ms = int(time.time() * 1000)
-    remain = scalp_quota_remaining(now_ms)
-    if remain <= 0:
-        logging.info(f"[SCALP][LOCK] 15m quota reached (max={SCALP_MAX_PER_15M}) -> skip")
-        return
-    # 2) Cooldown theo symbol sẽ check ở dưới khi pick signal
-    # build signals
+    logging.info("[SCALP][UNLOCK] %s", reason)
+
+    # (phần còn lại giữ nguyên logic build signal/pick coin của bạn)
     signals = build_scalp_signal_5m(okx, topn=100)
     if not signals:
         logging.info("[SCALP] No scalp signals.")
         return
-    # pick TOP 2 signal (điểm cao nhất), né cooldown
+
     picked = []
-    for sig in signals[:10]:  # thử top 10 cho dễ kiếm đủ 2
+    for sig in signals:
         inst = sig["instId"]
         if is_scalp_symbol_cooldown(inst, cooldown_min=45):
             continue
         picked.append(sig)
-        if len(picked) >= remain:   # <= chặn đúng quota 15p
+        if len(picked) == 2:
             break
-    
+
     if not picked:
         logging.info("[SCALP] No eligible scalp signals.")
-        return    
+        return
+
     planned_trades = []
     for sig in picked:
         planned_trades.append({
             "coin": sig["instId"],
-            "signal": sig["direction"],   # LONG / SHORT
+            "signal": sig["direction"],
             "entry": sig["entry"],
-            "tp": sig["tp1"],             # TP nhỏ cho lướt
+            "tp": sig["tp1"],
             "sl": sig["sl"],
             "time": f"[SCALP_5M] {now_str_vn()}",
         })
-    
-        logging.info(
+
+    logging.info(
         "[SCALP] Pick %d coins: %s",
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
     )
 
-    # ✅ Trừ quota NGAY khi đã quyết định bắn (chống execute lỗi -> spam cron)
-    # (Nếu muốn “chỉ trừ khi order thành công”, thì cần execute_futures_trades trả về số lệnh OK,
-    #  còn hiện tại cách an toàn nhất là trừ theo planned để chống spam.)
+    execute_futures_trades(okx, planned_trades)
+
+    # ✅ NEW: ghi nhận scalp open + fired để khóa lần chạy tiếp theo
+    mark_scalp_open_positions(planned_trades, now_ms)
     mark_scalp_fired_n(len(planned_trades), now_ms)
 
-    try:
-        execute_futures_trades(okx, planned_trades)
-    except Exception as e:
-        logging.exception("[SCALP] execute_futures_trades failed: %s", e)
-        # quota đã trừ rồi -> không spam tiếp
-        return
 
 
 def run_full_bot(okx):
