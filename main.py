@@ -1270,21 +1270,21 @@ class OKXClient:
             "tdMode": td_mode,
             "side": side,
             "posSide": pos_side,
-            "ordType": "limit",
             "sz": str(sz),
-            "px": str(px),
+            "px": f"{float(px):.12f}",
+            "lever": str(lever),
         }
-    
+        
+        # ✅ OKX: maker-only ổn định nhất là ordType=post_only
         if post_only:
-            body["postOnly"] = "true"
-    
+            body["ordType"] = "post_only"
+        else:
+            body["ordType"] = "limit"
         if lever:
             body["lever"] = str(lever)
-    
         # ✅ THÊM clOrdId CHO LỆNH SCALP
         if clOrdId:
             body["clOrdId"] = clOrdId
-    
         return self._request(
             "POST",
             "/api/v5/trade/order",
@@ -1487,7 +1487,6 @@ class OKXClient:
         # ✅ THÊM clOrdId CHO LỆNH SCALP
         if clOrdId:
             body["clOrdId"] = clOrdId
-    
         return self._request(
             "POST",
             "/api/v5/trade/order",
@@ -5853,11 +5852,18 @@ def _load_json_file(path: str, default):
 
 def load_scalp_state():
     st = _load_json_file(SCALP_STATE_FILE, default={})
-    # fired_ts: list các timestamp (ms) đã mở scalp (để chống spam)
-    # open: list các scalp position đang mở (instId, posSide, open_ts)
     st.setdefault("fired_ts", [])
     st.setdefault("open", [])
+
+    # ✅ auto create file lần đầu để khỏi warning "file not found" mãi
+    try:
+        if not os.path.exists(SCALP_STATE_FILE):
+            _save_json_file(SCALP_STATE_FILE, st)
+    except Exception:
+        pass
+
     return st
+
 
 def save_scalp_state(st):
     _save_json_file(SCALP_STATE_FILE, st)
@@ -6018,18 +6024,24 @@ def run_scalp_5m(okx):
             "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side, now_ms),
         })
 
-
     logging.info(
         "[SCALP] Pick %d coins: %s",
         len(planned_trades),
         ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades])
     )
 
-    execute_futures_trades(okx, planned_trades)
-
-    # ✅ NEW: ghi nhận scalp open + fired để khóa lần chạy tiếp theo
-    mark_scalp_open_positions(planned_trades, now_ms)
-    mark_scalp_fired_n(len(planned_trades), now_ms)
+    ok_opened = False
+    try:
+        execute_futures_trades(okx, planned_trades)
+        ok_opened = True
+    except Exception as e:
+        logging.error("[SCALP] execute_futures_trades failed: %s", e)
+    
+    # ✅ chỉ ghi state khi execute không crash
+    if ok_opened:
+        mark_scalp_open_positions(planned_trades, now_ms)
+        mark_scalp_fired_n(len(planned_trades), now_ms)
+    
 
 
 
