@@ -1558,19 +1558,24 @@ class OKXClient:
 
     def get_algo_pending_safe_for_scalp(self, inst_id=None):
         """
-        Chỉ dùng cho SCALP counter:
-        - KHÔNG truyền ordType (tránh 51000)
-        - Nếu lỗi 400/51000 thì return [] để bot không crash
+        SCALP counter only:
+        - gọi thẳng endpoint và TUYỆT ĐỐI không gửi ordType
+        - lỗi 400/51000 -> return empty
         """
+        path = "/api/v5/trade/orders-algo-pending"
+        params = {}
+        if inst_id:
+            params["instId"] = inst_id
+    
         try:
-            return self.get_algo_pending(inst_id=inst_id, ord_type=None)
+            return self._request("GET", path, params=params)
         except Exception as e:
             msg = str(e)
-            # OKX hay trả 400 + code 51000 nếu ordType sai -> coi như không có algo pending
             if "51000" in msg or "Parameter ordType error" in msg or "400 Client Error" in msg:
                 logging.warning("[SCALP] algo_pending_safe ignored: %s", e)
                 return {"code": "0", "data": [], "msg": "ignored_for_scalp_counter"}
             raise
+
 
     def cancel_algos(self, inst_id, algo_ids):
         """
@@ -4468,8 +4473,8 @@ def execute_futures_trades(okx: OKXClient, trades):
         tp = t["tp"]
         sl = t["sl"]
         is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
-        inst_id = trade.get("instId") or trade.get("inst_id")
-        pos_side = trade.get("posSide") or trade.get("pos_side")
+        inst_id = trades.get("instId") or trades.get("inst_id")
+        pos_side = trades.get("posSide") or trades.get("pos_side")
         clOrdId = mk_scalp_clOrdId(inst_id, pos_side)
 
         # Spot -> Perp SWAP (chuẩn hoá instId)
