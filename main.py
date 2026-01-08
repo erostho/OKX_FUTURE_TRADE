@@ -1155,65 +1155,92 @@ class OKXClient:
 
     def _request(self, method, path, params=None, body_dict=None, body=None):
         """
-        # backward-compatible: ai còn gọi body=... thì map sang body_dict
-        if body_dict is None and body is not None:
-            body_dict = body
         Wrapper gọi OKX API, KÝ ĐÚNG CHUỖI cho cả GET (có query) & POST.
-
+    
         - GET  : prehash = ts + method + path + '?' + query_str
         - POST : prehash = ts + method + path + body_str
+    
+        Backward-compatible:
+          ai còn gọi body=... thì map sang body_dict
         """
-        # Base URL thô chưa query
+        # backward-compatible
+        if body_dict is None and body is not None:
+            body_dict = body
+    
         base_url = OKX_BASE_URL + path
-
-        # Chuẩn bị query / body + chuỗi dùng để ký
+    
         if method.upper() == "GET":
-            # build query string (nếu có params)
             query_str = urlencode(params or {})
             if query_str:
                 url = f"{base_url}?{query_str}"
-                sign_path = f"{path}?{query_str}"   # cái này đem đi ký
+                sign_path = f"{path}?{query_str}"
             else:
                 url = base_url
                 sign_path = path
-            body_str = ""                            # GET không có body
+            body_str = ""
         else:
-            # POST: không ký query, chỉ ký body
             url = base_url
             sign_path = path
-            body_str = json.dumps(body_dict) if body_dict is not None else ""
-
-        # Headers với chuỗi sign_path & body_str đã chuẩn
+    
+            # --- STRICT JSON serialize (tránh double-encode + NaN) ---
+            if body_dict is None:
+                body_str = ""
+            elif isinstance(body_dict, (dict, list)):
+                body_str = json.dumps(
+                    body_dict,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,   # nếu có NaN/inf -> nổ tại đây để bạn thấy
+                )
+            elif isinstance(body_dict, str):
+                # body đã là JSON string => dùng luôn, KHÔNG dumps lại
+                body_str = body_dict
+            else:
+                # fallback: ép về string để khỏi crash âm thầm
+                body_str = json.dumps(
+                    body_dict,
+                    default=str,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                )
+    
         headers = self._headers(method.upper(), sign_path, body_str)
-
+    
         try:
             if method.upper() == "GET":
-                # query đã gắn vào url, nên params=None
                 r = requests.get(url, headers=headers, timeout=15)
             else:
-                r = requests.post(url, headers=headers, data=body_str, timeout=15)
-
+                # gửi đúng raw json string
+                r = requests.post(url, headers=headers, data=body_str.encode("utf-8"), timeout=15)
+    
             if r.status_code != 200:
                 logging.error("✗ OKX REQUEST FAILED")
                 logging.error("URL: %s", r.url)
                 logging.error("Status Code: %s", r.status_code)
                 logging.error("Response: %s", r.text)
+                # thêm log body để debug 50002
+                if method.upper() != "GET":
+                    logging.error("Request body_str: %s", body_str)
                 r.raise_for_status()
-
+    
             data = r.json()
             code = data.get("code")
             msg = data.get("msg", "")
-
+    
             if code != "0":
                 logging.error("❌ OKX RESPONSE ERROR code=%s msg=%s", code, msg)
                 logging.error("Full response: %s", data)
+                if method.upper() != "GET":
+                    logging.error("Request body_str: %s", body_str)
                 raise Exception(f"OKX API error code={code} msg={msg} resp={data}")
+    
             return data
-
-
+    
         except Exception as e:
             logging.exception("Exception when calling OKX: %s", e)
             raise
+
 
     def has_active_trailing(self, inst_id: str, pos_side: str) -> bool:
         """
@@ -5780,6 +5807,7 @@ def detect_market_regime(okx: "OKXClient"):
 
     return "BAD"
 # ===================== SCALP STATE (persist) =====================
+DEFAULT_SCALP_STATE = {"fired_ts": [], "open": 0}
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE_DIR = os.getenv("STATE_DIR", os.path.join(BASE_DIR, ".state"))
 os.makedirs(STATE_DIR, exist_ok=True)
@@ -5823,32 +5851,33 @@ def _save_json_file(path: str, data):
         logging.warning("[SCALP][STATE] save failed: %s | path=%s", e, path)
 
 def _load_json_file(path: str, default):
-    """
-    Load JSON 'harden':
-    - nếu file chưa tồn tại -> tạo luôn bằng default và return default (không warning spam)
-    - nếu file hỏng/empty -> overwrite bằng default và return default
-    """
     try:
-        _ensure_parent_dir(path)
+        # đảm bảo có folder .state
+        d = os.path.dirname(path)
+        if d:
+            os.makedirs(d, exist_ok=True)
 
         if not os.path.exists(path):
-            _save_json_file(path, default)
-            return default
-
-        # file có thể bị rỗng do crash khi write trước đó
-        if os.path.getsize(path) == 0:
-            _save_json_file(path, default)
+            # tạo file state lần đầu
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(default, f, ensure_ascii=False)
             return default
 
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f) or default
+            return json.load(f)
 
     except Exception as e:
-        logging.warning("[SCALP][STATE] load failed -> reset default | %s | path=%s", e, path)
-        _save_json_file(path, default)
+        logging.warning("[STATE] json load failed: %s | path=%s -> reset default", e, path)
+        # nếu file hỏng => reset lại để bot không bị “mù”
+        try:
+            d = os.path.dirname(path)
+            if d:
+                os.makedirs(d, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(default, f, ensure_ascii=False)
+        except Exception:
+            pass
         return default
-
-
 
 def load_scalp_state():
     st = _load_json_file(SCALP_STATE_FILE, default={})
