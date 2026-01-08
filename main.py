@@ -156,9 +156,8 @@ ANTI_SWEEP_MOVE_PCT = 1.0
 ANTI_SWEEP_LOCK_MINUTES = 10
 # ===== LOCK/UNLOCK CONFIG =====
 DEADZONE_HARD_LOCK_ENABLED = True          # 15-20 VN: KHÔNG mở lệnh mới (chỉ quản lý lệnh đang mở)
-
 DAY_HARD_STOP_ENABLED = True
-DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "4.0"))  # lỗ ngày <= -4.0 USDT thì khóa mở lệnh mới
+DAY_MAX_LOSS_USDT = float(os.getenv("DAY_MAX_LOSS_USDT", "5.0"))  # lỗ ngày <= -5.0 USDT thì khóa mở lệnh mới
 
 MARKET_SOFT_LOCK_ENABLED = True
 MARKET_BAD_LOCK_AFTER = int(os.getenv("MARKET_BAD_LOCK_AFTER", "5"))  # BAD liên tiếp N lần thì lock
@@ -1154,8 +1153,10 @@ class OKXClient:
         #logging.info("================================")
         return headers
 
-    def _request(self, method, path, params=None, body_dict=None):
-        """
+    def _request(self, method, path, params=None, body_dict=None, body=None):
+        # backward-compatible: ai còn gọi body=... thì map sang body_dict
+        if body_dict is None and body is not None:
+            body_dict = body
         Wrapper gọi OKX API, KÝ ĐÚNG CHUỖI cho cả GET (có query) & POST.
 
         - GET  : prehash = ts + method + path + '?' + query_str
