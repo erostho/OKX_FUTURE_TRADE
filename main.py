@@ -6067,7 +6067,7 @@ def run_scalp_5m(okx):
             "sl": sig["sl"],
             "time": f"[SCALP_5M] {now_str_vn()}",
             "mode": "SCALP_5M",
-            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side, now_ms),
+            "clOrdId": _mk_scalp_clordid(sig["instId"], pos_side),
         })
 
     logging.info(
