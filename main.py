@@ -6105,7 +6105,8 @@ def run_scalp_5m(okx):
     execute_futures_trades(okx, planned_trades)
     # ghi quota + open state cho SCALP (để lần sau chặn đúng)
     mark_scalp_fired_n(len(planned_trades), now_ms)
-    mark_scalp_open_positions(planned_trades, now_ms)
+    scalp_mark_fired_and_open(planned_trades, now_ms)
+
     
     logging.info(
         "[SCALP][DBG] marked fired_n=%s and open_positions=%s",
