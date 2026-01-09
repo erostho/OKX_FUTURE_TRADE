@@ -502,6 +502,7 @@ def mark_scalp_symbol_loss(instId):
     d = _load_scalp_cd()
     d[instId] = time.time()
     _save_scalp_cd(d)
+    
 def scalp_should_block(okx, now_ms):
     st = load_scalp_state()
     st = scalp_prune_state(st, now_ms)
@@ -4575,6 +4576,13 @@ def execute_futures_trades(okx: OKXClient, trades):
         if not ok_open:
             logging.error("[ORDER] Mở lệnh thất bại %s (%s).", swap_inst, used_type)
             continue
+        # Nếu là lệnh SCALP -> record vào state để lần sau còn chặn đúng nghĩa
+        if is_scalp:
+            try:
+                scalp_record_open(swap_inst, pos_side, now_ms)
+                logging.info("[SCALP][STATE] recorded %s %s", swap_inst, pos_side)
+            except Exception as e:
+                logging.warning("[SCALP][STATE] record failed: %s", e)
 
         # Nếu có fill price thì dùng để log/đặt SL/TP chuẩn hơn
         real_entry = fill_px if (fill_px and fill_px > 0) else entry
@@ -4901,7 +4909,6 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
     return (False, None) if return_info else False
 
 _SWAP_UNIVERSE_CACHE = {"ts": 0, "set": set()}
-
 def get_swap_universe_usdt(okx, cache_sec=3600):
     """
     Lấy danh sách instId dạng *-USDT-SWAP.
@@ -4927,6 +4934,109 @@ def get_swap_universe_usdt(okx, cache_sec=3600):
     _SWAP_UNIVERSE_CACHE["set"] = inst_set
     return inst_set
 
+import os, json, time
+from typing import Dict, Any, List
+
+# ===================== SCALP STATE (LOCAL) =====================
+STATE_DIR = os.path.join(os.getcwd(), ".state")
+SCALP_STATE_PATH = os.path.join(STATE_DIR, "scalp_state.json")
+
+SCALP_MAX_ACTIVE = 2
+SCALP_WINDOW_MS = 15 * 60 * 1000   # 15 phút
+SCALP_MAX_OPEN_PER_WINDOW = 2      # tối đa 2 lệnh scalp trong 15 phút
+
+def _ensure_state_dir():
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+    except Exception:
+        pass
+
+def _load_json_safe(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return default
+    except Exception:
+        # file hỏng / empty / invalid json -> reset
+        return default
+
+def _save_json_atomic(path: str, data) -> None:
+    _ensure_state_dir()
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+def load_scalp_state() -> Dict[str, Any]:
+    st = _load_json_safe(SCALP_STATE_PATH, default={"opened": [], "last_fired_ts": 0})
+    if not isinstance(st, dict):
+        st = {"opened": [], "last_fired_ts": 0}
+    if "opened" not in st or not isinstance(st["opened"], list):
+        st["opened"] = []
+    if "last_fired_ts" not in st or not isinstance(st["last_fired_ts"], int):
+        st["last_fired_ts"] = 0
+    return st
+
+def save_scalp_state(st: Dict[str, Any]) -> None:
+    _save_json_atomic(SCALP_STATE_PATH, st)
+
+def scalp_sync_with_open_positions(okx, st: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Giữ lại các entry SCALP còn thật sự đang mở vị thế.
+    Dựa vào open positions hiện tại (không cần orders-algo-pending).
+    """
+    try:
+        open_map = okx.get_open_positions()  # bạn đang có hàm này, log dạng {inst: {long:bool, short:bool}}
+    except Exception:
+        return st
+
+    kept = []
+    for e in st.get("opened", []):
+        try:
+            inst = e.get("instId")
+            ps = (e.get("posSide") or "").lower()
+            if not inst or ps not in ("long", "short"):
+                continue
+            flags = open_map.get(inst, {})
+            if isinstance(flags, dict) and flags.get(ps) is True:
+                kept.append(e)
+        except Exception:
+            continue
+
+    st["opened"] = kept
+    return st
+
+def scalp_record_open(inst_id: str, pos_side: str, now_ms: int) -> None:
+    st = load_scalp_state()
+    st = scalp_sync_with_open_positions(None, st) if False else st  # không gọi okx ở đây để nhẹ
+    st["opened"].append({"instId": inst_id, "posSide": pos_side.lower(), "ts": int(now_ms)})
+    st["last_fired_ts"] = int(now_ms)
+    save_scalp_state(st)
+
+def scalp_should_block(okx, now_ms: int):
+    """
+    Block SCALP nếu:
+    - đang có >=2 vị thế do SCALP mở còn mở
+    - hoặc trong 15 phút vừa qua đã mở >=2 lệnh SCALP
+    """
+    st = load_scalp_state()
+    st = scalp_sync_with_open_positions(okx, st)
+
+    active = len(st.get("opened", []))
+    recent = 0
+    for e in st.get("opened", []):
+        ts = int(e.get("ts", 0) or 0)
+        if ts and (now_ms - ts) <= SCALP_WINDOW_MS:
+            recent += 1
+
+    save_scalp_state(st)
+
+    if active >= SCALP_MAX_ACTIVE:
+        return True, f"active={active} >= {SCALP_MAX_ACTIVE}"
+    if recent >= SCALP_MAX_OPEN_PER_WINDOW:
+        return True, f"recent15m={recent} >= {SCALP_MAX_OPEN_PER_WINDOW}"
+    return False, f"active={active}, recent15m={recent}"
 
 def _get_top_swap_movers_24h(okx, topn=100):
     """
