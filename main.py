@@ -4671,9 +4671,9 @@ def execute_futures_trades(okx: OKXClient, trades):
         # Nếu là lệnh SCALP -> record vào state để lần sau còn chặn đúng nghĩa
         try:
             if is_scalp:
-                scalp_mark_fired_and_open(planned_trades, now_ms)
+                scalp_record_open(planned_trades, now_ms)
         except Exception as e:
-            logging.warning("[SCALP] scalp_mark_fired_and_open failed: %s", e)
+            logging.warning("[SCALP] scalp_record_open failed: %s", e)
 
 
         # Nếu có fill price thì dùng để log/đặt SL/TP chuẩn hơn
