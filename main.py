@@ -5054,6 +5054,8 @@ from typing import Dict, Any, List
 # ===================== SCALP STATE (LOCAL) =====================
 STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state")
 SCALP_STATE_PATH = os.path.join(STATE_DIR, "scalp_state.json")
+# FORCE SCALP to use the absolute path you already wrote to
+SCALP_STATE_FILE = SCALP_STATE_PATH
 
 
 SCALP_MAX_ACTIVE = 2
