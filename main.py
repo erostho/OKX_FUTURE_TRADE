@@ -5110,6 +5110,7 @@ def _ensure_state_dir():
         pass
 
 SCALP_STATE_DRIVE_ID = os.getenv("GOOGLE_DRIVE_SCALP_STATE_FILE_ID", "").strip()
+SCALP_QUOTA_DRIVE_ID = os.getenv("GOOGLE_DRIVE_SCALP_QUOTA_FILE_ID", "").strip()
 
 def load_scalp_state():
     default = {"fired_ts": [], "open": []}
