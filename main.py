@@ -502,6 +502,33 @@ def mark_scalp_symbol_loss(instId):
     d = _load_scalp_cd()
     d[instId] = time.time()
     _save_scalp_cd(d)
+def scalp_refresh_open_from_okx(okx, st):
+    """
+    Đồng bộ scalp 'open' với positions thật trên OKX.
+    Vì OKX position không có tag SCALP, ta chỉ tin những position mà ta đã ghi state khi mở.
+    Nếu position đó không còn trong open_pos_map => coi như đã đóng => loại khỏi state.
+    """
+    try:
+        open_pos_map = build_open_position_map(okx)  # phải tồn tại sẵn trong main của bạn
+    except Exception as e:
+        logging.warning("[SCALP][STATE] build_open_position_map failed: %s", e)
+        return st
+
+    new_open = []
+    for x in st.get("open", []):
+        inst = x.get("instId")
+        ps = x.get("posSide")
+        if not inst or not ps:
+            continue
+        # open_pos_map dạng: {instId: {"long": True/False, "short": True/False}}
+        if open_pos_map.get(inst, {}).get(ps.lower(), False):
+            new_open.append(x)
+
+    if len(new_open) != len(st.get("open", [])):
+        logging.info("[SCALP][STATE] refresh_open: %d -> %d", len(st.get("open", [])), len(new_open))
+
+    st["open"] = new_open
+    return st
     
 def scalp_should_block(okx, now_ms):
     """
