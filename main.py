@@ -788,7 +788,7 @@ def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=S
     Đếm số lần scalp đã bắn trong rolling window (15 phút) và trả về số slot còn lại.
     Lưu timestamps (ms) để chạy được trên Render/cron.
     """
-    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
+    data = load_json_from_drive(SCALP_QUOTA_DRIVE_ID, {"fires": []}) if SCALP_QUOTA_DRIVE_ID else _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
     fires = [x for x in data.get("fires", []) if isinstance(x, int)]
 
     cutoff = now_ms - int(window_min * 60 * 1000)
@@ -798,16 +798,22 @@ def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=S
 
     # persist đã dọn
     data["fires"] = fires
-    _save_state_json(SCALP_QUOTA_FILE, data)
+    if SCALP_QUOTA_DRIVE_ID:
+        upload_json_to_drive(SCALP_QUOTA_DRIVE_ID, data)
+    else:
+        _save_state_json(SCALP_QUOTA_FILE, data)
     return remain
 
 def mark_scalp_fired_n(n: int, now_ms: int):
-    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
+    data = load_json_from_drive(SCALP_QUOTA_DRIVE_ID, {"fires": []}) if SCALP_QUOTA_DRIVE_ID else _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
     fires = [x for x in data.get("fires", []) if isinstance(x, int)]
     for _ in range(max(1, int(n))):
         fires.append(now_ms)
     data["fires"] = fires[-50:]  # giới hạn size
-    _save_state_json(SCALP_QUOTA_FILE, data)
+    if SCALP_QUOTA_DRIVE_ID:
+        upload_json_to_drive(SCALP_QUOTA_DRIVE_ID, data)
+    else:
+        _save_state_json(SCALP_QUOTA_FILE, data)
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -3269,6 +3275,40 @@ def get_drive_service():
     credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
     service = build("drive", "v3", credentials=credentials)
     return service
+def load_json_from_drive(file_id: str, default: dict):
+    if not file_id:
+        return default
+    try:
+        service = get_drive_service()
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        fh.seek(0)
+        raw = fh.read()
+        if not raw:
+            return default
+        obj = json.loads(raw.decode("utf-8"))
+        return obj if isinstance(obj, dict) else default
+    except Exception as e:
+        logging.error("[DRIVE] Lỗi load JSON từ Drive file_id=%s err=%s", file_id, e)
+        return default
+
+
+def upload_json_to_drive(file_id: str, data: dict):
+    if not file_id:
+        raise Exception("Missing Drive file_id")
+    try:
+        service = get_drive_service()
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        media = MediaIoBaseUpload(io.BytesIO(payload), mimetype="application/json", resumable=False)
+        service.files().update(fileId=file_id, media_body=media).execute()
+        return True
+    except Exception as e:
+        logging.error("[DRIVE] Lỗi upload JSON lên Drive file_id=%s err=%s", file_id, e)
+        raise
 
 def load_history_from_drive():
     file_id = os.getenv("GOOGLE_DRIVE_TRADE_FILE_ID")
@@ -5068,32 +5108,36 @@ def _ensure_state_dir():
     except Exception:
         pass
 
+SCALP_STATE_DRIVE_ID = os.getenv("GOOGLE_DRIVE_SCALP_STATE_FILE_ID", "").strip()
 
 def load_scalp_state():
-    # default schema thống nhất cho nhánh block
     default = {"fired_ts": [], "open": []}
 
-    st = _load_state_json(SCALP_STATE_FILE, default)
+    # ưu tiên DRIVE để khỏi mất giữa cron
+    if SCALP_STATE_DRIVE_ID:
+        st = load_json_from_drive(SCALP_STATE_DRIVE_ID, default)
+    else:
+        st = _load_state_json(SCALP_STATE_FILE, default)
+
+    # normalize + migrate
     if not isinstance(st, dict):
         st = dict(default)
-
-    # MIGRATE: nếu lỡ đang có file theo schema cũ {"opened": [...], "last_fired_ts": ...}
     if "opened" in st and "open" not in st:
         st["open"] = st.get("opened", []) or []
-    if "fired_ts" not in st:
-        st["fired_ts"] = []
-
-    # normalize types
-    if not isinstance(st.get("fired_ts"), list):
-        st["fired_ts"] = []
-    if not isinstance(st.get("open"), list):
-        st["open"] = []
-
+    st.setdefault("fired_ts", [])
+    st.setdefault("open", [])
+    if not isinstance(st["fired_ts"], list): st["fired_ts"] = []
+    if not isinstance(st["open"], list): st["open"] = []
     return st
 
 
 def save_scalp_state(st):
-    _save_state_json(SCALP_STATE_FILE, st)
+    st["_last_saved_ms"] = int(time.time() * 1000)
+    if SCALP_STATE_DRIVE_ID:
+        upload_json_to_drive(SCALP_STATE_DRIVE_ID, st)
+    else:
+        _save_state_json(SCALP_STATE_FILE, st)
+
 
 def scalp_sync_with_open_positions(okx, st):
     try:
