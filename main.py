@@ -739,7 +739,7 @@ def count_scalp_active(okx) -> int:
 
 import os, json, time
 from datetime import datetime, timedelta
-SCALP_QUOTA_FILE = "scalp_quota_15m.json"
+SCALP_QUOTA_FILE = os.path.join(STATE_DIR, "scalp_quota_15m.json")
 SCALP_MAX_PER_15M = 2
 SCALP_MAX_OPEN_PER_15M = 2
 SCALP_WINDOW_MIN = 15
@@ -5093,31 +5093,25 @@ def load_scalp_state():
 def save_scalp_state(st):
     _save_state_json(SCALP_STATE_FILE, st)
 
-def scalp_sync_with_open_positions(okx, st: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Giữ lại các entry SCALP còn thật sự đang mở vị thế.
-    Dựa vào open positions hiện tại (không cần orders-algo-pending).
-    """
+def scalp_sync_with_open_positions(okx, st):
     try:
-        open_map = okx.get_open_positions()  # bạn đang có hàm này, log dạng {inst: {long:bool, short:bool}}
+        open_map = okx.get_open_positions()
     except Exception:
         return st
 
     kept = []
-    for e in st.get("opened", []):
-        try:
-            inst = e.get("instId")
-            ps = (e.get("posSide") or "").lower()
-            if not inst or ps not in ("long", "short"):
-                continue
-            flags = open_map.get(inst, {})
-            if isinstance(flags, dict) and flags.get(ps) is True:
-                kept.append(e)
-        except Exception:
+    for e in (st.get("open", []) or []):
+        inst = e.get("instId")
+        ps = (e.get("posSide") or "").lower()
+        if not inst or ps not in ("long", "short"):
             continue
+        flags = open_map.get(inst, {})
+        if isinstance(flags, dict) and flags.get(ps) is True:
+            kept.append(e)
 
-    st["opened"] = kept
+    st["open"] = kept
     return st
+
 
 def _get_top_swap_movers_24h(okx, topn=100):
     """
