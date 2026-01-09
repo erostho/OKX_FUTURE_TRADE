@@ -739,12 +739,12 @@ def count_scalp_active(okx) -> int:
 
 import os, json, time
 from datetime import datetime, timedelta
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state")
 SCALP_QUOTA_FILE = os.path.join(STATE_DIR, "scalp_quota_15m.json")
 SCALP_MAX_PER_15M = 2
 SCALP_MAX_OPEN_PER_15M = 2
 SCALP_WINDOW_MIN = 15
 # luôn tuyệt đối theo thư mục file main.py
-STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state")
 os.makedirs(STATE_DIR, exist_ok=True)
 SCALP_STATE_FILE = os.path.join(STATE_DIR, "scalp_state.json")
 
