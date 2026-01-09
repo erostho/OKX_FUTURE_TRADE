@@ -743,7 +743,11 @@ SCALP_QUOTA_FILE = "scalp_quota_15m.json"
 SCALP_MAX_PER_15M = 2
 SCALP_MAX_OPEN_PER_15M = 2
 SCALP_WINDOW_MIN = 15
-SCALP_STATE_FILE = os.environ.get("SCALP_STATE_FILE", ".state/scalp_state.json")
+# luôn tuyệt đối theo thư mục file main.py
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state")
+os.makedirs(STATE_DIR, exist_ok=True)
+SCALP_STATE_FILE = os.path.join(STATE_DIR, "scalp_state.json")
+
 
 def _load_state_json(path, default):
     try:
@@ -754,12 +758,30 @@ def _load_state_json(path, default):
         pass
     return default
 
-def _save_state_json(path, obj):
+import json, os, tempfile
+
+def _save_state_json(path: str, data: dict):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        prefix=".tmp_scalp_", 
+        dir=os.path.dirname(path)
+    )
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False)
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+
+        # atomic replace
+        os.replace(tmp_path, path)
     except Exception:
-        pass
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
+
 
 def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=SCALP_MAX_PER_15M) -> int:
     """
@@ -5044,35 +5066,32 @@ def _ensure_state_dir():
     except Exception:
         pass
 
-def _load_json_safe(path: str, default):
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return default
-    except Exception:
-        # file hỏng / empty / invalid json -> reset
-        return default
 
-def _save_json_atomic(path: str, data) -> None:
-    _ensure_state_dir()
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-    os.replace(tmp, path)
+def load_scalp_state():
+    # default schema thống nhất cho nhánh block
+    default = {"fired_ts": [], "open": []}
 
-def load_scalp_state() -> Dict[str, Any]:
-    st = _load_json_safe(SCALP_STATE_PATH, default={"opened": [], "last_fired_ts": 0})
+    st = _load_state_json(SCALP_STATE_FILE, default)
     if not isinstance(st, dict):
-        st = {"opened": [], "last_fired_ts": 0}
-    if "opened" not in st or not isinstance(st["opened"], list):
-        st["opened"] = []
-    if "last_fired_ts" not in st or not isinstance(st["last_fired_ts"], int):
-        st["last_fired_ts"] = 0
+        st = dict(default)
+
+    # MIGRATE: nếu lỡ đang có file theo schema cũ {"opened": [...], "last_fired_ts": ...}
+    if "opened" in st and "open" not in st:
+        st["open"] = st.get("opened", []) or []
+    if "fired_ts" not in st:
+        st["fired_ts"] = []
+
+    # normalize types
+    if not isinstance(st.get("fired_ts"), list):
+        st["fired_ts"] = []
+    if not isinstance(st.get("open"), list):
+        st["open"] = []
+
     return st
 
-def save_scalp_state(st: Dict[str, Any]) -> None:
-    _save_json_atomic(SCALP_STATE_PATH, st)
+
+def save_scalp_state(st):
+    _save_state_json(SCALP_STATE_FILE, st)
 
 def scalp_sync_with_open_positions(okx, st: Dict[str, Any]) -> Dict[str, Any]:
     """
