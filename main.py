@@ -504,25 +504,46 @@ def mark_scalp_symbol_loss(instId):
     _save_scalp_cd(d)
     
 def scalp_should_block(okx, now_ms):
+    """
+    Block nếu:
+      - trong 15' đã mở >= 2 lệnh (fired_ts),
+      HOẶC
+      - trong 15' đang có >= 2 scalp positions chưa đóng (open list, đã refresh theo OKX)
+    """
     st = load_scalp_state()
+
+    logging.info(
+        "[SCALP][DBG] state_file=%s fired_ts_len=%s open_len=%s sample_open=%s",
+        SCALP_STATE_FILE,
+        len(st.get("fired_ts", [])),
+        len(st.get("open", [])),
+        (st.get("open", [])[:3] if isinstance(st.get("open", []), list) else st.get("open"))
+    )
+
     st = scalp_prune_state(st, now_ms)
 
     # refresh open SCALP từ OKX (chỉ để remove scalp open đã đóng)
     st = scalp_refresh_open_from_okx(okx, st)
+
+    logging.info(
+        "[SCALP][DBG] after_refresh fired_ts_len=%s open_len=%s open_in_window=%s fired_in_window=%s",
+        len(st.get("fired_ts", [])),
+        len(st.get("open", [])),
+        scalp_open_count_in_window(st, now_ms),
+        len(st.get("fired_ts", [])),
+    )
+
     save_scalp_state(st)
 
     fired_n = len(st.get("fired_ts", []))
     open_n  = scalp_open_count_in_window(st, now_ms)
 
-    # 1) Chặn quota bắn trong 15 phút
-    if fired_n >= SCALP_MAX_PER_15M:
-        return True, f"fired_ts={fired_n}/{SCALP_MAX_PER_15M} in {SCALP_WINDOW_MIN}m"
+    if fired_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"fired_ts={fired_n}/{SCALP_MAX_OPEN_PER_15M} in {SCALP_WINDOW_MIN}m"
+    if open_n >= SCALP_MAX_OPEN_PER_15M:
+        return True, f"open_scalp={open_n}/{SCALP_MAX_OPEN_PER_15M} still open in {SCALP_WINDOW_MIN}m"
+    return False, f"ok fired_ts={fired_n}, open={open_n}"
 
-    # 2) Chặn số scalp "đang chạy" (đang mở)
-    if open_n >= SCALP_MAX_ACTIVE:
-        return True, f"open_scalp={open_n}/{SCALP_MAX_ACTIVE} still open"
-
-    return False, "ok"
 
 
 def mk_scalp_clOrdId(inst_id: str, pos_side: str) -> str:
@@ -5025,42 +5046,6 @@ def scalp_sync_with_open_positions(okx, st: Dict[str, Any]) -> Dict[str, Any]:
     st["opened"] = kept
     return st
 
-def scalp_record_open(inst_id: str, pos_side: str, now_ms: int) -> None:
-    st = load_scalp_state()
-    st = scalp_sync_with_open_positions(None, st) if False else st  # không gọi okx ở đây để nhẹ
-    st["opened"].append({"instId": inst_id, "posSide": pos_side.lower(), "ts": int(now_ms)})
-    st["last_fired_ts"] = int(now_ms)
-    save_scalp_state(st)
-def load_scalp_state():
-    return _load_guard_state()
-
-def save_scalp_state(st):
-    return _save_guard_state(st)
-
-def scalp_should_block(okx, now_ms: int):
-    """
-    Block SCALP nếu:
-    - đang có >=2 vị thế do SCALP mở còn mở
-    - hoặc trong 15 phút vừa qua đã mở >=2 lệnh SCALP
-    """
-    st = load_scalp_state()
-    st = scalp_sync_with_open_positions(okx, st)
-
-    active = len(st.get("opened", []))
-    recent = 0
-    for e in st.get("opened", []):
-        ts = int(e.get("ts", 0) or 0)
-        if ts and (now_ms - ts) <= SCALP_WINDOW_MS:
-            recent += 1
-
-    save_scalp_state(st)
-
-    if active >= SCALP_MAX_ACTIVE:
-        return True, f"active={active} >= {SCALP_MAX_ACTIVE}"
-    if recent >= SCALP_MAX_OPEN_PER_WINDOW:
-        return True, f"recent15m={recent} >= {SCALP_MAX_OPEN_PER_WINDOW}"
-    return False, f"active={active}, recent15m={recent}"
-
 def _get_top_swap_movers_24h(okx, topn=100):
     """
     Trả về instId SWAP (USDT-SWAP) top movers 24h: gainers/losers.
@@ -6087,10 +6072,15 @@ def run_scalp_5m(okx):
                  ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades]))
 
     execute_futures_trades(okx, planned_trades)
-
-    # QUAN TRỌNG: ghi state fired/open để lần sau chặn được
-    scalp_mark_fired_and_open(planned_trades, now_ms)
-
+    # ghi quota + open state cho SCALP (để lần sau chặn đúng)
+    mark_scalp_fired_n(len(planned_trades), now_ms)
+    mark_scalp_open_positions(planned_trades, now_ms)
+    
+    logging.info(
+        "[SCALP][DBG] marked fired_n=%s and open_positions=%s",
+        len(planned_trades),
+        len([t for t in (planned_trades or []) if "[SCALP_5M]" in str(t.get("time", ""))])
+    )
 
 def run_full_bot(okx):
     setup_logging()
