@@ -4500,6 +4500,18 @@ def maker_first_open_position(
     )
     code = m.get("code")
     return (code == "0"), avg_px, "market"
+def scalp_record_open(instId: str, ordId: str, ts_ms: int | None = None):
+    st = load_scalp_state()
+    ts_ms = ts_ms or int(time.time() * 1000)
+
+    st.setdefault("open", [])
+    st["open"].append({
+        "instId": instId,
+        "ordId": ordId,
+        "ts": ts_ms
+    })
+
+    save_scalp_state(st)
 
 def execute_futures_trades(okx: OKXClient, trades):
     if not trades:
@@ -4659,9 +4671,9 @@ def execute_futures_trades(okx: OKXClient, trades):
         # Nếu là lệnh SCALP -> record vào state để lần sau còn chặn đúng nghĩa
         try:
             if is_scalp:
-                scalp_record_open(swap_inst, pos_side, now_ms())
+                scalp_mark_fired_and_open(planned_trades, now_ms)
         except Exception as e:
-            logging.warning("[SCALP] scalp_record_open failed: %s", e)
+            logging.warning("[SCALP] scalp_mark_fired_and_open failed: %s", e)
 
 
         # Nếu có fill price thì dùng để log/đặt SL/TP chuẩn hơn
