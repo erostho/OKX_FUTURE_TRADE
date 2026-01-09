@@ -5103,6 +5103,36 @@ def _get_top_swap_movers_24h(okx, topn=100):
     except Exception as e:
         logging.error("[SCALP] get top swap movers error: %s", e)
         return [], []
+        
+def scalp_prune_state(st: dict, now_ms: int, ttl_ms: int = 60 * 60 * 1000) -> dict:
+    """
+    Dọn state scalp: xoá entry quá hạn để tránh tích rác.
+    ttl_ms mặc định 1h (bạn có thể chỉnh nếu muốn).
+    Không đổi logic trade, chỉ làm sạch state.
+    """
+    try:
+        if not isinstance(st, dict):
+            return {}
+
+        items = st.get("items")
+        if not isinstance(items, dict):
+            st["items"] = {}
+            return st
+
+        new_items = {}
+        for k, v in items.items():
+            if not isinstance(v, dict):
+                continue
+            ts = v.get("ts", 0)
+            if isinstance(ts, (int, float)) and ts > 0 and (now_ms - int(ts)) <= ttl_ms:
+                new_items[k] = v
+
+        st["items"] = new_items
+        return st
+    except Exception:
+        # an toàn: nếu lỗi thì trả nguyên st để không làm crash bot
+        return st if isinstance(st, dict) else {}
+        
 def scalp_mark_fired_and_open(planned_trades, now_ms: int):
     """
     Ghi nhận scalp đã bắn + (tạm) coi là open để chặn lần sau.
