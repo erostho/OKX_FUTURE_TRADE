@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import time, re
 import math
 import hmac
 import base64
@@ -51,6 +52,9 @@ SHEET_HEADERS = ["Coin", "Tín hiệu", "Entry", "SL", "TP", "Ngày"]
 BT_CACHE_SHEET_NAME = "BT_TRADES_CACHE"   # tên sheet lưu cache lệnh đã đóng
 CLOSE_EVENTS_SHEET_NAME = os.getenv("CLOSE_EVENTS_SHEET_NAME", "CLOSE_EVENTS")
 SERVER_CLOSE_STATE_FILE = os.getenv("SERVER_CLOSE_STATE_FILE", "server_close_state.json")
+# Global
+CLOSE_EVENT_BY_POSID = {}   # posId -> event dict (latest)
+CLOSE_EVENT_TYPE_BY_POSID = {}  # posId -> closeType (latest)
 
 # ======== DYNAMIC TP CONFIG ========
 TP_DYN_MIN_PROFIT_PCT   = 4.0   # chỉ bật TP động khi lãi >= 4.0%
@@ -66,6 +70,10 @@ TP_DYN_EMA_TOUCH        = True  # bật thoát khi chạm EMA5
 TRAIL_START_PROFIT_PCT = 5.0   # bắt đầu kích hoạt trailing khi lãi >= 5% PnL
 TRAIL_GIVEBACK_PCT     = 3.0   # nếu giá hồi ngược lại >= 3% từ đỉnh → chốt
 TRAIL_LOOKBACK_BARS    = 30    # số nến 5m gần nhất để ước lượng đỉnh/đáy
+
+# ===== trailing mode state (ALL server-side) =====
+TRAIL_MODE = {}            # pos_key -> "normal" | "pump"
+LAST_TRAIL_UPDATE_MS = {}  # pos_key -> last update ms
 
 # ========== PUMP/DUMP PRO CONFIG ==========
 SL_DYN_SOFT_PCT_GOOD = 3.0   # thị trường ổn → cho chịu lỗ rộng hơn chút
@@ -100,6 +108,8 @@ PUMP_CB_MAX_PCT      = 3.0    # cap callback khi pump
 
 HARD_STOP_PCT        = 4.0    # A) hard floor theo peak (%)
 TIME_UNDER_STOP_SEC  = 30     # B) giá dưới stop liên tục bao lâu mới thoát
+TRAIL_UPDATE_COOLDOWN_SEC = 60   # chống spam cancel+place
+CB_UPDATE_MIN_DIFF = 0.2         # chỉ update nếu callback lệch >= 0.2%
 
 # ===== PRO: PROFIT LOCK (<10%) =====
 PROFIT_LOCK_ENABLED = True
@@ -234,31 +244,25 @@ def _is_session_20_24():
 # ===== GSHEET HELPERS (FIX _get_gsheet NOT DEFINED) =====
 _GSHEET_OBJ = None
 
+_GSHEET_CACHE = {}
+
 def _get_gsheet():
-    """
-    Trả về spreadsheet object (gspread Spreadsheet).
-    Ưu tiên dùng hàm có sẵn nếu project đã có get_gsheet().
-    """
-    global _GSHEET_OBJ
+    global _GSHEET_CACHE
 
-    # Nếu project mày đã có get_gsheet() thì dùng luôn
-    if "get_gsheet" in globals() and callable(globals()["get_gsheet"]):
-        return globals()["get_gsheet"]()
-
-    if _GSHEET_OBJ is not None:
-        return _GSHEET_OBJ
-
-    # 1) Lấy spreadsheet key: ưu tiên biến env, fallback SESSION_SHEET_KEY
     sheet_key = (
-        os.getenv("GSHEET_KEY")
+        os.getenv("GOOGLE_SPREADSHEET_ID")
+        or os.getenv("BT_SHEET_ID")
+        or os.getenv("GSHEET_KEY")
         or os.getenv("SHEET_KEY")
         or os.getenv("SPREADSHEET_KEY")
         or SESSION_SHEET_KEY
     )
     if not sheet_key:
-        raise Exception("Missing spreadsheet key: set GSHEET_KEY (or SHEET_KEY/SPREADSHEET_KEY)")
+        raise Exception("Missing spreadsheet key: set GOOGLE_SPREADSHEET_ID / BT_SHEET_ID / GSHEET_KEY")
 
-    # 2) Lấy service account json: ưu tiên env JSON, fallback file path
+    if sheet_key in _GSHEET_CACHE:
+        return _GSHEET_CACHE[sheet_key]
+
     sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     sa_file = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE")
 
@@ -273,7 +277,6 @@ def _get_gsheet():
     elif sa_file:
         creds = Credentials.from_service_account_file(sa_file, scopes=scopes)
     else:
-        # nếu mày đang dùng biến khác (ví dụ SERVICE_ACCOUNT_JSON / GOOGLE_CREDENTIALS)
         alt = os.getenv("SERVICE_ACCOUNT_JSON") or os.getenv("GOOGLE_CREDENTIALS")
         if alt:
             info = json.loads(alt)
@@ -282,8 +285,49 @@ def _get_gsheet():
             raise Exception("Missing Google service account: set GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_SERVICE_ACCOUNT_FILE")
 
     gc = gspread.authorize(creds)
-    _GSHEET_OBJ = gc.open_by_key(sheet_key)
-    return _GSHEET_OBJ
+    ss = gc.open_by_key(sheet_key)
+
+    #logging.info("[GSHEET] open_by_key sheet_key=%s title=%s", sheet_key, getattr(ss, "title", "?"))
+
+    _GSHEET_CACHE[sheet_key] = ss
+    return ss
+
+def _close_type_priority(ct: str) -> int:
+    ct = (ct or "").upper().strip()
+
+    # server-generic / placeholder (ưu tiên thấp)
+    if ct in ("", "UNKNOWN", "SERVER_CLOSE", "OCO_SL", "BE"):
+        return 10
+
+    # các loại đóng cụ thể (ưu tiên cao hơn)
+    if ct in ("OUTTIME",):
+        return 60
+    if ct in ("EARLY", "EMERGENCY"):
+        return 80
+    if ct.startswith("TRAIL"):
+        return 90
+    if ct in ("TP_DYN", "LADDER"):
+        return 95
+
+    # default
+    return 50
+
+
+def _should_override_close_type(old_ct: str, new_ct: str) -> bool:
+    old_ct = (old_ct or "").upper().strip()
+    new_ct = (new_ct or "").upper().strip()
+
+    if not new_ct:
+        return False
+    if old_ct == new_ct:
+        return False
+
+    # nếu old chưa có / generic -> override luôn
+    if old_ct in ("", "UNKNOWN", "SERVER_CLOSE", "OCO_SL", "BE"):
+        return True
+
+    # còn lại: override khi new có priority cao hơn old
+    return _close_type_priority(new_ct) > _close_type_priority(old_ct)
 
 def _is_strong_trend(market_regime=None, confidence=None, trend_score=None):
     """
@@ -427,7 +471,86 @@ def _load_symbol_cooldown_state() -> dict:
             return json.load(f) or {}
     except Exception:
         return {}
+_SCALP_COOLDOWN_FILE = "scalp_cooldown.json"
+SCALP_CLID_PREFIX = "SC_"   # prefix cho clOrdId scalp
+SCALP_MAX_ACTIVE = 2        # tối đa 2 scalp đang chạy
 
+def _load_scalp_cd():
+    try:
+        if not os.path.exists(_SCALP_COOLDOWN_FILE):
+            return {}
+        with open(_SCALP_COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+def _save_scalp_cd(d):
+    try:
+        with open(_SCALP_COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(d, f)
+    except Exception:
+        pass
+
+def is_scalp_symbol_cooldown(instId, cooldown_min=45):
+    d = _load_scalp_cd()
+    ts = d.get(instId)
+    if not ts:
+        return False
+    return (time.time() - float(ts)) < cooldown_min * 60
+
+def mark_scalp_symbol_loss(instId):
+    d = _load_scalp_cd()
+    d[instId] = time.time()
+    _save_scalp_cd(d)
+def scalp_should_block(okx, now_ms):
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+
+    # refresh open SCALP từ OKX (chỉ để remove scalp open đã đóng)
+    st = scalp_refresh_open_from_okx(okx, st)
+    save_scalp_state(st)
+
+    fired_n = len(st.get("fired_ts", []))
+    open_n  = scalp_open_count_in_window(st, now_ms)
+
+    # 1) Chặn quota bắn trong 15 phút
+    if fired_n >= SCALP_MAX_PER_15M:
+        return True, f"fired_ts={fired_n}/{SCALP_MAX_PER_15M} in {SCALP_WINDOW_MIN}m"
+
+    # 2) Chặn số scalp "đang chạy" (đang mở)
+    if open_n >= SCALP_MAX_ACTIVE:
+        return True, f"open_scalp={open_n}/{SCALP_MAX_ACTIVE} still open"
+
+    return False, "ok"
+
+
+def mk_scalp_clOrdId(inst_id: str, pos_side: str) -> str:
+    sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
+    side = "L" if pos_side.lower() == "long" else "S"
+    ts = int(time.time())  # giây (10 digits)
+
+    clid = f"{SCALP_CLID_PREFIX}{ts}{sym}{side}"
+    clid = re.sub(r"[^A-Za-z0-9_-]", "", clid)
+    return clid[:32]
+
+
+
+_SCALP_LAST_FIRE_TS = 0  # epoch seconds
+def is_scalp_quota_blocked(now_str=None, min_gap_sec=300):
+    """
+    Mỗi 5 phút chỉ bắn tối đa 1 lệnh scalp.
+    Cron chạy mỗi phút => cần chặn spam.
+    """
+    global _SCALP_LAST_FIRE_TS
+    now = int(time.time())
+    if _SCALP_LAST_FIRE_TS and (now - _SCALP_LAST_FIRE_TS) < min_gap_sec:
+        return True
+    return False
+
+def mark_scalp_fired():
+    global _SCALP_LAST_FIRE_TS
+    _SCALP_LAST_FIRE_TS = int(time.time())
+    
 def _save_symbol_cooldown_state(state: dict):
     try:
         with open(SYMBOL_COOLDOWN_FILE, "w", encoding="utf-8") as f:
@@ -506,7 +629,82 @@ def dynamic_trail_callback_pct(pnl_pct: float) -> float:
     # t từ 0 -> 1 khi pnl từ 40 -> 100
     t = (pnl_pct - 40.0) / (100.0 - 40.0)
     return cb_high + t * (cb_low - cb_high)
+def count_scalp_active(okx) -> int:
+    """
+    Active scalp = số order/algo pending có clOrdId prefix SC_
+    """
+    n = 0
 
+    # 1) normal pending orders
+    try:
+        resp = okx.get_orders_pending(inst_type="SWAP")
+        rows = resp.get("data") or []
+        for r in rows:
+            clid = (r.get("clOrdId") or "")
+            if clid.startswith(SCALP_CLID_PREFIX):
+                n += 1
+    except Exception as e:
+        logging.warning("[SCALP] count pending orders failed: %s", e)
+
+    # 2) algo pending orders (TP/SL/trailing/OCO)
+    try:
+        resp = okx.get_algo_pending_safe_for_scalp()
+        rows = resp.get("data") or []
+        for r in rows:
+            clid = (r.get("clOrdId") or "")
+            if clid.startswith(SCALP_CLID_PREFIX):
+                n += 1
+    except Exception as e:
+        logging.warning("[SCALP] count algo pending failed: %s", e)
+    return n
+
+import os, json, time
+from datetime import datetime, timedelta
+SCALP_QUOTA_FILE = "scalp_quota_15m.json"
+SCALP_MAX_PER_15M = 2
+SCALP_WINDOW_MIN = 15
+
+def _load_state_json(path, default):
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return default
+
+def _save_state_json(path, obj):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def scalp_quota_remaining(now_ms: int, window_min=SCALP_WINDOW_MIN, max_trades=SCALP_MAX_PER_15M) -> int:
+    """
+    Đếm số lần scalp đã bắn trong rolling window (15 phút) và trả về số slot còn lại.
+    Lưu timestamps (ms) để chạy được trên Render/cron.
+    """
+    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
+    fires = [x for x in data.get("fires", []) if isinstance(x, int)]
+
+    cutoff = now_ms - int(window_min * 60 * 1000)
+    fires = [x for x in fires if x >= cutoff]  # giữ lại các lần bắn trong 15p gần nhất
+    used = len(fires)
+    remain = max(0, max_trades - used)
+
+    # persist đã dọn
+    data["fires"] = fires
+    _save_state_json(SCALP_QUOTA_FILE, data)
+    return remain
+
+def mark_scalp_fired_n(n: int, now_ms: int):
+    data = _load_state_json(SCALP_QUOTA_FILE, {"fires": []})
+    fires = [x for x in data.get("fires", []) if isinstance(x, int)]
+    for _ in range(max(1, int(n))):
+        fires.append(now_ms)
+    data["fires"] = fires[-50:]  # giới hạn size
+    _save_state_json(SCALP_QUOTA_FILE, data)
 
 def decide_risk_config(regime: str | None, session_flag: str | None):
     """
@@ -661,44 +859,56 @@ def is_symbol_locked(inst_id: str) -> bool:
         ALT_SWEEP_LOCKS.pop(inst_id, None)
         return False
     return True
-CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENT_FILE", "close_events.jsonl")
+#CLOSE_EVENT_FILE = os.getenv("CLOSE_EVENTS", "close_events.jsonl")
 
 def log_close_type(posId: str, instId: str, posSide: str, openPx: float, sz: float, closeType: str):
     posId = str(posId or "").strip()
     if not posId:
         return
 
-    # ✅ CHỐNG GHI TRÙNG
-    if posId in CLOSED_POSID_SET:
+    new_ct = (closeType or "").upper().strip()
+    if not new_ct:
         return
 
-    CLOSED_POSID_SET.add(posId)
+    old_ct = (CLOSE_EVENT_TYPE_BY_POSID.get(posId) or "").upper().strip()
+
+    # Nếu đã có rồi, chỉ ghi đè khi hợp lệ
+    if old_ct:
+        if not _should_override_close_type(old_ct, new_ct):
+            return
 
     ev = {
         "posId": posId,
         "ts": int(time.time() * 1000),
         "instId": instId,
-        "posSide": posSide.lower(),
+        "posSide": (posSide or "").lower(),
         "openPx": float(openPx or 0),
         "sz": float(sz or 0),
-        "closeType": closeType.upper(),
+        "closeType": new_ct,
     }
 
-    # 1) giữ in-memory để match ngay (khỏi phải reload)
+    # update in-memory latest
+    CLOSE_EVENT_BY_POSID[posId] = ev
+    CLOSE_EVENT_TYPE_BY_POSID[posId] = new_ct
+
+    # ✅ QUAN TRỌNG:
+    # KHÔNG dùng CLOSED_POSID_SET để return nữa.
+    # CLOSED_POSID_SET nếu vẫn muốn giữ thì chỉ dùng để tránh spam y hệt closeType.
+    # (vì override là có chủ đích)
     try:
         _CLOSE_EVENTS.append(ev)
     except Exception:
         pass
 
-    # 2) ghi vào GG Sheet (bền qua restart)
     append_close_event_to_sheet(ev)
 
-    # 3) (tuỳ chọn) vẫn ghi file local nếu bạn muốn
     try:
         with open(CLOSE_EVENT_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(ev, ensure_ascii=False) + "\n")
     except Exception:
         pass
+
+
 
 def load_closed_posids_from_sheet():
     try:
@@ -956,6 +1166,10 @@ def get_current_session_vn():
 # ========== OKX REST CLIENT ==========
 
 class OKXClient:
+    def get_orders_pending(self, inst_type="SWAP"):
+        path = "/api/v5/trade/orders-pending"
+        params = {"instType": inst_type}
+        return self._request("GET", path, params=params)
 
     def __init__(self, api_key, api_secret, passphrase, simulated_trading=False):
         self.api_key = api_key
@@ -1104,37 +1318,33 @@ class OKXClient:
         return self._request("POST", path, body_dict=body)
 
     def place_futures_limit_order(
-        self,
-        inst_id: str,
-        side: str,
-        pos_side: str,
-        sz: str,
-        px: float,
-        td_mode: str = "isolated",
-        lever: int = 6,
-        post_only: bool = True,
+        self, inst_id, side, pos_side, sz, px,
+        td_mode="isolated", lever=6, post_only=True,
+        clOrdId=None
     ):
-        """
-        Limit order (ưu tiên MAKER nếu post_only=True).
-        OKX: tif='post_only' để đảm bảo maker (nếu có thể khớp ngay -> bị reject).
-        """
         path = "/api/v5/trade/order"
         body = {
             "instId": inst_id,
             "tdMode": td_mode,
-            "side": side,
-            "posSide": pos_side,
-            "ordType": "limit",
+            "side": side,          # "buy"/"sell"
+            "posSide": pos_side,   # "long"/"short"
+            "ordType": "limit",    # ✅ FIX: luôn là limit
             "sz": str(sz),
             "px": f"{float(px):.12f}",
             "lever": str(lever),
         }
+    
         if post_only:
-            body["tif"] = "post_only"   # maker-only
-
+            body["tif"] = "post_only"   # ✅ FIX: post-only nằm ở tif
+    
+        if clOrdId:
+            body["clOrdId"] = str(clOrdId)[:32]  # <=32 ký tự cho chắc
+    
         logging.info("---- PLACE FUTURES LIMIT (POST-ONLY=%s) ----", post_only)
         logging.info("Body: %s", body)
+    
         return self._request("POST", path, body_dict=body)
+
 
     def cancel_order(self, inst_id: str, ord_id: str):
         path = "/api/v5/trade/cancel-order"
@@ -1306,9 +1516,7 @@ class OKXClient:
         logging.info("[INFO] SET LEVERAGE RESP: %s", data)
         return data
 
-    def place_futures_market_order(
-        self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE
-    ):
+    def place_futures_market_order(self, inst_id, side, pos_side, sz, td_mode="isolated", lever=FUT_LEVERAGE, clOrdId=None):
         path = "/api/v5/trade/order"
         body = {
             "instId": inst_id,
@@ -1319,11 +1527,15 @@ class OKXClient:
             "sz": str(sz),
             "lever": str(lever),
         }
+        if clOrdId:
+            body["clOrdId"] = clOrdId  # ✅ phải set trước khi gửi
+    
         logging.info("---- PLACE FUTURES MARKET ORDER ----")
         logging.info("Body: %s", body)
         data = self._request("POST", path, body_dict=body)
         logging.info("[OKX ORDER RESP] %s", data)
         return data
+
 
     def get_algo_pending(self, inst_id=None, ord_type=None):
         """
@@ -1338,6 +1550,27 @@ class OKXClient:
 
         # QUAN TRỌNG: dùng _request như các hàm khác, KHÔNG tự ký tay
         return self._request("GET", path, params=params)
+
+    def get_algo_pending_safe_for_scalp(self, inst_id=None):
+        """
+        SCALP counter only:
+        - gọi thẳng endpoint và TUYỆT ĐỐI không gửi ordType
+        - lỗi 400/51000 -> return empty
+        """
+        path = "/api/v5/trade/orders-algo-pending"
+        params = {}
+        if inst_id:
+            params["instId"] = inst_id
+    
+        try:
+            return self._request("GET", path, params=params)
+        except Exception as e:
+            msg = str(e)
+            if "51000" in msg or "Parameter ordType error" in msg or "400 Client Error" in msg:
+                logging.warning("[SCALP] algo_pending_safe ignored: %s", e)
+                return {"code": "0", "data": [], "msg": "ignored_for_scalp_counter"}
+            raise
+
 
     def cancel_algos(self, inst_id, algo_ids):
         """
@@ -1573,21 +1806,17 @@ def get_close_events_worksheet():
     gc = get_gspread_client()
     if not gc:
         return None
-
     sheet_id = os.getenv("BT_SHEET_ID") or os.getenv("SHEET_ID") or os.getenv("GSHEET_ID")
     if not sheet_id:
         logging.error("[CLOSE-EVENTS] BT_SHEET_ID (hoặc SHEET_ID/GSHEET_ID) chưa cấu hình.")
         return None
-
     sh = gc.open_by_key(sheet_id)
-
     try:
         ws = sh.worksheet(CLOSE_EVENTS_SHEET_NAME)
     except Exception:
         ws = sh.add_worksheet(title=CLOSE_EVENTS_SHEET_NAME, rows=1000, cols=10)
         ws.append_row(["posId", "ts", "instId", "posSide", "openPx", "sz", "closeType"])
         logging.info("[CLOSE-EVENTS] Tạo sheet %s mới.", CLOSE_EVENTS_SHEET_NAME)
-
     return ws
 
 
@@ -1613,31 +1842,38 @@ def append_close_event_to_sheet(ev: dict):
         logging.error("[CLOSE-EVENTS] append row error: %s", e)
 
 def read_close_events_sheet(limit: int = 5000):
-    """
-    Đọc sheet CLOSE_EVENTS và trả về list[dict] theo header.
-    limit: số dòng tối đa kéo về (chống treo)
-    """
     try:
-        sh = _get_gsheet()  # hoặc client.open_by_key(...), dùng đúng hàm mày đang có
+        sh = _get_gsheet()
         ws = sh.worksheet("CLOSE_EVENTS")
         values = ws.get_all_values()
-
         if not values or len(values) < 2:
             return []
 
         header = values[0]
         data_rows = values[1:1+limit]
 
+        # build rows
         out = []
         for r in data_rows:
             row = {}
             for i, k in enumerate(header):
                 row[k] = r[i] if i < len(r) else ""
             out.append(row)
-        return out
+
+        # ✅ DEDUPE: lấy row cuối theo posId
+        latest = {}
+        for row in out:
+            pid = str(row.get("posId") or "").strip()
+            if not pid:
+                continue
+            latest[pid] = row  # overwrite -> row cuối thắng
+
+        return list(latest.values())
+
     except Exception as e:
         logging.error("[GSHEET] read_close_events_sheet error: %s", e)
         return []
+
 
 # ===== SHEET CLOSE EVENTS (CLOSE_EVENTS) =====
 
@@ -1678,22 +1914,35 @@ def get_close_events_worksheet():
 
 
 def append_close_event_to_sheet(ev: dict):
-    """
-    ev keys: ts, instId, posSide, openPx, sz, closeType
-    """
     ws = get_close_events_worksheet()
     if not ws:
         return
+
     try:
-        ws.append_row([
-            str(ev.get("posId", "")),
-            str(ev.get("ts", "")),
-            str(ev.get("instId", "")),
-            str(ev.get("posSide", "")),
-            str(ev.get("openPx", "")),
-            str(ev.get("sz", "")),
-            str(ev.get("closeType", "")),
-        ], value_input_option="USER_ENTERED")
+        header = ws.row_values(1)
+        header = [h.strip() for h in header if h is not None]
+
+        # normalize keys
+        ev2 = {str(k).strip(): v for k, v in (ev or {}).items()}
+
+        row = []
+        for k in header:
+            v = ev2.get(k, "")
+
+            # ép kiểu để tránh "datetime chui vào closePx" / tránh text loạn
+            if k == "ts":
+                try: v = int(float(v))
+                except: v = ""
+            elif k in ("openPx", "sz"):
+                try: v = float(v)
+                except: v = ""
+            elif k in ("posId", "instId", "posSide", "closeType"):
+                v = "" if v is None else str(v)
+
+            row.append(v)
+
+        ws.append_row(row, value_input_option="RAW")
+
     except Exception as e:
         logging.error("[CLOSE-EVENTS] append_row error: %s", e)
 
@@ -2446,17 +2695,24 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
     """
     state = _load_json_file(SERVER_CLOSE_STATE_FILE, {"last_ctime_ms": 0})
     last_ctime_ms = int(state.get("last_ctime_ms") or 0)
+
+    now_ms = int(time.time() * 1000)
+
     # ===== CUTOFF: chỉ quét từ hôm nay (giờ VN) =====
     now_utc = datetime.now(timezone.utc)
     now_vn = now_utc + timedelta(hours=7)
     start_today_vn = datetime(now_vn.year, now_vn.month, now_vn.day, 0, 0, 0)
-    # đổi về UTC timestamp ms (vì OKX cTime là ms epoch UTC)
     start_today_utc = start_today_vn - timedelta(hours=7)
-    cutoff_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    cutoff_today_ms = int(start_today_utc.replace(tzinfo=timezone.utc).timestamp() * 1000)
 
-    # Nếu muốn "từ lần chạy trước" nhưng không vượt quá hôm nay:
-    # (đảm bảo restart vẫn không kéo quá sâu)
-    cutoff_ms = max(cutoff_ms, last_ctime_ms)
+    # ===== Guard: nếu last_ctime_ms "ở tương lai" thì reset (tránh chặn cả ngày) =====
+    if last_ctime_ms > now_ms + 5 * 60 * 1000:
+        logging.warning("[WATCH-OCO] last_ctime_ms=%s is in the future vs now=%s -> reset to 0", last_ctime_ms, now_ms)
+        last_ctime_ms = 0
+        state["last_ctime_ms"] = 0
+        _save_json_file(SERVER_CLOSE_STATE_FILE, state)
+
+    cutoff_ms = max(cutoff_today_ms, last_ctime_ms)
 
     existing_posids = _load_close_event_posid_set()
     newest_ctime_ms = last_ctime_ms
@@ -2470,89 +2726,91 @@ def watch_server_closures_and_append_close_events(okx, lookback_pages: int = 5, 
             logging.error("[WATCH-OCO] get_positions_history error: %s", e)
             break
 
-        if not data:
-            break
-
-        # OKX thường trả list theo thời gian giảm dần; lấy cursor cho trang sau:
-        # dùng cTime cuối trang làm after (ổn định nhất kiểu pagination thô)
-        try:
-            last_row = data[-1]
-            after = last_row.get("cTime") or last_row.get("uTime") or after
-        except Exception:
-            pass
-        # OKX wrapper có thể trả dict {"data":[...]} hoặc trả thẳng list [...]
+        # normalize rows FIRST
         if isinstance(data, dict):
             rows = data.get("data", []) or []
         elif isinstance(data, list):
             rows = data
         else:
             rows = []
+
         if not rows:
             break
 
-        # OKX thường trả newest -> oldest trong mỗi page.
-        # Nếu gặp item đầu tiên đã < cutoff => cả page này đều cũ -> break luôn.
-        first_ctime = int(float(rows[0].get("cTime") or 0))
+        # cursor for next page: use oldest item cTime/uTime
+        try:
+            last_row = rows[-1]
+            after = last_row.get("cTime") or last_row.get("uTime") or after
+        except Exception:
+            pass
+
+        # if newest item already older than cutoff -> stop all
+        try:
+            first_ctime = int(float(rows[0].get("cTime") or rows[0].get("uTime") or 0))
+        except Exception:
+            first_ctime = 0
+
         if first_ctime and first_ctime < cutoff_ms:
             break
 
+        stop_all = False
         for p in rows:
             if not isinstance(p, dict):
                 continue
 
-            # lấy thời gian đóng từ OKX
-            ctime_ms = int(float(
-                p.get("cTime")
-                or p.get("ctime")
-                or p.get("ts")
-                or 0
-            ))
-
-            # cũ hơn cutoff thì dừng (càng dưới càng cũ)
+            ctime_ms = int(float(p.get("cTime") or p.get("uTime") or p.get("ts") or 0))
             if ctime_ms and ctime_ms < cutoff_ms:
+                stop_all = True
                 break
 
-            # đã xử lý rồi thì bỏ
             if ctime_ms and ctime_ms <= last_ctime_ms:
                 continue
 
             newest_ctime_ms = max(newest_ctime_ms, ctime_ms)
 
-            # ===== POS ID (QUAN TRỌNG) =====
             pos_id = str(p.get("posId") or "").strip()
             if not pos_id:
-                continue
+                # fallback để không mất event nếu API không trả posId
+                inst_id = p.get("instId")
+                pos_side = p.get("posSide")
+                open_px = p.get("openPx") or p.get("avgPx") or ""
+                pos_id = f"{inst_id}_{pos_side}_{open_px}_{ctime_ms}"
 
-            # nếu posId đã được ghi rồi thì bỏ
             if pos_id in existing_posids:
+                continue
+            if pos_id in CLOSED_POSID_SET:
                 continue
 
             inst_id = p.get("instId")
             pos_side = p.get("posSide")
             open_px = p.get("openPx")
             sz = p.get("sz")
-            if pos_id in CLOSED_POSID_SET:
-                continue
 
-            append_close_event_to_sheet({
-                "posId": pos_id,
-                "ts": ctime_ms,
-                "instId": inst_id,
-                "posSide": pos_side,
-                "openPx": open_px,
-                "sz": sz,
-                "closeType": "OCO_SL"
-            })
+            try:
+                append_close_event_to_sheet({
+                    "posId": pos_id,
+                    "ts": ctime_ms,
+                    "instId": inst_id,
+                    "posSide": pos_side,
+                    "openPx": open_px,
+                    "sz": sz,
+                    "closeType": "OCO_SL"
+                })
+                existing_posids.add(pos_id)
+                appended += 1
+            except Exception as e:
+                logging.exception("[WATCH-OCO] append_close_event_to_sheet failed posId=%s: %s", pos_id, e)
 
-            existing_posids.add(pos_id)
-            appended += 1
+        if stop_all:
+            break
 
     if newest_ctime_ms > last_ctime_ms:
         state["last_ctime_ms"] = newest_ctime_ms
         _save_json_file(SERVER_CLOSE_STATE_FILE, state)
 
-    if appended > 0:
-        logging.info("[WATCH-OCO] appended %s server-close events into %s", appended, CLOSE_EVENTS_SHEET_NAME)
+    logging.info("[WATCH-OCO] appended=%s cutoff_ms=%s last_ctime_ms=%s newest_ctime_ms=%s",
+                 appended, cutoff_ms, last_ctime_ms, newest_ctime_ms)
+
 
 def load_close_event_map_by_posid():
     ws = get_close_events_worksheet()
@@ -4042,6 +4300,8 @@ def maker_first_open_position(
     lever: int,
     maker_offset_bps: float = 6.0,     # 6 bps = 0.06% (nhẹ, đủ maker)
     maker_timeout_sec: int = 3,        # chờ khớp maker 3s
+    bypass_session_guard: bool = False,
+    clOrdId: str | None = None,
 ):
     """
     Ưu tiên mở bằng post-only LIMIT (maker).
@@ -4052,24 +4312,29 @@ def maker_first_open_position(
 
     sz = normalize_swap_sz(okx, inst_id, contracts)
     # ===== PATCH: session guard =====
-    if _is_session_20_24():
-        allow, reason = _allow_trade_session_20_24(
-            market_regime=locals().get("market_regime"),
-            confidence=locals().get("confidence"),
-            trend_score=locals().get("trend_score"),
-        )
-    elif _is_session_16_20():
-        allow, reason = _allow_trade_session_16_20(
-            market_regime=locals().get("market_regime"),
-            confidence=locals().get("confidence"),
-            trend_score=locals().get("trend_score"),
-        )
+    if not bypass_session_guard:
+        if _is_session_20_24():
+            allow, reason = _allow_trade_session_20_24(
+                market_regime=locals().get("market_regime"),
+                confidence=locals().get("confidence"),
+                trend_score=locals().get("trend_score"),
+            )
+        elif _is_session_16_20():
+            allow, reason = _allow_trade_session_16_20(
+                market_regime=locals().get("market_regime"),
+                confidence=locals().get("confidence"),
+                trend_score=locals().get("trend_score"),
+            )
+        else:
+            allow, reason = True, "ok:normal_session"
+    
+        if not allow:
+            logging.info("[GUARD][SESSION] Block %s %s: %s", inst_id, side_open, reason)
+            return False, None, "skip_session"
     else:
-        allow, reason = True, "ok:normal_session"
+        # SCALP bypass session guard
+        allow, reason = True, "bypass_session_guard"
 
-    if not allow:
-        logging.info("[GUARD][SESSION] Block %s %s: %s", inst_id, side_open, reason)
-        return False, None, "skip_session"
 
         # ===== PATCH #4: daily trade cap =====
     allow, reason = allow_trade_daily_limit()
@@ -4099,6 +4364,7 @@ def maker_first_open_position(
         td_mode="isolated",
         lever=lever,
         post_only=True,
+        clOrdId=clOrdId
     )
 
     # OKX trả ordId trong data[0].ordId (thường vậy)
@@ -4120,6 +4386,7 @@ def maker_first_open_position(
             sz=contracts,
             td_mode="isolated",
             lever=lever,
+            clOrdId=clOrdId
         )
         code = m.get("code")
         return (code == "0"), None, "market"
@@ -4142,7 +4409,6 @@ def maker_first_open_position(
         logging.info("[MAKER] Canceled maker order: inst=%s ordId=%s -> fallback MARKET", inst_id, ord_id)
     except Exception as e:
         logging.warning("[MAKER] Cancel failed (still fallback MARKET): %s", e)
-
     m = okx.place_futures_market_order(
         inst_id=inst_id,
         side=side_open,
@@ -4196,14 +4462,29 @@ def execute_futures_trades(okx: OKXClient, trades):
     telegram_lines = []
 
     for t in allowed_trades:
-        coin = t["coin"]         # ví dụ 'BTC-USDT'
-        signal = t["signal"]     # LONG / SHORT
+        coin = t["coin"]
+        signal = t["signal"]
         entry = t["entry"]
         tp = t["tp"]
         sl = t["sl"]
+    
+        is_scalp = ("[SCALP_5M]" in (t.get("time") or "")) or (t.get("mode") == "SCALP_5M")
+    
+        # ✅ đúng biến: t (dict)
+        inst_id  = t.get("instId") or t.get("inst_id") or t.get("coin")
+        pos_side = t.get("posSide") or t.get("pos_side") or ("long" if signal.upper()=="LONG" else "short")
+    
+        clOrdId = None
+        if is_scalp:
+            clOrdId = mk_scalp_clOrdId(inst_id, pos_side)
+    
+        # Spot -> Perp SWAP (chuẩn hoá instId)
+        if coin.endswith("-SWAP"):
+            swap_inst = coin
+        else:
+            swap_inst = coin + "-SWAP"  # tuỳ code bạn đang chuẩn hoá thế nào
 
-        # Spot -> Perp SWAP
-        swap_inst = coin.replace("-USDT", "-USDT-SWAP")
+
         # ===== PRO #4: cooldown theo symbol =====
         if is_symbol_in_cooldown(swap_inst):
             logging.info("[COOLDOWN] Skip %s (still in cooldown).", swap_inst)
@@ -4284,9 +4565,11 @@ def execute_futures_trades(okx: OKXClient, trades):
             pos_side=pos_side,
             contracts=contracts,
             desired_entry=entry,
+            bypass_session_guard=is_scalp,
             lever=this_lever,
             maker_offset_bps=5.0,      # 0.05%
             maker_timeout_sec=3,       # 3 giây không khớp -> market
+            clOrdId=clOrdId,
         )
 
         if not ok_open:
@@ -4432,7 +4715,6 @@ def _get_oco_for_position(okx, inst_id: str, pos_side: str):
     except Exception as e:
         logging.error("[BE] Lỗi get_algo_pending oco %s: %s", inst_id, e)
         return None
-
     data = _extract_data_list(resp)
 
     for item in data:
@@ -4618,6 +4900,406 @@ def has_active_trailing_for_position(okx: "OKXClient", inst_id: str, pos_side: s
 
     return (False, None) if return_info else False
 
+_SWAP_UNIVERSE_CACHE = {"ts": 0, "set": set()}
+
+def get_swap_universe_usdt(okx, cache_sec=3600):
+    """
+    Lấy danh sách instId dạng *-USDT-SWAP.
+    Không cần okx.get_instruments().
+    Ưu tiên lấy từ get_swap_tickers() (đã là SWAP).
+    """
+    now = int(time.time())
+    if _SWAP_UNIVERSE_CACHE["set"] and (now - _SWAP_UNIVERSE_CACHE["ts"] < cache_sec):
+        return _SWAP_UNIVERSE_CACHE["set"]
+
+    inst_set = set()
+    try:
+        data = okx.get_swap_tickers()  # <-- bạn đang có hàm này
+        rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+        for r in rows:
+            instId = (r.get("instId") or "")
+            if instId.endswith("-USDT-SWAP"):
+                inst_set.add(instId)
+    except Exception as e:
+        logging.error("[SCALP] get_swap_universe_usdt error (swap_tickers): %s", e)
+
+    _SWAP_UNIVERSE_CACHE["ts"] = now
+    _SWAP_UNIVERSE_CACHE["set"] = inst_set
+    return inst_set
+
+
+def _get_top_swap_movers_24h(okx, topn=100):
+    """
+    Trả về instId SWAP (USDT-SWAP) top movers 24h: gainers/losers.
+    Không dính SPOT.
+    """
+    swap_set = get_swap_universe_usdt(okx)
+
+    try:
+        # Ưu tiên: gọi tickers SWAP nếu client có
+        rows = []
+        if hasattr(okx, "get_swap_tickers"):
+            data = okx.get_swap_tickers()
+            rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+        else:
+            # fallback: nếu chỉ có get_tickers chung (trộn), vẫn lọc bằng swap_set
+            data = okx.get_tickers()
+            rows = data.get("data", []) if isinstance(data, dict) else (data or [])
+
+        items = []
+        for r in rows:
+            inst = (r.get("instId") or "")
+            if inst not in swap_set:
+                continue
+
+            try:
+                last = float(r.get("last"))
+                open24h = float(r.get("open24h"))
+                if open24h <= 0:
+                    continue
+                chg = (last - open24h) / open24h * 100.0
+            except Exception:
+                continue
+
+            items.append((inst, chg))
+
+        gainers = sorted(items, key=lambda x: x[1], reverse=True)[:topn]
+        losers  = sorted(items, key=lambda x: x[1])[:topn]
+        return [x[0] for x in gainers], [x[0] for x in losers]
+
+    except Exception as e:
+        logging.error("[SCALP] get top swap movers error: %s", e)
+        return [], []
+def scalp_mark_fired_and_open(planned_trades, now_ms: int):
+    """
+    Ghi nhận scalp đã bắn + (tạm) coi là open để chặn lần sau.
+    Sau đó scalp_refresh_open_from_okx() sẽ tự loại những cái không thật sự mở.
+    """
+    st = load_scalp_state()
+    st = scalp_prune_state(st, now_ms)
+
+    fired_ts = st.get("fired_ts", [])
+    open_list = st.get("open", [])
+
+    for t in planned_trades:
+        inst = t.get("coin") or t.get("instId")
+        pos_side = t.get("posSide") or ("long" if (t.get("signal","").upper()=="LONG") else "short")
+
+        fired_ts.append(now_ms)
+        open_list.append({
+            "instId": inst,
+            "posSide": pos_side,
+            "ts": now_ms,
+        })
+
+    st["fired_ts"] = fired_ts
+    st["open"] = open_list
+    save_scalp_state(st)
+
+def build_scalp_signal_5m(okx, topn=100):
+    """
+    SCALP 5M:
+    - lấy top movers SWAP (gainers/losers)
+    - dùng 5m để vào nhanh
+    - xác nhận 1m & 30m cùng hướng
+    - tránh đu theo: late-move chỉ vào nếu có retest (EMA20/50/100)
+    Return: list signals sorted by score desc
+      signal item: {
+        "instId": "...",
+        "direction": "LONG"/"SHORT",
+        "entry": float,
+        "tp1": float,
+        "sl": float,
+        "score": float,
+        "reason": str,
+      }
+    """
+    import time, math
+    now_ms = int(time.time() * 1000)
+
+    # ========= TUNE NHẸ CHO LƯỚT =========
+    WITHIN_SEC = 150          # chạy trong 3 phút đầu nến 5m (tăng -> nhiều lệnh hơn nhưng dễ muộn hơn)
+    MIN_AGE_SEC = 12          # tránh 5-10s đầu bị nhiễu spread
+    BODY_RATIO_MIN_5M = 0.40  # nến đóng có thân đủ to (đừng quá gắt)
+    ATR_MULT_SL = 1.15        # SL theo ATR 5m
+    RR_TP = 1.10              # TP1 = SL * RR (còn trail để ăn dài)
+
+    # Chase filter: nếu đã chạy xa -> chỉ vào khi retest
+    SCALP_MAX_MOVE_10M_PCT = 2.5   # đu theo nếu > ngưỡng này (NHƯNG sẽ cho retest)
+    SCALP_MAX_MOVE_15M_PCT = 3.5
+
+    # Late-move threshold: đánh dấu “đã chạy xa”
+    SCALP_LATE_MOVE_10M_PCT = 2.0
+    SCALP_LATE_MOVE_15M_PCT = 3.0
+
+    # retest zone (chạm EMA được phép sai số theo ATR)
+    RETEST_ATR_BAND = 0.50     # càng lớn càng dễ có lệnh (0.35-0.60)
+    RETEST_NEED_BOUNCE = True  # retest phải có “bật lại” đúng hướng
+
+    # ========= helpers =========
+    def _f(x, d=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return d
+
+    def _pct(a, b):
+        if b == 0:
+            return 0.0
+        return (a - b) / b * 100.0
+
+    def _ema(vals, period):
+        # EMA classic, vals chronological
+        if len(vals) < period + 2:
+            return None
+        k = 2 / (period + 1)
+        ema = sum(vals[:period]) / period
+        for v in vals[period:]:
+            ema = v * k + ema * (1 - k)
+        return ema
+
+    def _rsi(closes, period=14):
+        if len(closes) < period + 2:
+            return None
+        gains = 0.0
+        losses = 0.0
+        for i in range(-period, 0):
+            diff = closes[i] - closes[i - 1]
+            if diff >= 0:
+                gains += diff
+            else:
+                losses += -diff
+        if losses == 0:
+            return 100.0
+        rs = (gains / period) / (losses / period)
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _atr(ohlc, period=14):
+        # ohlc list chronological candles: (o,h,l,c)
+        if len(ohlc) < period + 2:
+            return None
+        trs = []
+        for i in range(-period, 0):
+            o, h, l, c = ohlc[i]
+            _, _, _, pc = ohlc[i - 1]
+            tr = max(h - l, abs(h - pc), abs(l - pc))
+            trs.append(tr)
+        return sum(trs) / len(trs) if trs else None
+
+    def _candle_dir(o, c):
+        return "UP" if c >= o else "DOWN"
+
+    def _body_ratio(o, h, l, c):
+        rng = max(h - l, 1e-12)
+        body = abs(c - o)
+        return body / rng
+
+    def _is_retest(dir_need, last_c, ema20, ema50, ema100, atr):
+        """
+        Retest = giá chạm vùng EMA (20/50/100) trong band ATR rồi bật lại.
+        Dùng candle đóng gần nhất (5m[-2]) để xác nhận “bật”.
+        """
+        if atr is None or atr <= 0:
+            return (False, None)
+
+        o, h, l, c = last_c
+        band = atr * RETEST_ATR_BAND
+
+        emas = []
+        if ema20:  emas.append(("EMA20", ema20))
+        if ema50:  emas.append(("EMA50", ema50))
+        if ema100: emas.append(("EMA100", ema100))
+
+        # check touch
+        touched = None
+        for name, ev in emas:
+            if (l <= ev + band) and (h >= ev - band):
+                touched = (name, ev)
+                break
+        if not touched:
+            return (False, None)
+
+        # need bounce confirmation
+        if not RETEST_NEED_BOUNCE:
+            return (True, touched[0])
+
+        if dir_need == "LONG":
+            # bounce: close > open AND close above touched ema a bit
+            if c > o and c >= touched[1]:
+                return (True, touched[0])
+        else:
+            if c < o and c <= touched[1]:
+                return (True, touched[0])
+
+        return (False, None)
+
+    def _trend_1m_ok(dir_need, c1):
+        # cực nhẹ: 1m close so với EMA20 1m
+        closes1 = [_f(x[4]) for x in c1]
+        ema20_1 = _ema(closes1, 20)
+        if ema20_1 is None:
+            return False
+        last = closes1[-2]  # nến 1m đã đóng
+        return (last >= ema20_1) if dir_need == "LONG" else (last <= ema20_1)
+
+    def _trend_30m_ok(dir_need, c30):
+        # cực nhẹ: 30m close so với EMA20 30m
+        closes30 = [_f(x[4]) for x in c30]
+        ema20_30 = _ema(closes30, 20)
+        if ema20_30 is None:
+            return False
+        last = closes30[-2]
+        return (last >= ema20_30) if dir_need == "LONG" else (last <= ema20_30)
+
+    # ========= movers =========
+    gainers, losers = _get_top_swap_movers_24h(okx, topn=topn)
+    candidates = [(x, "LONG") for x in gainers] + [(x, "SHORT") for x in losers]
+
+    out = []
+
+    for inst, dir_need in candidates:
+        try:
+            c5  = okx.get_candles(inst, bar="5m",  limit=30) or []
+            c1  = okx.get_candles(inst, bar="1m",  limit=60) or []
+            c30 = okx.get_candles(inst, bar="30m", limit=60) or []
+            if len(c5) < 10 or len(c1) < 25 or len(c30) < 25:
+                continue
+
+            # OKX trả newest-first -> đảo lại chronological
+            c5  = list(reversed(c5))
+            c1  = list(reversed(c1))
+            c30 = list(reversed(c30))
+
+            # ---- thời gian nến 5m đang chạy ----
+            cur5 = c5[-1]
+            ts_open_5m = int(cur5[0])
+            age_sec = (now_ms - ts_open_5m) / 1000.0
+            if age_sec < MIN_AGE_SEC:
+                continue
+            if age_sec > WITHIN_SEC:
+                # quá muộn so với “đầu nến 5m”
+                continue
+
+            # ---- dùng 2 nến 5m ĐÃ ĐÓNG: [-3], [-2] ----
+            x1 = c5[-3]
+            x2 = c5[-2]
+            o1, h1, l1, c1_ = _f(x1[1]), _f(x1[2]), _f(x1[3]), _f(x1[4])
+            o2, h2, l2, c2_ = _f(x2[1]), _f(x2[2]), _f(x2[3]), _f(x2[4])
+
+            # ---- indicators 5m ----
+            closes5 = [_f(x[4]) for x in c5]
+            ema20 = _ema(closes5, 20)
+            ema50 = _ema(closes5, 50)
+            ema100 = _ema(closes5, 100)
+            rsi14 = _rsi(closes5, 14)
+
+            ohlc5 = [(_f(x[1]), _f(x[2]), _f(x[3]), _f(x[4])) for x in c5]
+            atr14 = _atr(ohlc5, 14)
+            if atr14 is None or atr14 <= 0:
+                continue
+
+            # ---- filter trend 1m & 30m cùng hướng ----
+            if not _trend_1m_ok(dir_need, c1):
+                continue
+            if not _trend_30m_ok(dir_need, c30):
+                continue
+
+            # ---- move 10m/15m để đánh dấu late-move ----
+            # dùng close của nến đã đóng để đo (an toàn)
+            c_0 = closes5[-2]
+            c_10m = closes5[-4] if len(closes5) >= 4 else closes5[-2]
+            c_15m = closes5[-5] if len(closes5) >= 5 else closes5[-2]
+            move_10m = abs(_pct(c_0, c_10m))
+            move_15m = abs(_pct(c_0, c_15m))
+
+            late_move = (move_10m >= SCALP_LATE_MOVE_10M_PCT) or (move_15m >= SCALP_LATE_MOVE_15M_PCT)
+            too_far  = (move_10m >= SCALP_MAX_MOVE_10M_PCT) or (move_15m >= SCALP_MAX_MOVE_15M_PCT)
+
+            # ---- setup A: EARLY MOVE (2 nến 5m cùng chiều + thân đủ to) ----
+            dir_x1 = _candle_dir(o1, c1_)
+            dir_x2 = _candle_dir(o2, c2_)
+            br2 = _body_ratio(o2, h2, l2, c2_)
+
+            early_ok = False
+            if dir_need == "LONG":
+                early_ok = (dir_x1 == "UP" and dir_x2 == "UP" and br2 >= BODY_RATIO_MIN_5M)
+            else:
+                early_ok = (dir_x1 == "DOWN" and dir_x2 == "DOWN" and br2 >= BODY_RATIO_MIN_5M)
+
+            # ---- setup B: RETEST (late/too_far vẫn được vào nếu retest) ----
+            retest_ok, retest_ema = _is_retest(
+                dir_need,
+                last_c=(o2, h2, l2, c2_),
+                ema20=ema20, ema50=ema50, ema100=ema100,
+                atr=atr14
+            )
+
+            # ---- CHỐT LOGIC “KHÔNG ĐU THEO” ----
+            # nếu đã chạy xa mà KHÔNG có retest => skip
+            if (late_move or too_far) and (not retest_ok):
+                continue
+
+            # nếu không early_ok và cũng không retest_ok => skip
+            if (not early_ok) and (not retest_ok):
+                continue
+
+            # ---- RSI sanity (nhẹ thôi, tránh cực đoan) ----
+            if rsi14 is not None:
+                if dir_need == "LONG" and rsi14 > 78:
+                    # quá nóng, chỉ vào nếu retest (thường đã pullback)
+                    if not retest_ok:
+                        continue
+                if dir_need == "SHORT" and rsi14 < 22:
+                    if not retest_ok:
+                        continue
+
+            # ---- entry/sl/tp ----
+            # entry lấy theo close nến 5m đã đóng (đỡ “đu” nến đang chạy)
+            entry = c2_
+
+            # SL theo ATR + theo swing gần nhất (siêu nhẹ)
+            if dir_need == "LONG":
+                sl = min(l2, l1) - atr14 * 0.15
+                sl = min(sl, entry - atr14 * ATR_MULT_SL)
+                risk = max(entry - sl, atr14 * 0.6)
+                tp1 = entry + risk * RR_TP
+            else:
+                sl = max(h2, h1) + atr14 * 0.15
+                sl = max(sl, entry + atr14 * ATR_MULT_SL)
+                risk = max(sl - entry, atr14 * 0.6)
+                tp1 = entry - risk * RR_TP
+
+            # ---- score: ưu tiên retest (ăn “đoạn ngon”), sau đó early_ok ----
+            score = 0.0
+            reason = []
+            if retest_ok:
+                score += 3.0
+                reason.append(f"RETEST_{retest_ema}")
+            if early_ok:
+                score += 2.0
+                reason.append("2CANDLE")
+            # movers boost nhẹ
+            score += 1.0
+            # ít chase hơn -> score cao hơn
+            score += max(0.0, 2.0 - (move_10m / 2.0))  # move_10m càng lớn càng trừ
+
+            out.append({
+                "instId": inst,
+                "direction": dir_need,
+                "entry": float(entry),
+                "tp1": float(tp1),
+                "sl": float(sl),
+                "score": float(score),
+                "reason": "|".join(reason) if reason else "OK",
+            })
+
+        except Exception:
+            continue
+
+    out.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+    return out
+
+
 
 def run_dynamic_tp(okx: "OKXClient"):
     """
@@ -4756,11 +5438,12 @@ def run_dynamic_tp(okx: "OKXClient"):
         open_ms = int(p.get("cTime", "0") or 0)
         if open_ms > 0:
             age_min = (time.time() * 1000 - open_ms) / 60000.0
-            if age_min >= 120 and pnl_pct < 5.0:
-                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 5%% => CLOSE",
+            #if age_min >= 120 and pnl_pct < 5.0:
+            if age_min >= 60 and peak_pnl < 2.0:
+                logging.warning("[TIMEOUT] %s %s age=%.0f' pnl=%.2f%% < 2%% => CLOSE",
                                 instId, posSide, age_min, pnl_pct)
                 try:
-                    mark_symbol_sl(instId, "timeout_120m")
+                    mark_symbol_sl(instId, "timeout_60m")
                     posId = str(p.get("posId") or "").strip()
                     if posId:
                         log_close_type(
@@ -4928,218 +5611,113 @@ def run_dynamic_tp(okx: "OKXClient"):
                 max_pnl_window = pnl_pct_i
 
         # ---------- 13) server-side trailing khi pnl >= 8% ----------
-        # ---------- 13.1) trailing (pump-mode: bot-managed + protections A/B) ----------
+        # ---------- 13) server-side trailing khi pnl >= 8% (ALL server-side) ----------
         now_ms = int(time.time() * 1000)
-
+        
         is_pump, pump_meta = detect_pump_dump_2of3(closes, highs, lows, vols)
         if is_pump:
             until = now_ms + int(PUMP_WINDOW_SEC * 1000)
             prev_until = PUMP_MODE_UNTIL_MS.get(pos_key, 0)
             PUMP_MODE_UNTIL_MS[pos_key] = max(prev_until, until)
-
+        
         pump_mode = now_ms < PUMP_MODE_UNTIL_MS.get(pos_key, 0)
-
-        if pump_mode and pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
-            # 1) current price (giữ đúng logic bạn đang dùng)
-            mark_px = okx.get_mark_price(inst_id)
-            last_px = okx.get_last_price(inst_id) if mark_px is None else None
-            current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
-
-            # 2) callback pump (nới có kiểm soát + cap)
-            pump_cb = min(callback_pct * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
-
-            # 3) peak như cũ: có đỉnh mới là update
-            if posSide == "long":
-                peak_now = max(highs[-TP_TRAIL_LOOKBACK_BARS:]) if len(highs) >= TP_TRAIL_LOOKBACK_BARS else max(highs)
-                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
-                peak_px = max(prev_peak, peak_now, current_px)
-                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
-
-                stop_px = peak_px * (1.0 - pump_cb / 100.0)
-                hard_floor = peak_px * (1.0 - HARD_STOP_PCT / 100.0)
-
-                hard_breach = current_px <= hard_floor
-                under_stop = current_px <= stop_px
-                safe_again = current_px > stop_px
-
-            else:  # short
-                peak_now = min(lows[-TP_TRAIL_LOOKBACK_BARS:]) if len(lows) >= TP_TRAIL_LOOKBACK_BARS else min(lows)
-                prev_peak = SOFT_TRAIL_PEAK_PX.get(pos_key, 0.0)
-                peak_px = peak_now if prev_peak == 0.0 else min(prev_peak, peak_now, current_px)
-                SOFT_TRAIL_PEAK_PX[pos_key] = peak_px
-
-                stop_px = peak_px * (1.0 + pump_cb / 100.0)
-                hard_floor = peak_px * (1.0 + HARD_STOP_PCT / 100.0)
-
-                hard_breach = current_px >= hard_floor
-                under_stop = current_px >= stop_px
-                safe_again = current_px < stop_px
-
-            logging.info(
-                "[PUMP-TRAIL] %s pump_mode=YES score=%s chg=%.2f%% volR=%.2f rangeR=%.2f | cb=%.2f%% peak=%.6f stop=%.6f hard=%.6f px=%.6f",
-                instId,
-                pump_meta.get("score"),
-                pump_meta.get("chg_5m_pct", 0.0),
-                pump_meta.get("vol_ratio", 0.0),
-                pump_meta.get("range_ratio", 0.0),
-                pump_cb, peak_px, stop_px, hard_floor, current_px
-            )
-
-            # 4) Nếu trước đó đã đặt trailing server (hoặc còn algo), hủy để tránh sàn đóng sớm
-            try:
-                exists, info = has_active_trailing_for_position(okx, instId, posSide, return_info=True)
-                if exists and info:
-                    old_algo_id = info.get("algoId")
-                    try:
-                        okx.cancel_algo_order(instId, old_algo_id)
-                        logging.info("[PUMP-TRAIL] cancel trailing server cũ %s algoId=%s", instId, old_algo_id)
-                    except Exception as e:
-                        logging.error("[PUMP-TRAIL] cancel trailing server cũ lỗi %s algoId=%s: %s", instId, old_algo_id, e)
-            except Exception:
-                pass
-
-            # 5) (Tuỳ bạn) hủy OCO để khỏi bị chốt sớm trong pump
-            try:
-                cancel_oco_before_trailing(okx, instId, posSide)
-            except Exception as e:
-                logging.error("[PUMP-TRAIL] lỗi khi hủy OCO trước soft-trail %s (%s): %s", instId, posSide, e)
-
-            # ===== A) HARD FLOOR: breach là đóng ngay =====
-            if hard_breach:
-                logging.warning("[PUMP-TRAIL] HARD_FLOOR breach => CLOSE NOW %s %s (px=%.6f hard=%.6f)",
-                                instId, posSide, current_px, hard_floor)
-                try:
-                    mark_symbol_tp(instId)
-                    posId = str(p.get("posId") or "").strip()
-                    log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_HARD_FLOOR")
-                    maker_close_position_with_timeout(
-                        okx=okx,
-                        posId=posId,
-                        inst_id=instId,
-                        pos_side=posSide,
-                        sz=sz,
-                        last_px=current_px,
-                        timeout_sec=3,
-                    )
-                except Exception as e:
-                    logging.error("[PUMP-TRAIL] close HARD_FLOOR error %s: %s", instId, e)
-                _reset_state(pos_key)
-                continue
-
-            # ===== B) TIME-UNDER-STOP: dưới stop liên tục TIME_UNDER_STOP_SEC mới đóng =====
-            if under_stop:
-                since = UNDER_STOP_SINCE_MS.get(pos_key, 0)
-                if since <= 0:
-                    UNDER_STOP_SINCE_MS[pos_key] = now_ms
-                    logging.info("[PUMP-TRAIL] UNDER_STOP hit1 mark %s %s (px=%.6f stop=%.6f)",
-                                 instId, posSide, current_px, stop_px)
-                else:
-                    dt_sec = (now_ms - since) / 1000.0
-                    if dt_sec >= TIME_UNDER_STOP_SEC:
-                        logging.warning("[PUMP-TRAIL] UNDER_STOP %.1fs => CLOSE %s %s (px=%.6f stop=%.6f)",
-                                        dt_sec, instId, posSide, current_px, stop_px)
-                        try:
-                            mark_symbol_tp(instId)
-                            posId = str(p.get("posId") or "").strip()
-                            log_close_type(posId, instId, posSide, avg_px, sz, "PUMP_UNDER_STOP")
-                            maker_close_position_with_timeout(
-                                okx=okx,
-                                posId=posId,
-                                inst_id=instId,
-                                pos_side=posSide,
-                                sz=sz,
-                                last_px=current_px,
-                                timeout_sec=3,
-                            )
-                        except Exception as e:
-                            logging.error("[PUMP-TRAIL] close UNDER_STOP error %s: %s", instId, e)
-                        _reset_state(pos_key)
-                        UNDER_STOP_SINCE_MS.pop(pos_key, None)
-                        continue
-            elif safe_again:
-                # hồi lên lại trên stop => reset mark
-                if UNDER_STOP_SINCE_MS.get(pos_key, 0) > 0:
-                    logging.info("[PUMP-TRAIL] UNDER_STOP reset %s %s (px=%.6f stop=%.6f)",
-                                 instId, posSide, current_px, stop_px)
-                UNDER_STOP_SINCE_MS.pop(pos_key, None)
-
-            # pump mode: không đặt trailing server, để soft-trail tiếp tục quản lý
-            continue
-
+        target_mode = "pump" if pump_mode else "normal"
+        
         if pnl_pct >= TP_TRAIL_SERVER_MIN_PNL_PCT:
             posId = str(p.get("posId") or "").strip()
+        
+            # 1) callback theo mode
             callback_pct = dynamic_trail_callback_pct(pnl_pct)
-
-            # >>> lấy giá realtime để set activePx (ưu tiên mark, fallback last, cuối cùng mới fallback candle close)
+            pump_cb = min(callback_pct * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
+            target_cb = pump_cb if target_mode == "pump" else callback_pct
+        
+            # 2) giá realtime để set activePx (KHÔNG update theo activePx về sau)
             mark_px = okx.get_mark_price(inst_id)
             last_px = okx.get_last_price(inst_id) if mark_px is None else None
             current_px = mark_px if mark_px is not None else (last_px if last_px is not None else (c_now if c_now else closes[-1]))
-
+        
             logging.info(
-                "[TP-TRAIL] %s vào vùng trailing server (pnl=%.2f%% >= %.2f%%). callback=%.2f%%, activePx=%.6f (mark=%s, last=%s)",
-                inst_id, pnl_pct, TP_TRAIL_SERVER_MIN_PNL_PCT, callback_pct, current_px,
-                f"{mark_px:.6f}" if mark_px is not None else "None",
-                f"{last_px:.6f}" if last_px is not None else "None",
+                "[TP-TRAIL] %s mode=%s pnl=%.2f%% cb=%.2f%% activePx=%.6f (pump=%s score=%s)",
+                inst_id, target_mode, pnl_pct, target_cb, current_px,
+                "YES" if target_mode == "pump" else "NO",
+                pump_meta.get("score") if pump_meta else None
             )
-
-            # >>> nếu đã có trailing, kiểm tra có cần UPDATE không
+        
+            # 3) cooldown chống spam cancel+place
+            last_upd = LAST_TRAIL_UPDATE_MS.get(pos_key, 0)
+            if last_upd > 0 and (now_ms - last_upd) < TRAIL_UPDATE_COOLDOWN_SEC * 1000:
+                # quá sát lần trước -> skip
+                continue
+        
+            # 4) check trailing đang tồn tại
             exists, info = has_active_trailing_for_position(okx, inst_id, pos_side, return_info=True)
+
+            # ===== Determine previous mode without relying on RAM (cron restarts reset dicts) =====
+            need_update = False
+            if not exists:
+                need_update = True
+            else:
+                old_cb = safe_float(info.get("callbackRatio") or 0.0)
+                # OKX có thể trả callbackRatio dạng ratio (0.013) thay vì % (1.3)
+                if 0 < old_cb <= 1.0:
+                    old_cb = old_cb * 100.0
+            
+                # suy mode_prev dựa vào callback đang đặt trên sàn
+                # (pump cb rộng hơn normal cb)
+                normal_cb = dynamic_trail_callback_pct(pnl_pct)
+                pump_cb = min(normal_cb * PUMP_CB_MULT, PUMP_CB_MAX_PCT)
+            
+                if abs(old_cb - pump_cb) <= abs(old_cb - normal_cb):
+                    mode_prev = "pump"
+                else:
+                    mode_prev = "normal"
+            
+                # ONLY update khi CHUYỂN MODE hoặc callback thay đổi đủ lớn
+                if mode_prev != target_mode:
+                    need_update = True
+                elif abs(old_cb - target_cb) >= CB_UPDATE_MIN_DIFF:
+                    need_update = True    
+            if not need_update:
+                # đã có trailing đúng mode/cb -> giao cho sàn trail, cron khỏi làm gì thêm
+                continue
+        
+            # 5) cancel trailing cũ nếu có (chỉ khi cần update/switch)
             if exists and info:
                 old_algo_id = info.get("algoId")
-                old_active = safe_float(info.get("activePx") or 0.0)
-                old_cb = safe_float(info.get("callbackRatio") or 0.0)
-
-                # ngưỡng update: activePx lệch > 0.2% hoặc callback lệch > 0.05%
-                need_update = False
-                if old_active > 0 and abs(old_active - current_px) / current_px > 0.002:
-                    need_update = True
-                if abs(old_cb - callback_pct) > 0.05:
-                    need_update = True
-
-                if not need_update:
-                    logging.info(
-                        "[TP-TRAIL] Đã có trailing (%s) và vẫn hợp lệ -> không update (old_active=%.6f old_cb=%.2f%%).",
-                        inst_id, old_active, old_cb
-                    )
-                    continue
-
-                # >>> HỦY trailing cũ để đặt trailing mới (update thực sự)
                 try:
                     okx.cancel_algos(inst_id=inst_id, algo_ids=[old_algo_id])
-                    logging.info("[TP-TRAIL] Cancel trailing cũ algoId=%s để update (%s).", old_algo_id, inst_id)
+                    logging.info("[TP-TRAIL] Cancel trailing cũ algoId=%s để update/switch (%s).", old_algo_id, inst_id)
                 except Exception as e:
                     logging.error("[TP-TRAIL] Lỗi cancel trailing cũ %s algoId=%s: %s", inst_id, old_algo_id, e)
-                    # nếu không hủy được thì thôi tránh spam đặt mới
                     continue
-
-            # Hủy OCO trước khi đặt trailing mới
+        
+            # 6) (tuỳ bạn) hủy OCO trước khi đặt trailing mới
             try:
                 cancel_oco_before_trailing(okx, inst_id, pos_side)
             except Exception as e:
                 logging.error("[TP-TRAIL] lỗi khi hủy OCO trước trailing %s (%s): %s", inst_id, pos_side, e)
-
+        
+            # 7) place trailing mới
             side_close = "sell" if pos_side == "long" else "buy"
             try:
-                # >>> IMPORTANT: đổi triggerPxType sang MARK trong hàm OKXClient.place_trailing_stop (PATCH 3b bên dưới)
-                posId = str(p.get("posId") or "").strip()
-                log_close_type(posId, inst_id, pos_side, avg_px, sz, "TRAILING")
+                log_close_type(posId, inst_id, pos_side, avg_px, sz, f"TRAIL_{target_mode.upper()}")
                 okx.place_trailing_stop(
                     inst_id=inst_id,
                     pos_side=pos_side,
                     side_close=side_close,
                     sz=sz,
-                    callback_ratio_pct=callback_pct,
+                    callback_ratio_pct=target_cb,
                     active_px=current_px,
                     td_mode="isolated",
                 )
-                logging.info("[TP-TRAIL] ĐÃ ĐẶT trailing server cho %s (pnl=%.2f%%, callback=%.2f%%, activePx=%.6f).",
-                             inst_id, pnl_pct, callback_pct, current_px)
+                TRAIL_MODE[pos_key] = target_mode
+                LAST_TRAIL_UPDATE_MS[pos_key] = now_ms
+        
+                logging.info("[TP-TRAIL] SET trailing %s mode=%s cb=%.2f%% activePx=%.6f", inst_id, target_mode, target_cb, current_px)
             except Exception as e:
                 logging.error("[TP-TRAIL] Exception khi đặt trailing server cho %s: %s", inst_id, e)
-
+        
             continue  # đã giao cho sàn
-
-
         # ---------- 14) 4 tín hiệu TP-DYN ----------
         if posSide == "long":
             flat_move = not (c_now > c_prev1 > c_prev2)
@@ -5297,6 +5875,60 @@ def detect_market_regime(okx: "OKXClient"):
 
     return "BAD"
 
+def run_scalp_5m(okx):
+    logging.info("===== SCALP 5M START =====")
+
+    now_ms = int(time.time() * 1000)
+
+    blocked, reason = scalp_should_block(okx, now_ms)
+    if blocked:
+        logging.info("[SCALP][LOCK] %s -> SKIP SCALP", reason)
+        return
+    logging.info("[SCALP][UNLOCK] %s -> CONTINUE", reason)
+
+    # build signals
+    signals = build_scalp_signal_5m(okx, topn=100)
+    if not signals:
+        logging.info("[SCALP] No scalp signals.")
+        return
+
+    # vẫn giữ cooldown symbol như bạn đang làm
+    picked = []
+    for sig in signals[:10]:
+        inst = sig["instId"]
+        if is_scalp_symbol_cooldown(inst, cooldown_min=45):
+            continue
+        picked.append(sig)
+        if len(picked) >= 2:   # tối đa pick 2 (đúng yêu cầu)
+            break
+
+    if not picked:
+        logging.info("[SCALP] No eligible scalp signals.")
+        return
+
+    planned_trades = []
+    for sig in picked:
+        pos_side = "long" if sig["direction"] == "LONG" else "short"
+        planned_trades.append({
+            "coin": sig["instId"],
+            "signal": sig["direction"],
+            "entry": sig["entry"],
+            "tp": sig["tp1"],
+            "sl": sig["sl"],
+            "time": f"[SCALP_5M] {now_str_vn()}",
+            "clOrdId": mk_scalp_clOrdId(sig["instId"], pos_side),
+            "posSide": pos_side,   # thêm để downstream khỏi đoán lại
+        })
+
+    logging.info("[SCALP] Pick %d coins: %s", len(planned_trades),
+                 ", ".join([f"{x['coin']} {x['signal']}" for x in planned_trades]))
+
+    execute_futures_trades(okx, planned_trades)
+
+    # QUAN TRỌNG: ghi state fired/open để lần sau chặn được
+    scalp_mark_fired_and_open(planned_trades, now_ms)
+
+
 def run_full_bot(okx):
     setup_logging()
     logging.info("===== OKX FUTURES BOT CRON START =====")
@@ -5415,7 +6047,12 @@ def main():
     #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
     #run_full_bot(okx)
 
-    # 2) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
+    # 2) chạy SCALP mỗi 5 phút (nhưng né phút full bot để không double-open)
+    if (minute % 5 == 0) and (minute not in (5, 20, 35, 50)):
+        logging.info("[SCHED] %02d' -> CHẠY SCALP 5M", minute)
+        run_scalp_5m(okx)
+        
+    # 3) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     if minute in (5, 20, 35, 50):
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
         run_full_bot(okx)
