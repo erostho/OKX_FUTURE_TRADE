@@ -530,7 +530,16 @@ def scalp_refresh_open_from_okx(okx, st):
     st["open"] = new_open
     return st
 def scalp_open_count_in_window(st, now_ms: int, window_ms: int = 15 * 60 * 1000) -> int:
-    return sum(1 for ts in st.get("fired_ts", []) if (now_ms - int(ts)) <= window_ms)
+    n = 0
+    for x in (st.get("open", []) or []):
+        try:
+            ts = int(x.get("ts") or 0)
+            if ts > 0 and (now_ms - ts) <= window_ms:
+                n += 1
+        except Exception:
+            continue
+    return n
+
     
 def scalp_should_block(okx, now_ms):
     """
@@ -564,7 +573,8 @@ def scalp_should_block(okx, now_ms):
 
     save_scalp_state(st)
 
-    fired_n = len(st.get("fired_ts", []))
+    fired_n = sum(1 for ts in (st.get("fired_ts", []) or []) if (now_ms - int(ts)) <= SCALP_WINDOW_MIN * 60 * 1000)
+
     open_n  = scalp_open_count_in_window(st, now_ms)
 
     if fired_n >= SCALP_MAX_OPEN_PER_15M:
@@ -5008,8 +5018,9 @@ import os, json, time
 from typing import Dict, Any, List
 
 # ===================== SCALP STATE (LOCAL) =====================
-STATE_DIR = os.path.join(os.getcwd(), ".state")
+STATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".state")
 SCALP_STATE_PATH = os.path.join(STATE_DIR, "scalp_state.json")
+
 
 SCALP_MAX_ACTIVE = 2
 SCALP_WINDOW_MS = 15 * 60 * 1000   # 15 phút
