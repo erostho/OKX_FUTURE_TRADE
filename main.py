@@ -526,14 +526,32 @@ def scalp_should_block(okx, now_ms):
 
 
 def mk_scalp_clOrdId(inst_id: str, pos_side: str) -> str:
+    """
+    clOrdId chuẩn OKX:
+    - <= 32 ký tự
+    - chỉ A-Z a-z 0-9 (KHÔNG dùng '_' '-' hay ký tự khác)
+    - ngắn, đủ unique
+    """
+    # ví dụ: ONDO-USDT-SWAP -> ONDO
     sym = inst_id.replace("-USDT-SWAP", "").replace("-", "")
-    side = "L" if pos_side.lower() == "long" else "S"
-    ts = int(time.time())  # giây (10 digits)
+    # chỉ giữ chữ+số cho chắc
+    sym = "".join(ch for ch in sym if ch.isalnum())
 
-    clid = f"{SCALP_CLID_PREFIX}{ts}{sym}{side}"
-    clid = re.sub(r"[^A-Za-z0-9_-]", "", clid)
-    return clid[:32]
+    side = "L" if str(pos_side).lower() == "long" else "S"
 
+    # dùng milliseconds để hạn chế trùng trong cùng 1 giây
+    ts_ms = int(time.time() * 1000)
+    ts_str = str(ts_ms)[-10:]  # lấy 10 số cuối cho gọn
+
+    prefix = "SC"  # KHÔNG có dấu '_' để tránh OKX báo lỗi
+
+    # giới hạn 32 ký tự
+    max_sym_len = 32 - len(prefix) - len(ts_str) - len(side)
+    if max_sym_len < 0:
+        max_sym_len = 0
+    sym = sym[:max_sym_len]
+
+    return f"{prefix}{ts_str}{sym}{side}"
 
 
 _SCALP_LAST_FIRE_TS = 0  # epoch seconds
@@ -4577,12 +4595,12 @@ def execute_futures_trades(okx: OKXClient, trades):
             logging.error("[ORDER] Mở lệnh thất bại %s (%s).", swap_inst, used_type)
             continue
         # Nếu là lệnh SCALP -> record vào state để lần sau còn chặn đúng nghĩa
-        if is_scalp:
-            try:
-                scalp_record_open(swap_inst, pos_side, now_ms)
-                logging.info("[SCALP][STATE] recorded %s %s", swap_inst, pos_side)
-            except Exception as e:
-                logging.warning("[SCALP][STATE] record failed: %s", e)
+        try:
+            if is_scalp:
+                scalp_record_open(swap_inst, pos_side, int(time.time() * 1000))
+        except Exception as e:
+            logging.warning("[SCALP] scalp_record_open failed: %s", e)
+
 
         # Nếu có fill price thì dùng để log/đặt SL/TP chuẩn hơn
         real_entry = fill_px if (fill_px and fill_px > 0) else entry
@@ -5013,6 +5031,11 @@ def scalp_record_open(inst_id: str, pos_side: str, now_ms: int) -> None:
     st["opened"].append({"instId": inst_id, "posSide": pos_side.lower(), "ts": int(now_ms)})
     st["last_fired_ts"] = int(now_ms)
     save_scalp_state(st)
+def load_scalp_state():
+    return _load_guard_state()
+
+def save_scalp_state(st):
+    return _save_guard_state(st)
 
 def scalp_should_block(okx, now_ms: int):
     """
