@@ -529,6 +529,8 @@ def scalp_refresh_open_from_okx(okx, st):
 
     st["open"] = new_open
     return st
+def scalp_open_count_in_window(st, now_ms: int, window_ms: int = 15 * 60 * 1000) -> int:
+    return sum(1 for ts in st.get("fired_ts", []) if (now_ms - int(ts)) <= window_ms)
     
 def scalp_should_block(okx, now_ms):
     """
