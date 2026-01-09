@@ -472,7 +472,7 @@ def _load_symbol_cooldown_state() -> dict:
     except Exception:
         return {}
 _SCALP_COOLDOWN_FILE = "scalp_cooldown.json"
-SCALP_CLID_PREFIX = "SC_"   # prefix cho clOrdId scalp
+SCALP_CLID_PREFIX = "SC"   # prefix cho clOrdId scalp
 SCALP_MAX_ACTIVE = 2        # tối đa 2 scalp đang chạy
 
 def _load_scalp_cd():
@@ -4597,7 +4597,7 @@ def execute_futures_trades(okx: OKXClient, trades):
         # Nếu là lệnh SCALP -> record vào state để lần sau còn chặn đúng nghĩa
         try:
             if is_scalp:
-                scalp_record_open(swap_inst, pos_side, int(time.time() * 1000))
+                scalp_record_open(swap_inst, pos_side, now_ms())
         except Exception as e:
             logging.warning("[SCALP] scalp_record_open failed: %s", e)
 
