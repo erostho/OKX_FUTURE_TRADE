@@ -5100,7 +5100,7 @@ SCALP_STATE_FILE = SCALP_STATE_PATH
 
 
 SCALP_MAX_ACTIVE = 2
-SCALP_WINDOW_MS = 15 * 60 * 1000   # 15 phút
+SCALP_WINDOW_MS = 30 * 60 * 1000   # 30 phút
 SCALP_MAX_OPEN_PER_WINDOW = 2      # tối đa 2 lệnh scalp trong 15 phút
 
 def _ensure_state_dir():
@@ -5204,7 +5204,7 @@ def _get_top_swap_movers_24h(okx, topn=100):
         logging.error("[SCALP] get top swap movers error: %s", e)
         return [], []
         
-def scalp_prune_state(st: dict, now_ms: int, ttl_ms: int = 60 * 60 * 1000) -> dict:
+def scalp_prune_state(st: dict, now_ms: int, ttl_ms: int = 30 * 60 * 1000) -> dict:
     """
     Dọn state scalp: xoá entry quá hạn để tránh tích rác.
     ttl_ms mặc định 1h (bạn có thể chỉnh nếu muốn).
