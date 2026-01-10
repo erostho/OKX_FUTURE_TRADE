@@ -6313,15 +6313,16 @@ def main():
     # 1) TP động luôn chạy trước (dùng config mới)
     run_dynamic_tp(okx)
 
-    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
-    #run_full_bot(okx)
+
     #logging.info("[SCHED] %02d' -> CHẠY SCALP 5M", minute)
     #run_scalp_5m(okx)
     # 2) chạy SCALP mỗi 5 phút (nhưng né phút full bot để không double-open)
-    if (minute % 5 == 0) and (minute not in (5, 20, 35, 50)):
-        logging.info("[SCHED] %02d' -> CHẠY SCALP 5M", minute)
-        run_scalp_5m(okx)
-        
+    #if (minute % 5 == 0) and (minute not in (5, 20, 35, 50)):
+        #logging.info("[SCHED] %02d' -> CHẠY SCALP 5M", minute)
+        #run_scalp_5m(okx)
+    
+    #logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
+    #run_full_bot(okx)       
     # 3) Các mốc 5 - 20 - 35 - 50 phút thì chạy thêm FULL BOT
     if minute in (5, 20, 35, 50):
         logging.info("[SCHED] %02d' -> CHẠY FULL BOT", minute)
